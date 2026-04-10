@@ -22,6 +22,9 @@ pub enum Error {
 
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Parse(#[from] ParseError),
 }
 
 #[derive(Debug, thiserror::Error)]

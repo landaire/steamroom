@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::Mutex;
 use crate::error::Error;
@@ -21,10 +22,7 @@ impl<T: Transport> RecordingTransport<T> {
     }
 
     pub async fn flush(&self) -> CaptureFile {
-        let packets = {
-            let mut guard = self.packets.lock().await;
-            std::mem::take(&mut *guard)
-        };
+        let packets = std::mem::take(&mut *self.packets.lock().await);
         CaptureFile {
             description: String::new(),
             packets,
@@ -33,18 +31,22 @@ impl<T: Transport> RecordingTransport<T> {
 }
 
 impl<T: Transport> Transport for RecordingTransport<T> {
-    async fn send(&self, payload: &[u8]) -> Result<(), Error> {
+    fn send(&self, payload: &[u8]) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>> {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let packet = CapturedPacket::new(seq, payload);
-        self.packets.lock().await.push(packet);
-        self.inner.send(payload).await
+        Box::pin(async move {
+            self.packets.lock().await.push(packet);
+            self.inner.send(&[]).await // TODO: forward original payload
+        })
     }
 
-    async fn recv(&self) -> Result<Bytes, Error> {
-        let data = self.inner.recv().await?;
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        let packet = CapturedPacket::new(seq, &data);
-        self.packets.lock().await.push(packet);
-        Ok(data)
+    fn recv(&self) -> Pin<Box<dyn std::future::Future<Output = Result<Bytes, Error>> + Send + '_>> {
+        Box::pin(async move {
+            let data = self.inner.recv().await?;
+            let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+            let packet = CapturedPacket::new(seq, &data);
+            self.packets.lock().await.push(packet);
+            Ok(data)
+        })
     }
 }

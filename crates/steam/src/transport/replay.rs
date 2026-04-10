@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::pin::Pin;
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use crate::error::{ConnectionError, Error};
@@ -28,16 +29,18 @@ impl ReplayTransport {
 }
 
 impl Transport for ReplayTransport {
-    async fn send(&self, _payload: &[u8]) -> Result<(), Error> {
-        // In replay mode, sends are no-ops
-        Ok(())
+    fn send(&self, _payload: &[u8]) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 
-    async fn recv(&self) -> Result<Bytes, Error> {
-        let mut packets = self.packets.lock().await;
-        packets
-            .pop_front()
-            .map(Bytes::from)
-            .ok_or_else(|| ConnectionError::Disconnected.into())
+    fn recv(&self) -> Pin<Box<dyn std::future::Future<Output = Result<Bytes, Error>> + Send + '_>> {
+        Box::pin(async {
+            self.packets
+                .lock()
+                .await
+                .pop_front()
+                .map(Bytes::from)
+                .ok_or_else(|| ConnectionError::Disconnected.into())
+        })
     }
 }

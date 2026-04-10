@@ -20,7 +20,7 @@ lzma-rs = "0.3"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 ecb = "0.1"
-rsa = "0.9"
+rsa = { version = "0.9", features = ["pkcs5"] }
 hmac = "0.12"
 sha1 = "0.10"
 crc32fast = "1"
