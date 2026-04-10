@@ -20,7 +20,7 @@ use crate::messages::header::{self, PacketHeader};
 use crate::transport::Transport;
 use self::msg::ClientMsg;
 
-pub const PROTOCOL_VERSION: u32 = 65580;
+pub const PROTOCOL_VERSION: u32 = 65581;
 
 struct ClientInner {
     transport: Box<dyn Transport>,
@@ -64,7 +64,7 @@ impl SteamClient<Disconnected> {
     pub async fn connect<T: Transport>(
         transport: T,
     ) -> Result<(SteamClient<Connected>, mpsc::UnboundedReceiver<IncomingMsg>), Error> {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (_tx, rx) = mpsc::unbounded_channel();
         let inner = Arc::new(ClientInner {
             transport: Box::new(transport),
             cipher: Mutex::new(None),
@@ -77,6 +77,29 @@ impl SteamClient<Disconnected> {
             SteamClient {
                 inner,
                 _state: Connected,
+            },
+            rx,
+        ))
+    }
+
+    /// Connect via WebSocket — skips encryption handshake (TLS handles it).
+    /// Messages are sent/received as plaintext over the WebSocket.
+    pub async fn connect_ws<T: Transport>(
+        transport: T,
+    ) -> Result<(SteamClient<Encrypted>, mpsc::UnboundedReceiver<IncomingMsg>), Error> {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let inner = Arc::new(ClientInner {
+            transport: Box::new(transport),
+            cipher: Mutex::new(None),
+            steam_id: AtomicU64::new(0),
+            session_id: AtomicI32::new(0),
+            source_job_id: AtomicU64::new(1),
+        });
+
+        Ok((
+            SteamClient {
+                inner,
+                _state: Encrypted,
             },
             rx,
         ))
@@ -178,36 +201,50 @@ impl SteamClient<Connected> {
 impl SteamClient<Encrypted> {
     async fn send_raw(&self, msg: &ClientMsg<'_>) -> Result<(), Error> {
         let data = msg.to_bytes();
-        debug!("send_raw: plaintext {} bytes, emsg={:?}, first 32: {:02x?}", data.len(), msg.emsg, &data[..std::cmp::min(32, data.len())]);
         let cipher_guard = self.inner.cipher.lock().await;
-        let cipher = cipher_guard.as_ref().ok_or(ConnectionError::EncryptionFailed)?;
-        let encrypted = cipher.encrypt(&data);
-        self.inner.transport.send(&encrypted).await
+        if let Some(cipher) = cipher_guard.as_ref() {
+            let encrypted = cipher.encrypt(&data);
+            self.inner.transport.send(&encrypted).await
+        } else {
+            // WebSocket mode: no cipher, send plaintext
+            self.inner.transport.send(&data).await
+        }
     }
 
     async fn recv_raw(&self) -> Result<IncomingMsg, Error> {
-        let encrypted = tokio::time::timeout(
+        let raw = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            self.inner.transport.recv()
-        ).await.map_err(|_| {
-            tracing::error!("recv_raw: timed out waiting for data");
-            ConnectionError::Disconnected
-        })??;
-        debug!("recv_raw: got {} encrypted bytes", encrypted.len());
+            self.inner.transport.recv(),
+        )
+        .await
+        .map_err(|_| ConnectionError::Disconnected)??;
+
         let cipher_guard = self.inner.cipher.lock().await;
-        let cipher = cipher_guard.as_ref().ok_or(ConnectionError::EncryptionFailed)?;
-        let decrypted = cipher.decrypt(&encrypted).map_err(|e| {
-            debug!("recv_raw: decryption failed: {e:?}, encrypted first 32: {:02x?}", &encrypted[..std::cmp::min(32, encrypted.len())]);
-            ConnectionError::EncryptionFailed
-        })?;
-        debug!("recv_raw: decrypted {} bytes", decrypted.len());
-        parse_incoming(&decrypted)
+        let data = if let Some(cipher) = cipher_guard.as_ref() {
+            cipher
+                .decrypt(&raw)
+                .map_err(|_| ConnectionError::EncryptionFailed)?
+        } else {
+            raw.to_vec()
+        };
+        parse_incoming(&data)
+    }
+
+    async fn send_hello(&self) -> Result<(), Error> {
+        let hello = generated::CMsgClientHello {
+            protocol_version: Some(PROTOCOL_VERSION),
+        };
+        let body = hello.encode_to_vec();
+        let msg = ClientMsg::with_body(EMsg(9805), &body);
+        self.send_raw(&msg).await
     }
 
     pub async fn login(
         self,
         msg: ClientMsg<'_>,
     ) -> Result<(SteamClient<LoggedIn>, IncomingMsg), Error> {
+        // Send ClientHello then logon immediately
+        self.send_hello().await?;
         self.send_raw(&msg).await?;
 
         // Process messages until we get LogOnResponse
@@ -449,20 +486,27 @@ impl SteamClient<Encrypted> {
 
 impl SteamClient<LoggedIn> {
     async fn send_raw(&self, msg: &ClientMsg<'_>) -> Result<(), Error> {
-        let mut msg_with_ids = msg.to_bytes();
-        // The header already has steamid/session_id set by ClientMsg
+        let data = msg.to_bytes();
         let cipher_guard = self.inner.cipher.lock().await;
-        let cipher = cipher_guard.as_ref().ok_or(ConnectionError::EncryptionFailed)?;
-        let encrypted = cipher.encrypt(&msg_with_ids);
-        self.inner.transport.send(&encrypted).await
+        if let Some(cipher) = cipher_guard.as_ref() {
+            let encrypted = cipher.encrypt(&data);
+            self.inner.transport.send(&encrypted).await
+        } else {
+            self.inner.transport.send(&data).await
+        }
     }
 
     async fn recv_raw(&self) -> Result<IncomingMsg, Error> {
-        let encrypted = self.inner.transport.recv().await?;
+        let raw = self.inner.transport.recv().await?;
         let cipher_guard = self.inner.cipher.lock().await;
-        let cipher = cipher_guard.as_ref().ok_or(ConnectionError::EncryptionFailed)?;
-        let decrypted = cipher.decrypt(&encrypted).map_err(|_| ConnectionError::EncryptionFailed)?;
-        parse_incoming(&decrypted)
+        let data = if let Some(cipher) = cipher_guard.as_ref() {
+            cipher
+                .decrypt(&raw)
+                .map_err(|_| ConnectionError::EncryptionFailed)?
+        } else {
+            raw.to_vec()
+        };
+        parse_incoming(&data)
     }
 
     fn make_msg<'a>(&self, emsg: EMsg, body: &'a [u8]) -> ClientMsg<'a> {

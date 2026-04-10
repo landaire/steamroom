@@ -42,7 +42,6 @@ impl DepotManifest {
 
         let mut payload = None;
         let mut metadata = None;
-        let mut _signature = None;
 
         loop {
             let magic_val = match cursor.read_u32::<LittleEndian>() {
@@ -50,8 +49,22 @@ impl DepotManifest {
                 Err(_) => break,
             };
 
-            let magic = match_magic(magic_val)?;
+            let magic = match match_magic(magic_val) {
+                Ok(m) => m,
+                Err(_) => {
+                    // Unknown section — try to skip, break on EOF
+                    match cursor.read_u32::<LittleEndian>() {
+                        Ok(section_len) => {
+                            let pos = cursor.position() as usize;
+                            cursor.set_position((pos + section_len as usize) as u64);
+                            continue;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            };
 
+            tracing::trace!("manifest section: {magic:?} at offset {}", cursor.position() as usize - 4);
             if magic == ManifestMagic::EndOfManifest {
                 break;
             }
@@ -62,36 +75,37 @@ impl DepotManifest {
 
             let pos = cursor.position() as usize;
             if pos + section_len > data.len() {
-                return Err(ManifestError::MissingSection);
+                break;
             }
             let section_data = &data[pos..pos + section_len];
             cursor.set_position((pos + section_len) as u64);
 
             match magic {
                 ManifestMagic::PayloadV5 | ManifestMagic::V4 => {
-                    payload = Some(
-                        ContentManifestPayload::decode(section_data)
-                            .map_err(|_| ManifestError::InvalidMagic)?,
-                    );
+                    if payload.is_none() {
+                        match ContentManifestPayload::decode(section_data) {
+                            Ok(p) => payload = Some(p),
+                            Err(e) => tracing::warn!("failed to decode payload ({} bytes): {e}", section_data.len()),
+                        }
+                    }
                 }
                 ManifestMagic::Metadata => {
-                    metadata = Some(
-                        ContentManifestMetadata::decode(section_data)
-                            .map_err(|_| ManifestError::InvalidMagic)?,
-                    );
+                    if metadata.is_none() {
+                        if let Ok(m) = ContentManifestMetadata::decode(section_data) {
+                            metadata = Some(m);
+                        }
+                    }
                 }
                 ManifestMagic::Signature => {
-                    _signature = Some(
-                        ContentManifestSignature::decode(section_data)
-                            .map_err(|_| ManifestError::InvalidMagic)?,
-                    );
+                    // Signature — we don't validate it, just skip
                 }
                 ManifestMagic::EndOfManifest => break,
             }
         }
 
+        tracing::debug!("manifest parse: payload={}, metadata={}", payload.is_some(), metadata.is_some());
         let payload = payload.ok_or(ManifestError::MissingSection)?;
-        let meta = metadata.ok_or(ManifestError::MissingSection)?;
+        let meta = metadata.unwrap_or_default();
 
         let files = payload
             .mappings
@@ -158,23 +172,34 @@ impl DepotManifest {
         }
         for file in &mut self.files {
             if let Some(ref encrypted_name) = file.filename {
+                let clean_b64: String = encrypted_name.chars().filter(|c| !c.is_whitespace()).collect();
                 let decoded = base64::Engine::decode(
                     &base64::engine::general_purpose::STANDARD,
-                    encrypted_name,
+                    &clean_b64,
                 )
-                .map_err(|_| ManifestError::InvalidMagic)?;
+                .map_err(|e| {
+                    tracing::debug!("base64 decode failed: {e}");
+                    ManifestError::InvalidMagic
+                })?;
 
-                let decrypted = crate::crypto::symmetric_decrypt_ecb(&decoded, &key.0)
-                    .map_err(|_| ManifestError::InvalidMagic)?;
+                // Filenames are AES-256-CBC encrypted with IV = all zeros
+                let iv = [0u8; 16];
+                let decrypted = crate::crypto::symmetric_decrypt_cbc(&decoded, &key.0, &iv)
+                    .map_err(|e| {
+                        tracing::debug!("filename decrypt failed ({} bytes): {e:?}", decoded.len());
+                        ManifestError::InvalidMagic
+                    })?;
 
-                // Decrypted filename is null-terminated UTF-8
                 let name = decrypted
                     .split(|&b| b == 0)
                     .next()
                     .unwrap_or(&decrypted);
                 file.filename = Some(
                     String::from_utf8(name.to_vec())
-                        .map_err(|_| ManifestError::InvalidMagic)?,
+                        .map_err(|e| {
+                            tracing::debug!("UTF-8 decode failed: {e}");
+                            ManifestError::InvalidMagic
+                        })?,
                 );
             }
         }
@@ -185,11 +210,15 @@ impl DepotManifest {
 
 fn match_magic(val: u32) -> Result<ManifestMagic, ManifestError> {
     match val {
+        // V5 format
         0x1B81_B817 => Ok(ManifestMagic::PayloadV5),
         0x1F4D_B10B => Ok(ManifestMagic::Metadata),
         0x1B81_B813 => Ok(ManifestMagic::Signature),
         0xD64B_F064 => Ok(ManifestMagic::EndOfManifest),
-        0x71_710712 => Ok(ManifestMagic::V4),
+        // V4 format (different magic values, same section roles)
+        0x71F6_17D0 => Ok(ManifestMagic::V4),
+        0x1F48_12BE => Ok(ManifestMagic::Metadata),
+        // V4 signature — treat as signature
         _ => Err(ManifestError::InvalidMagic),
     }
 }

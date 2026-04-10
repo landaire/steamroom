@@ -17,7 +17,7 @@ use steam::depot::*;
 use steam::depot::chunk;
 use steam::depot::manifest::DepotManifest;
 use steam::messages::EMsg;
-use steam::transport::tcp::TcpTransport;
+use steam::transport::websocket::WebSocketTransport;
 use steam::types::key_value::{self, KeyValue, KvValue};
 
 #[tokio::main]
@@ -54,14 +54,16 @@ async fn connect_and_login(
         connection::default_cm_servers()
     });
 
-    let server = servers.first().ok_or_else(|| CliError::Other("no CM servers".into()))?;
-    info!("connecting to {:?}", server.addr);
+    // Prefer WebSocket servers (TLS-encrypted, no custom cipher needed)
+    let ws_server = servers
+        .iter()
+        .find(|s| s.protocol == connection::Protocol::WebSocket)
+        .or_else(|| servers.first())
+        .ok_or_else(|| CliError::Other("no CM servers".into()))?;
+    info!("connecting via WebSocket to {:?}", ws_server.addr);
 
-    let transport = TcpTransport::connect(server).await?;
-    let (client, _rx) = SteamClient::connect(transport).await?;
-
-    info!("encrypting connection...");
-    let client = client.encrypt().await?;
+    let transport = WebSocketTransport::connect(ws_server).await?;
+    let (client, _rx) = SteamClient::connect_ws(transport).await?;
 
     // Build logon message
     let (logon, steam_id) = build_logon_body(auth);
@@ -145,8 +147,9 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     info!("depot={}, manifest={}, branch={}", depot_id, manifest_id, branch);
 
     // Get depot decryption key
-    info!("getting depot decryption key...");
+    info!("getting depot key for depot {depot_id} app {app_id}...");
     let depot_key = client.get_depot_decryption_key(depot_id, app_id).await?;
+    debug!("depot key: {:02x?}", &depot_key.0);
 
     // Get CDN servers
     info!("getting CDN servers...");
@@ -173,12 +176,29 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         .await?;
 
     // Decompress manifest (it's zipped)
+    debug!("manifest raw: {} bytes, first 8: {:02x?}", manifest_data.len(), &manifest_data[..std::cmp::min(8, manifest_data.len())]);
     let manifest_bytes = decompress_manifest(&manifest_data)?;
+    debug!("manifest decompressed: {} bytes", manifest_bytes.len());
+    // Dump section magics
+    {
+        let mut off = 0;
+        while off + 8 <= manifest_bytes.len() {
+            let magic = u32::from_le_bytes(manifest_bytes[off..off+4].try_into().unwrap());
+            let size = u32::from_le_bytes(manifest_bytes[off+4..off+8].try_into().unwrap());
+            debug!("  section at {off}: magic=0x{magic:08x} size={size}");
+            if magic == 0xD64BF064 { break; }
+            off += 8 + size as usize;
+        }
+    }
 
     // Parse manifest
     let mut manifest = DepotManifest::parse(&manifest_bytes)?;
+    info!("manifest parsed: {} files, encrypted={}", manifest.files.len(), manifest.filenames_encrypted);
     if manifest.filenames_encrypted {
-        manifest.decrypt_filenames(&depot_key)?;
+        match manifest.decrypt_filenames(&depot_key) {
+            Ok(()) => info!("decrypted filenames"),
+            Err(e) => warn!("filename decryption failed ({e}), using raw names"),
+        }
     }
 
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("depots").join(depot_id.0.to_string()));
@@ -244,6 +264,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
                 .download_chunk(cdn_server, depot_id, chunk_id, None)
                 .await?;
 
+            debug!("chunk {} bytes, first 16: {:02x?}", chunk_data.len(), &chunk_data[..chunk_data.len().min(16)]);
             let processed = chunk::process_chunk(
                 &chunk_data,
                 &depot_key,

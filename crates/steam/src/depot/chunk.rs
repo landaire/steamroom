@@ -58,10 +58,12 @@ pub fn process_chunk(
         return Err(ChunkError::TooShort);
     }
 
-    // Decrypt with AES-256-ECB
-    let decrypted = crate::crypto::symmetric_decrypt_ecb(data, &depot_key.0)?;
+    // Decrypt with AES-256-ECB (no padding — chunks are block-aligned)
+    let decrypted = crate::crypto::symmetric_decrypt_ecb_nopad(data, &depot_key.0)?;
 
     // Detect compression and decompress
+    tracing::debug!("chunk decrypted: {} bytes, first 4: {:02x?}, compression: {:?}",
+        decrypted.len(), &decrypted[..decrypted.len().min(4)], ChunkCompression::detect(&decrypted));
     let decompressed = decompress(&decrypted)?;
 
     // Verify size

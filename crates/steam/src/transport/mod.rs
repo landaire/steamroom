@@ -1,4 +1,5 @@
 pub mod tcp;
+pub mod websocket;
 pub mod recording;
 pub mod replay;
 pub mod capture;
