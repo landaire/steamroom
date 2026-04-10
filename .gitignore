@@ -1,1 +1,6 @@
 target/
+.claude/
+test_output/
+test_auth/
+test_spacewar*/
+capture_test.json

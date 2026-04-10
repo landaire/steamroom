@@ -178,6 +178,7 @@ impl SteamClient<Connected> {
 impl SteamClient<Encrypted> {
     async fn send_raw(&self, msg: &ClientMsg<'_>) -> Result<(), Error> {
         let data = msg.to_bytes();
+        debug!("send_raw: plaintext {} bytes, emsg={:?}, first 32: {:02x?}", data.len(), msg.emsg, &data[..std::cmp::min(32, data.len())]);
         let cipher_guard = self.inner.cipher.lock().await;
         let cipher = cipher_guard.as_ref().ok_or(ConnectionError::EncryptionFailed)?;
         let encrypted = cipher.encrypt(&data);
@@ -185,12 +186,18 @@ impl SteamClient<Encrypted> {
     }
 
     async fn recv_raw(&self) -> Result<IncomingMsg, Error> {
-        let encrypted = self.inner.transport.recv().await?;
+        let encrypted = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.inner.transport.recv()
+        ).await.map_err(|_| {
+            tracing::error!("recv_raw: timed out waiting for data");
+            ConnectionError::Disconnected
+        })??;
         debug!("recv_raw: got {} encrypted bytes", encrypted.len());
         let cipher_guard = self.inner.cipher.lock().await;
         let cipher = cipher_guard.as_ref().ok_or(ConnectionError::EncryptionFailed)?;
         let decrypted = cipher.decrypt(&encrypted).map_err(|e| {
-            debug!("recv_raw: decryption failed: {e:?}");
+            debug!("recv_raw: decryption failed: {e:?}, encrypted first 32: {:02x?}", &encrypted[..std::cmp::min(32, encrypted.len())]);
             ConnectionError::EncryptionFailed
         })?;
         debug!("recv_raw: decrypted {} bytes", decrypted.len());

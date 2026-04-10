@@ -56,10 +56,12 @@ impl Transport for TcpTransport {
         Box::pin(async move {
             let mut reader = self.reader.lock().await;
             let mut header = [0u8; 8];
+            tracing::trace!("tcp recv: waiting for header...");
             reader.read_exact(&mut header).await.map_err(|e| {
                 tracing::error!("tcp recv header failed: {e}");
                 ConnectionError::Disconnected
             })?;
+            tracing::trace!("tcp recv: got header {:02x?}", header);
             let length = u32::from_le_bytes(header[..4].try_into().unwrap());
             let magic = &header[4..8];
             if magic != framing::MAGIC {

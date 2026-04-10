@@ -27,6 +27,17 @@ pub fn symmetric_decrypt_cbc(data: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u
         .map_err(|_| CryptoError::InvalidPadding)
 }
 
+pub fn symmetric_decrypt_ecb_nopad(data: &[u8], key: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    if key.len() != 32 {
+        return Err(CryptoError::InvalidKeyLength(key.len()));
+    }
+    let cipher = Aes256EcbDec::new_from_slice(key)
+        .map_err(|_| CryptoError::InvalidKeyLength(key.len()))?;
+    cipher
+        .decrypt_padded_vec_mut::<aes::cipher::block_padding::NoPadding>(data)
+        .map_err(|_| CryptoError::InvalidPadding)
+}
+
 pub fn symmetric_decrypt_ecb(data: &[u8], key: &[u8]) -> Result<Vec<u8>, CryptoError> {
     if key.len() != 32 {
         return Err(CryptoError::InvalidKeyLength(key.len()));

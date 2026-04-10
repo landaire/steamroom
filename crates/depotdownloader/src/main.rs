@@ -68,6 +68,7 @@ async fn connect_and_login(
     let logon_bytes = logon.encode_to_vec();
     let mut msg = ClientMsg::with_body(EMsg(5514), &logon_bytes);
     msg.header.steamid = Some(steam_id);
+    msg.header.client_sessionid = Some(0);
 
     info!("logging in...");
     let (client, _resp) = client.login(msg).await?;
@@ -80,25 +81,21 @@ fn build_logon_body(auth: &AuthOptions) -> (steam::generated::CMsgClientLogon, u
     let mut logon = steam::generated::CMsgClientLogon {
         protocol_version: Some(PROTOCOL_VERSION),
         cell_id: Some(0),
-        client_os_type: Some(16), // Windows
+        client_os_type: Some(20),
         ..Default::default()
     };
 
     if let Some(ref username) = auth.username {
         logon.account_name = Some(username.clone());
-        // If we have an access token, use that; otherwise password
-        // For now just set the fields
         if let Some(ref password) = auth.password {
             logon.password = Some(password.clone());
         }
-        // Individual account SteamID
         let steam_id = steam::types::SteamId::from_parts(1, 1, 1, 0);
         return (logon, steam_id.raw());
     }
 
     // Anonymous login
-    // Anonymous user: universe=1, type=AnonUser(10), instance=1, account_id=0
-    let steam_id = steam::types::SteamId::from_parts(1, 10, 1, 0);
+    let steam_id = steam::types::SteamId::from_parts(1, 10, 0, 0);
     (logon, steam_id.raw())
 }
 
