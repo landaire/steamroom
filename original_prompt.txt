@@ -1,0 +1,17 @@
+In this repository you have the filesystem layout, dependencies, and documentation from a project which I'd like to produce a clean room implementation of. You should:
+
+1. Not try to find or use the source code of the original project
+2. When referencing any publicly available resources, check the license. If they're GPL, don't use them. We must be MIT-compatible.
+3. We have the Steam library loaded in binary ninja with an MCP available.
+
+I'd like you to develop a plan that covers the following:
+
+1. Re-implementing the public API of the steam libraries (we have the doc under doc/). Put all functionality under a `todo!()`. Your first priority should be matching the API 1:1
+2. Use BinaryNinja to figure out the protobuf. Protobuf may be in plaintext under C:\Program Files (x86)\Steam somewhere, I'm not sure. If you need me to load something into binary ninja, let me know. Happy to do so. Once you figure out the protobuf story think about: how can we automate dumping the protobuf in the future?
+3. Try to use pure rust everything.
+4. Match the interface/features of `ddl.exe`.
+5. Reimplement the FFI bindings and whatnot that were implemented for my Rust port from the original.
+6. You can use the modified binary to capture traffic and start building tests
+7. Use `insta` for snapshot testing functionality
+
+EXTREMELY IMPORTANT: Do not, under any circumstances, reference the original project, DepotDownloader/SteamKit2, any derivatives, etc.

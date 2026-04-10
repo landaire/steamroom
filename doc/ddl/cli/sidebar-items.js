@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Action","Command","OutputFormat"],"struct":["AuthOptions","Cli","CompatCli","DownloadArgs","FilesArgs","InfoArgs","ManifestsArgs","Options","WorkshopArgs"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["game_id","key_value","steam_id"]};

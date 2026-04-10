@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["KvTag","KvValue","TextKvError"],"fn":["parse_binary_kv","parse_text_kv"],"struct":["KeyValue"]};
