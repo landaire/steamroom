@@ -4,9 +4,7 @@ pub mod server;
 use bytes::Bytes;
 use crate::depot::{ChunkId, DepotId, ManifestId};
 use crate::error::Error;
-use self::server::CdnServer;
-
-pub use self::server::CdnServer as CdnServerInfo;
+pub use self::server::CdnServer;
 
 pub struct CdnClient {
     client: reqwest::Client,

@@ -22,3 +22,5 @@ jiff = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 regex = { workspace = true }
+prost = { workspace = true }
+reqwest = { workspace = true }
