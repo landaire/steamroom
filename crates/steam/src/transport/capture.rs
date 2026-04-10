@@ -16,11 +16,15 @@ impl CaptureFile {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
-        todo!()
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, json)
     }
 
     pub fn load(path: &Path) -> Result<Self, std::io::Error> {
-        todo!()
+        let data = std::fs::read_to_string(path)?;
+        serde_json::from_str(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 }
 
@@ -33,10 +37,16 @@ pub struct CapturedPacket {
 
 impl CapturedPacket {
     pub fn new(seq: u32, payload: &[u8]) -> Self {
-        todo!()
+        use base64::Engine;
+        Self {
+            seq,
+            emsg: None,
+            payload_b64: base64::engine::general_purpose::STANDARD.encode(payload),
+        }
     }
 
     pub fn decode_payload(&self) -> Result<Vec<u8>, base64::DecodeError> {
-        todo!()
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(&self.payload_b64)
     }
 }
