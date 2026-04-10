@@ -24,22 +24,15 @@ pub enum Protocol {
 }
 
 pub static DEFAULT_CM_SERVERS: &[&str] = &[
-    "cm1-ord1.cm.steampowered.com",
-    "cm2-ord1.cm.steampowered.com",
-    "cm1-iad1.cm.steampowered.com",
-    "cm2-iad1.cm.steampowered.com",
+    "162.254.193.102:27017",
+    "162.254.195.66:27017",
+    "205.196.6.148:27017",
 ];
 
 pub fn default_cm_servers() -> Vec<CmServer> {
     DEFAULT_CM_SERVERS
         .iter()
-        .map(|host| CmServer {
-            addr: CmServerAddr::Dns {
-                host: (*host).to_owned(),
-                port: 27017,
-            },
-            protocol: Protocol::Tcp,
-        })
+        .filter_map(|entry| parse_cm_entry(entry, Protocol::Tcp))
         .collect()
 }
 
@@ -51,9 +44,14 @@ struct CmListResponse {
 #[derive(Deserialize)]
 struct CmListResponseInner {
     #[serde(default)]
-    serverlist: Vec<String>,
+    serverlist: Vec<CmServerEntry>,
+}
+
+#[derive(Deserialize)]
+struct CmServerEntry {
+    endpoint: String,
     #[serde(default)]
-    serverlist_websockets: Vec<String>,
+    r#type: String,
 }
 
 pub async fn fetch_cm_servers() -> Result<Vec<CmServer>, Error> {
@@ -64,16 +62,21 @@ pub async fn fetch_cm_servers() -> Result<Vec<CmServer>, Error> {
     let mut servers = Vec::new();
 
     for entry in &resp.response.serverlist {
-        if let Some(server) = parse_cm_entry(entry, Protocol::Tcp) {
+        let protocol = match entry.r#type.as_str() {
+            "netfilter" => Protocol::Tcp,
+            "websockets" => Protocol::WebSocket,
+            _ => continue,
+        };
+        if let Some(server) = parse_cm_entry(&entry.endpoint, protocol) {
             servers.push(server);
         }
     }
 
-    for entry in &resp.response.serverlist_websockets {
-        if let Some(server) = parse_cm_entry(entry, Protocol::WebSocket) {
-            servers.push(server);
-        }
-    }
+    // Sort TCP servers first (we currently only support TCP)
+    servers.sort_by_key(|s| match s.protocol {
+        Protocol::Tcp => 0,
+        Protocol::WebSocket => 1,
+    });
 
     if servers.is_empty() {
         return Ok(default_cm_servers());

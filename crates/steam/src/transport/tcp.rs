@@ -41,8 +41,10 @@ impl TcpTransport {
 
 impl Transport for TcpTransport {
     fn send(&self, payload: &[u8]) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>> {
+        let payload_len = payload.len();
         let frame = framing::frame_bytes(payload);
         Box::pin(async move {
+            tracing::debug!("tcp send: {} bytes payload, {} bytes frame", payload_len, frame.len());
             let mut writer = self.writer.lock().await;
             writer.write_all(&frame).await.map_err(ConnectionError::Io)?;
             writer.flush().await.map_err(ConnectionError::Io)?;
@@ -54,7 +56,10 @@ impl Transport for TcpTransport {
         Box::pin(async move {
             let mut reader = self.reader.lock().await;
             let mut header = [0u8; 8];
-            reader.read_exact(&mut header).await.map_err(|_| ConnectionError::Disconnected)?;
+            reader.read_exact(&mut header).await.map_err(|e| {
+                tracing::error!("tcp recv header failed: {e}");
+                ConnectionError::Disconnected
+            })?;
             let length = u32::from_le_bytes(header[..4].try_into().unwrap());
             let magic = &header[4..8];
             if magic != framing::MAGIC {

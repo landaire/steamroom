@@ -64,11 +64,10 @@ async fn connect_and_login(
     let client = client.encrypt().await?;
 
     // Build logon message
-    let logon = build_logon_body(auth);
+    let (logon, steam_id) = build_logon_body(auth);
     let logon_bytes = logon.encode_to_vec();
-    let msg = ClientMsg::with_body(EMsg::CLIENT_LOG_ON_RESPONSE, &logon_bytes);
-    // Actually: CMsgClientLogon uses EMsg 5514
-    let msg = ClientMsg::with_body(EMsg(5514), &logon_bytes);
+    let mut msg = ClientMsg::with_body(EMsg(5514), &logon_bytes);
+    msg.header.steamid = Some(steam_id);
 
     info!("logging in...");
     let (client, _resp) = client.login(msg).await?;
@@ -77,26 +76,30 @@ async fn connect_and_login(
     Ok(client)
 }
 
-fn build_logon_body(auth: &AuthOptions) -> steam::generated::CMsgClientLogon {
+fn build_logon_body(auth: &AuthOptions) -> (steam::generated::CMsgClientLogon, u64) {
     let mut logon = steam::generated::CMsgClientLogon {
         protocol_version: Some(PROTOCOL_VERSION),
         cell_id: Some(0),
+        client_os_type: Some(16), // Windows
         ..Default::default()
     };
 
     if let Some(ref username) = auth.username {
         logon.account_name = Some(username.clone());
+        // If we have an access token, use that; otherwise password
+        // For now just set the fields
         if let Some(ref password) = auth.password {
             logon.password = Some(password.clone());
         }
+        // Individual account SteamID
+        let steam_id = steam::types::SteamId::from_parts(1, 1, 1, 0);
+        return (logon, steam_id.raw());
     }
 
-    // For anonymous login (no username), set specific fields
-    if auth.username.is_none() {
-        // Anonymous logon - need to set account name empty and use anonymous SteamID
-    }
-
-    logon
+    // Anonymous login
+    // Anonymous user: universe=1, type=AnonUser(10), instance=1, account_id=0
+    let steam_id = steam::types::SteamId::from_parts(1, 10, 1, 0);
+    (logon, steam_id.raw())
 }
 
 async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliError> {

@@ -85,8 +85,10 @@ impl SteamClient<Disconnected> {
 
 impl SteamClient<Connected> {
     pub async fn encrypt(self) -> Result<SteamClient<Encrypted>, Error> {
+        debug!("waiting for ChannelEncryptRequest...");
         // Wait for ChannelEncryptRequest
         let data = self.inner.transport.recv().await?;
+        debug!("received {} bytes", data.len());
         let parsed = header::parse_packet_header(&data)?;
         let (emsg, body) = match parsed {
             PacketHeader::Simple { header, body } => (header.emsg, body),
@@ -105,10 +107,14 @@ impl SteamClient<Connected> {
         let mut session_key = [0u8; 32];
         getrandom::getrandom(&mut session_key).expect("RNG failed");
 
-        // The body contains: protocol version (u32) + universe (u32) + optional nonce
-        // We need to encrypt the session key with Steam's RSA public key
-        // The universe field tells us which key to use (always Public = 1)
-        let encrypted_key = crate::crypto::rsa::encrypt_with_steam_public_key(&session_key)?;
+        // The body contains: protocol version (u32) + universe (u32) + optional nonce (16 bytes)
+        // We need to encrypt (session_key + nonce) with Steam's RSA public key
+        let nonce = if body.len() > 8 { &body[8..] } else { &[] as &[u8] };
+
+        let mut plaintext = Vec::with_capacity(32 + nonce.len());
+        plaintext.extend_from_slice(&session_key);
+        plaintext.extend_from_slice(nonce);
+        let encrypted_key = crate::crypto::rsa::encrypt_with_steam_public_key(&plaintext)?;
 
         // Build ChannelEncryptResponse
         // Layout: protocol_version(u32) + key_size(u32) + encrypted_key + crc32 + trailing_zeros(u32)
@@ -128,6 +134,7 @@ impl SteamClient<Connected> {
         packet.extend_from_slice(&u64::MAX.to_le_bytes()); // source_job_id
         packet.extend_from_slice(&response_body);
 
+        debug!("encrypt response packet ({} bytes): {:02x?}", packet.len(), &packet[..std::cmp::min(64, packet.len())]);
         self.inner.transport.send(&packet).await?;
 
         // Wait for ChannelEncryptResult
@@ -149,6 +156,7 @@ impl SteamClient<Connected> {
         // Result body contains: eresult (u32)
         if body.len() >= 4 {
             let eresult = u32::from_le_bytes(body[..4].try_into().unwrap());
+            debug!("ChannelEncryptResult eresult={}", eresult);
             if eresult != 1 {
                 // 1 = OK
                 return Err(ConnectionError::EncryptionFailed.into());
@@ -178,9 +186,14 @@ impl SteamClient<Encrypted> {
 
     async fn recv_raw(&self) -> Result<IncomingMsg, Error> {
         let encrypted = self.inner.transport.recv().await?;
+        debug!("recv_raw: got {} encrypted bytes", encrypted.len());
         let cipher_guard = self.inner.cipher.lock().await;
         let cipher = cipher_guard.as_ref().ok_or(ConnectionError::EncryptionFailed)?;
-        let decrypted = cipher.decrypt(&encrypted).map_err(|_| ConnectionError::EncryptionFailed)?;
+        let decrypted = cipher.decrypt(&encrypted).map_err(|e| {
+            debug!("recv_raw: decryption failed: {e:?}");
+            ConnectionError::EncryptionFailed
+        })?;
+        debug!("recv_raw: decrypted {} bytes", decrypted.len());
         parse_incoming(&decrypted)
     }
 
@@ -195,6 +208,7 @@ impl SteamClient<Encrypted> {
             let incoming = self.recv_raw().await?;
             debug!("login: received {:?}", incoming.emsg);
 
+            debug!("login: received emsg={:?}", incoming.emsg);
             match incoming.emsg {
                 EMsg::CLIENT_LOG_ON_RESPONSE => {
                     let resp = generated::CMsgClientLogonResponse::decode(&*incoming.body)?;
