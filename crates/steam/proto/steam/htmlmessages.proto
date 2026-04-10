@@ -91,7 +91,7 @@ message CMsgBrowserCreate {
   optional uint32 initial_height = 10 [default = 0];
   optional string window_icon = 11;
   optional bool borderless = 12 [default = false];
-  optional string vroverlay_key = 13 [default = ];
+  optional string vroverlay_key = 13 [default = ""];
   optional uint32 browser_type = 14 [default = 0];
   optional int32 initial_top = 15 [default = -2147483648];
   optional int32 initial_left = 16 [default = -2147483648];
@@ -337,8 +337,8 @@ message CHTMLHeader {
 message CHTMLPageSecurityInfo {
   optional bool bIsSecure = 1 [default = false];
   optional bool bHasCertError = 2 [default = false];
-  optional string issuerName = 3 [default = ];
-  optional string certName = 4 [default = ];
+  optional string issuerName = 3 [default = ""];
+  optional string certName = 4 [default = ""];
   optional int32 certExpiry = 5 [default = 0];
   optional int32 nCertBits = 6 [default = 0];
   optional bool bIsEVCert = 7 [default = false];

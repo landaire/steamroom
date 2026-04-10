@@ -241,7 +241,7 @@ message CRemotePlayTogether_Notification {
   }
   optional fixed64 steamid = 1;
   oneof Message {
-    optional CRemotePlayTogether_Notification.GroupUpdated group_updated = 2;
+    CRemotePlayTogether_Notification.GroupUpdated group_updated = 2;
   }
 }
 
@@ -271,25 +271,25 @@ message CRemoteClient_LookupRemotePlayTogetherInvitation_Response {
 
 message CCMRemoteClient_ClientMessage {
   oneof Message {
-    optional CRemoteClient_CreateSession_Request create_session_request = 1;
-    optional CRemoteClient_StartPairing_Request start_pairing_request = 2;
-    optional CRemoteClient_SetPairingInfo_Request set_pairing_info_request = 3;
-    optional CRemoteClient_CancelPairing_Request cancel_pairing_request = 4;
-    optional CRemoteClient_RegisterStatusUpdate_Notification register_status_update = 5;
-    optional CRemoteClient_UnregisterStatusUpdate_Notification unregister_status_update = 6;
-    optional CRemoteClient_RemotePacket_Notification remote_packet = 7;
+    CRemoteClient_CreateSession_Request create_session_request = 1;
+    CRemoteClient_StartPairing_Request start_pairing_request = 2;
+    CRemoteClient_SetPairingInfo_Request set_pairing_info_request = 3;
+    CRemoteClient_CancelPairing_Request cancel_pairing_request = 4;
+    CRemoteClient_RegisterStatusUpdate_Notification register_status_update = 5;
+    CRemoteClient_UnregisterStatusUpdate_Notification unregister_status_update = 6;
+    CRemoteClient_RemotePacket_Notification remote_packet = 7;
   }
 }
 
 message CCMRemoteClient_ServerMessage {
   optional int32 result = 1;
   oneof Message {
-    optional CRemoteClient_CreateSession_Response create_session_response = 2;
-    optional CRemoteClient_StartPairing_Response start_pairing_response = 3;
-    optional CRemoteClient_SetPairingInfo_Response set_pairing_info_response = 4;
-    optional CRemoteClient_CancelPairing_Response cancel_pairing_response = 5;
-    optional CRemoteClient_GetReplies_Response reply_packet = 6;
-    optional CRemoteClient_Offline_Notification offline = 7;
+    CRemoteClient_CreateSession_Response create_session_response = 2;
+    CRemoteClient_StartPairing_Response start_pairing_response = 3;
+    CRemoteClient_SetPairingInfo_Response set_pairing_info_response = 4;
+    CRemoteClient_CancelPairing_Response cancel_pairing_response = 5;
+    CRemoteClient_GetReplies_Response reply_packet = 6;
+    CRemoteClient_Offline_Notification offline = 7;
   }
 }
 

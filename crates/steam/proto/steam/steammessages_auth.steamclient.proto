@@ -95,7 +95,7 @@ message CAuthentication_BeginAuthSessionViaQR_Request {
   optional string device_friendly_name = 1;
   optional EAuthTokenPlatformType platform_type = 2;
   optional CAuthentication_DeviceDetails device_details = 3;
-  optional string website_id = 4 [default = Unknown];
+  optional string website_id = 4 [default = "Unknown"];
 }
 
 message CAuthentication_AllowedConfirmation {
@@ -120,7 +120,7 @@ message CAuthentication_BeginAuthSessionViaCredentials_Request {
   optional bool remember_login = 5;
   optional EAuthTokenPlatformType platform_type = 6;
   optional ESessionPersistence persistence = 7 [default = k_ESessionPersistence_Persistent];
-  optional string website_id = 8 [default = Unknown];
+  optional string website_id = 8 [default = "Unknown"];
   optional CAuthentication_DeviceDetails device_details = 9;
   optional string guard_data = 10;
   optional uint32 language = 11;

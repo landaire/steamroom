@@ -38,3 +38,4 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 prost-build = { workspace = true }
+protox = { workspace = true }

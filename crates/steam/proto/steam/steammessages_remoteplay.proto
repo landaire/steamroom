@@ -495,17 +495,17 @@ message CRecordedInput {
   optional EStreamControlMessage type = 1;
   optional uint32 timestamp = 2;
   oneof data {
-    optional CInputTouchFingerDownMsg finger_down = 3;
-    optional CInputTouchFingerMotionMsg finger_motion = 4;
-    optional CInputTouchFingerUpMsg finger_up = 5;
-    optional CInputMouseMotionMsg mouse_motion = 6;
-    optional CInputMouseWheelMsg mouse_wheel = 7;
-    optional CInputMouseDownMsg mouse_down = 8;
-    optional CInputMouseUpMsg mouse_up = 9;
-    optional CInputKeyDownMsg key_down = 10;
-    optional CInputKeyUpMsg key_up = 11;
-    optional CInputTextMsg text = 12;
-    optional CRemoteHIDMsg hid = 13;
+    CInputTouchFingerDownMsg finger_down = 3;
+    CInputTouchFingerMotionMsg finger_motion = 4;
+    CInputTouchFingerUpMsg finger_up = 5;
+    CInputMouseMotionMsg mouse_motion = 6;
+    CInputMouseWheelMsg mouse_wheel = 7;
+    CInputMouseDownMsg mouse_down = 8;
+    CInputMouseUpMsg mouse_up = 9;
+    CInputKeyDownMsg key_down = 10;
+    CInputKeyUpMsg key_up = 11;
+    CInputTextMsg text = 12;
+    CRemoteHIDMsg hid = 13;
   }
 }
 
@@ -927,10 +927,10 @@ message CTransportSignalMsg {
       optional string candidate = 3;
     }
     oneof msg {
-      optional bool greeting = 1;
-      optional string offer = 2;
-      optional string answer = 3;
-      optional CTransportSignalMsg.WebRTCMessage.Candidate candidate = 4;
+      bool greeting = 1;
+      string offer = 2;
+      string answer = 3;
+      CTransportSignalMsg.WebRTCMessage.Candidate candidate = 4;
     }
   }
   optional CTransportSignalMsg.WebRTCMessage webrtc = 1;

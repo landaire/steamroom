@@ -166,20 +166,36 @@ fn render_message(out: &mut String, msg: &DescriptorProto, depth: usize) {
 }
 
 fn render_field(out: &mut String, field: &FieldDescriptorProto, depth: usize) {
+    render_field_inner(out, field, depth, false);
+}
+
+fn render_field_in_oneof(out: &mut String, field: &FieldDescriptorProto, depth: usize) {
+    render_field_inner(out, field, depth, true);
+}
+
+fn render_field_inner(out: &mut String, field: &FieldDescriptorProto, depth: usize, in_oneof: bool) {
     let name = field.name.as_deref().unwrap_or("unknown");
     let number = field.number.unwrap_or(0);
     let type_name = field_type_name(field);
-    let label = field_label(field);
 
     indent(out, depth);
-    if !label.is_empty() {
-        write!(out, "{label} ").unwrap();
+    if !in_oneof {
+        let label = field_label(field);
+        if !label.is_empty() {
+            write!(out, "{label} ").unwrap();
+        }
     }
     write!(out, "{type_name} {name} = {number}").unwrap();
 
     let mut options = Vec::new();
     if let Some(ref default) = field.default_value {
-        options.push(format!("default = {default}"));
+        // String and bytes fields need quoted defaults
+        let needs_quotes = matches!(field.r#type(), Type::String | Type::Bytes);
+        if needs_quotes {
+            options.push(format!("default = \"{default}\""));
+        } else {
+            options.push(format!("default = {default}"));
+        }
     }
     if field.options.as_ref().is_some_and(|o| o.packed == Some(true)) {
         options.push("packed = true".into());
@@ -208,7 +224,7 @@ fn render_oneof(
     indent(out, depth);
     writeln!(out, "oneof {name} {{").unwrap();
     for field in fields {
-        render_field(out, field, depth + 1);
+        render_field_in_oneof(out, field, depth + 1);
     }
     indent(out, depth);
     writeln!(out, "}}").unwrap();

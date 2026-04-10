@@ -95,18 +95,18 @@ message CHIDMessageToRemote {
   }
   optional uint32 request_id = 1;
   oneof command {
-    optional CHIDMessageToRemote.DeviceOpen device_open = 2;
-    optional CHIDMessageToRemote.DeviceClose device_close = 3;
-    optional CHIDMessageToRemote.DeviceWrite device_write = 4;
-    optional CHIDMessageToRemote.DeviceRead device_read = 5;
-    optional CHIDMessageToRemote.DeviceSendFeatureReport device_send_feature_report = 6;
-    optional CHIDMessageToRemote.DeviceGetFeatureReport device_get_feature_report = 7;
-    optional CHIDMessageToRemote.DeviceGetVendorString device_get_vendor_string = 8;
-    optional CHIDMessageToRemote.DeviceGetProductString device_get_product_string = 9;
-    optional CHIDMessageToRemote.DeviceGetSerialNumberString device_get_serial_number_string = 10;
-    optional CHIDMessageToRemote.DeviceStartInputReports device_start_input_reports = 11;
-    optional CHIDMessageToRemote.DeviceRequestFullReport device_request_full_report = 12;
-    optional CHIDMessageToRemote.DeviceDisconnect device_disconnect = 13;
+    CHIDMessageToRemote.DeviceOpen device_open = 2;
+    CHIDMessageToRemote.DeviceClose device_close = 3;
+    CHIDMessageToRemote.DeviceWrite device_write = 4;
+    CHIDMessageToRemote.DeviceRead device_read = 5;
+    CHIDMessageToRemote.DeviceSendFeatureReport device_send_feature_report = 6;
+    CHIDMessageToRemote.DeviceGetFeatureReport device_get_feature_report = 7;
+    CHIDMessageToRemote.DeviceGetVendorString device_get_vendor_string = 8;
+    CHIDMessageToRemote.DeviceGetProductString device_get_product_string = 9;
+    CHIDMessageToRemote.DeviceGetSerialNumberString device_get_serial_number_string = 10;
+    CHIDMessageToRemote.DeviceStartInputReports device_start_input_reports = 11;
+    CHIDMessageToRemote.DeviceRequestFullReport device_request_full_report = 12;
+    CHIDMessageToRemote.DeviceDisconnect device_disconnect = 13;
   }
 }
 
@@ -132,11 +132,11 @@ message CHIDMessageFromRemote {
   message CloseAllDevices {
   }
   oneof command {
-    optional CHIDMessageFromRemote.UpdateDeviceList update_device_list = 1;
-    optional CHIDMessageFromRemote.RequestResponse response = 2;
-    optional CHIDMessageFromRemote.DeviceInputReports reports = 3;
-    optional CHIDMessageFromRemote.CloseDevice close_device = 4;
-    optional CHIDMessageFromRemote.CloseAllDevices close_all_devices = 5;
+    CHIDMessageFromRemote.UpdateDeviceList update_device_list = 1;
+    CHIDMessageFromRemote.RequestResponse response = 2;
+    CHIDMessageFromRemote.DeviceInputReports reports = 3;
+    CHIDMessageFromRemote.CloseDevice close_device = 4;
+    CHIDMessageFromRemote.CloseAllDevices close_all_devices = 5;
   }
 }
 

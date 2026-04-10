@@ -74,7 +74,7 @@ message CMsgNetworkDeviceIP4Config {
 }
 
 message CMsgNetworkDeviceIP6Address {
-  optional string ip = 1 [default = ];
+  optional string ip = 1 [default = ""];
 }
 
 message CMsgNetworkDeviceIP6Config {
@@ -144,8 +144,8 @@ message CMsgNetworkDeviceConnect {
   }
   optional uint32 device_id = 1 [default = 0];
   oneof ap_info {
-    optional CMsgNetworkDeviceConnect.KnownAP ap_known = 2;
-    optional CMsgNetworkDeviceConnect.CustomAP ap_custom = 3;
+    CMsgNetworkDeviceConnect.KnownAP ap_known = 2;
+    CMsgNetworkDeviceConnect.CustomAP ap_custom = 3;
   }
   optional CMsgNetworkDeviceConnect.Credentials credentials = 4;
   optional CMsgNetworkDeviceIP4Config ip4 = 5;
@@ -359,8 +359,8 @@ message CMsgSystemPerfState {
 message CMsgSystemPerfUpdateSettings {
   optional uint64 gameid = 1;
   oneof update {
-    optional bool reset_to_default = 2;
-    optional CMsgSystemPerfSettings settings_delta = 3;
+    bool reset_to_default = 2;
+    CMsgSystemPerfSettings settings_delta = 3;
   }
   optional bool skip_storage_update = 4;
 }
