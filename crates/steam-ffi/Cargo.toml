@@ -1,0 +1,13 @@
+[package]
+name = "steam-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+steam = { workspace = true }
+steam-client = { workspace = true }
+tokio = { workspace = true }

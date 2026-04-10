@@ -1,0 +1,11 @@
+[package]
+name = "proto-extract"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+object = { workspace = true }
+clap = { workspace = true }

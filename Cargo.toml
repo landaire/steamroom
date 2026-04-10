@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/steam",
+    "crates/steam-client",
+    "crates/depotdownloader",
+    "crates/steam-ffi",
+    "crates/proto-extract",
+]
+
+[workspace.dependencies]
+prost = "0.14"
+prost-types = "0.14"
+prost-build = "0.14"
+reqwest = { version = "0.13", features = ["json"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+zstd = "0.13"
+lzma-rs = "0.3"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+ecb = "0.1"
+rsa = "0.9"
+hmac = "0.12"
+sha1 = "0.10"
+crc32fast = "1"
+adler = "1"
+getrandom = "0.2"
+rand = "0.8"
+winnow = "0.6"
+bytes = "1"
+byteorder = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+qrcode = "0.14"
+regex = "1"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+indicatif = "0.17"
+base64 = "0.22"
+rpassword = "7"
+jiff = "0.2"
+insta = { version = "1", features = ["toml"] }
+object = "0.36"
+
+steam = { path = "crates/steam" }
+steam-client = { path = "crates/steam-client" }
