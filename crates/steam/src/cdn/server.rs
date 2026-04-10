@@ -8,6 +8,11 @@ pub struct CdnServer {
 
 impl CdnServer {
     pub fn build_url(&self, path: &str, cdn_auth_token: Option<&str>) -> String {
-        todo!()
+        let scheme = if self.https { "https" } else { "http" };
+        let base = format!("{scheme}://{}:{}{path}", self.host, self.port);
+        match cdn_auth_token {
+            Some(token) if !token.is_empty() => format!("{base}{token}"),
+            _ => base,
+        }
     }
 }
