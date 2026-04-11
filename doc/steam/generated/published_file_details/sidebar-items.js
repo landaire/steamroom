@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"struct":["Child","ForSaleData","KvTag","PlaytimeStats","Preview","Reaction","Tag","VoteData"]};

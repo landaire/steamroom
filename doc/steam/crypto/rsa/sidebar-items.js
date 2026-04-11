@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["encrypt_with_steam_public_key"]};

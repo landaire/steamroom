@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["EMSG_MASK","PROTO_MASK"],"mod":["header"],"struct":["EMsg","RawEMsg"]};

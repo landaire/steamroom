@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["FileFilter"],"struct":["CdnChunkFetcher","DepotJob","DepotJobBuilder","RetryConfig"],"trait":["ChunkFetcher"],"type":["BoxError"]};

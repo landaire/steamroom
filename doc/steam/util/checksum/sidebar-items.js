@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"struct":["Adler32","Crc32","Sha1Hash","SteamAdler32"]};

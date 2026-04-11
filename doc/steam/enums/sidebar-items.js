@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["EAccountType","EAuthTokenPlatformType","EOSType","EResultError","ESessionPersistence","EUniverse","ManifestMagic"],"struct":["DepotFileFlags"]};

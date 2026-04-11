@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["chunk","manifest"],"struct":["AppId","BuildId","CellId","ChunkId","DepotId","DepotKey","ManifestId","PackageId"]};

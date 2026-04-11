@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["PacketHeader"],"fn":["parse_packet_header"],"struct":["ExtendedClientMsgHdr","MsgHdr","MsgHdrProtoBuf"]};

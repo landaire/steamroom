@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["GuardType"],"struct":["AuthSession","AuthTokens","QrAuthSession"]};

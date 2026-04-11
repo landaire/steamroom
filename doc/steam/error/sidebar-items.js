@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["ConnectionError","CryptoError","Error","ManifestError","ParseError"],"type":["Result"]};

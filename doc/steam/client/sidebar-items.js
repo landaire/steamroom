@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["PROTOCOL_VERSION"],"mod":["msg","multi"],"struct":["Connected","Disconnected","DisconnectedClient","Encrypted","IncomingMsg","LoggedIn","ServiceResponse","SteamClient"]};

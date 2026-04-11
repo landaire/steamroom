@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["MAGIC"],"fn":["frame_bytes","parse_frame","write_frame"],"struct":["Frame"]};

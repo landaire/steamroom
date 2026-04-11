@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["name_table_instance"],"struct":["NameTableInstance"]};

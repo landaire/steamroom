@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["CmServerAddr","Protocol"],"fn":["default_cm_servers","fetch_cm_servers"],"mod":["encryption","framing"],"static":["DEFAULT_CM_SERVERS"],"struct":["CmServer"]};

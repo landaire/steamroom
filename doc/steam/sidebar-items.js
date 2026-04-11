@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["apps","auth","cdn","client","connection","content","crypto","depot","enums","error","generated","messages","transport","types","util"]};
