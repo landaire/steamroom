@@ -41,11 +41,12 @@ fn main() -> Result<(), CliError> {
         )
         .init();
 
-    // Build runtime with a scaled blocking pool for CPU-bound decrypt/decompress.
-    // Steam client uses 32 threads for this (DepotReconstructionNumIOThreads convar).
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .max_blocking_threads(32)
+        .max_blocking_threads(cpus)
         .build()
         .expect("failed to build tokio runtime");
 

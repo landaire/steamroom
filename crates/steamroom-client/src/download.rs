@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::mpsc;
@@ -210,8 +211,8 @@ impl DepotJob {
         let (fetch_tx, mut fetch_rx) =
             tokio::sync::mpsc::channel::<(usize, Bytes, u32, u32)>(self.max_downloads);
 
-        let slots: std::sync::Arc<std::sync::Mutex<Vec<Option<Vec<u8>>>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(vec![None; n]));
+        let slots: std::sync::Arc<Vec<OnceLock<Vec<u8>>>> =
+            std::sync::Arc::new((0..n).map(|_| OnceLock::new()).collect());
 
         // Stage 1: spawn fetcher tasks
         let mut fetch_handles = Vec::with_capacity(n);
@@ -272,7 +273,7 @@ impl DepotJob {
                     if let Some(ref tx) = tx {
                         let _ = tx.send(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
                     }
-                    slots.lock().unwrap()[i] = Some(processed);
+                    let _ = slots[i].set(processed);
                     Ok::<(), BoxError>(())
                 }));
             }
@@ -291,13 +292,13 @@ impl DepotJob {
 
         // Assemble in order
         let slots = std::sync::Arc::try_unwrap(slots)
-            .map_err(|_| "slots arc still shared")?
-            .into_inner()
-            .unwrap();
+            .map_err(|_| "slots arc still shared")?;
         // size hint only — Vec grows if absent, no correctness impact
         let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
         for slot in slots {
-            file_data.extend_from_slice(&slot.ok_or("chunk slot empty after pipeline")?);
+            file_data.extend_from_slice(
+                &slot.into_inner().ok_or("chunk slot empty after pipeline")?,
+            );
         }
         Ok(file_data)
     }

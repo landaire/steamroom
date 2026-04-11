@@ -73,21 +73,22 @@ hyperfine \
 echo ""
 
 # ──────────────────────────────────────────────────────────
-# 4. Large download: CS2 client depot (~2 GB subset)
-#    Depot 2347770 is the CS2 Windows client
-#    Filter to a manageable subset with --file-regex
+# 4. Large download: CS2 client depot (depot 2347771 DLLs)
+#    Uses a filelist with regex prefix for DD compatibility
 # ──────────────────────────────────────────────────────────
-echo "=== Benchmark: download CS2 subset (~2 GB) ==="
+echo "=== Benchmark: download CS2 DLLs (depot 2347771) ==="
 echo "  (This will take a while depending on your connection)"
+DD_FILELIST="$SCRATCH/cs2-filelist.txt"
+echo 'regex:\.dll$' > "$DD_FILELIST"
 hyperfine \
   --warmup 0 \
   --min-runs 1 \
   --export-json "$RESULTS/cs2.json" \
   --prepare "rm -rf $SCRATCH/sr-cs2 $SCRATCH/dd-cs2" \
   --command-name "steamroom" \
-    "$STEAMROOM download --app 730 --depot 2347770 --file-regex '^(bin|csgo)/.*\\.dll$' -o $SCRATCH/sr-cs2" \
+    "$STEAMROOM download --app 730 --depot 2347771 --file-regex '\\.dll$' -o $SCRATCH/sr-cs2" \
   --command-name "DepotDownloader" \
-    "$DD -app 730 -depot 2347770 -regex '^(bin|csgo)/.*\\.dll$' -dir $SCRATCH/dd-cs2" \
+    "$DD -app 730 -depot 2347771 -filelist $DD_FILELIST -dir $SCRATCH/dd-cs2" \
   2>&1 | tee "$RESULTS/cs2.txt"
 echo ""
 

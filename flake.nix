@@ -25,7 +25,7 @@
             pkgs.pkg-config
             pkgs.openssl
             pkgs.hyperfine
-            pkgs.dotnet-sdk_8 # for DepotDownloader (C#)
+            pkgs.depotdownloader
             pkgs.jujutsu
           ];
 
