@@ -47,13 +47,22 @@ fn main() -> Result<(), CliError> {
 }
 
 async fn async_main(cli: Cli) -> Result<(), CliError> {
-    match cli.command {
+    let result = match cli.command {
         Command::Info(args) => run_info(args, &cli.auth).await,
         Command::Manifests(args) => run_manifests(args, &cli.auth).await,
         Command::Files(args) => run_files(args, &cli.auth).await,
         Command::Download(args) => run_download(args, &cli.auth).await,
         Command::Workshop(args) => run_workshop(args, &cli.auth).await,
+    };
+
+    if let Err(ref e) = result {
+        if cli.raw_errors {
+            eprintln!("Error: {e:?}");
+        } else {
+            eprintln!("Error: {e}");
+        }
     }
+    result
 }
 
 async fn connect_and_login(
@@ -488,6 +497,11 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
 
     drop(job); // drop to close the event channel
     let _ = progress_handle.await;
+
+    // Save installed manifest for future delta downloads
+    let mut depot_config = steam_client::depot_config::DepotConfig::load(&output_dir);
+    depot_config.set_installed(depot_id, manifest_id);
+    let _ = depot_config.save(&output_dir);
 
     info!(
         "download complete: {} files, {}",

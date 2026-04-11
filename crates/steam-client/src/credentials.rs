@@ -1,22 +1,32 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TokenStore {
     pub tokens: HashMap<String, String>,
 }
 
 impl TokenStore {
     pub fn default_path() -> PathBuf {
-        todo!()
+        dirs_next::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".depotdownloader")
+            .join("tokens.json")
     }
 
-    pub fn load(_path: &Path) -> Result<Self, std::io::Error> {
-        todo!()
+    pub fn load(path: &Path) -> Result<Self, std::io::Error> {
+        let data = std::fs::read_to_string(path)?;
+        serde_json::from_str(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
-    pub fn save(&self, _path: &Path) -> Result<(), std::io::Error> {
-        todo!()
+    pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, json)
     }
 
     pub fn get(&self, account: &str) -> Option<&str> {
