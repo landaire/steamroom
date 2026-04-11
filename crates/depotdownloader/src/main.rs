@@ -54,16 +54,27 @@ async fn connect_and_login(
         connection::default_cm_servers()
     });
 
-    // Prefer WebSocket servers (TLS-encrypted, no custom cipher needed)
-    let ws_server = servers
+    // Try TCP first if available, fall back to WebSocket
+    let tcp_server = servers
         .iter()
-        .find(|s| s.protocol == connection::Protocol::WebSocket)
-        .or_else(|| servers.first())
-        .ok_or_else(|| CliError::Other("no CM servers".into()))?;
-    info!("connecting via WebSocket to {:?}", ws_server.addr);
+        .find(|s| s.protocol == connection::Protocol::Tcp);
 
-    let transport = WebSocketTransport::connect(ws_server).await?;
-    let (client, _rx) = SteamClient::connect_ws(transport).await?;
+    let client = if let Some(server) = tcp_server {
+        info!("connecting via TCP to {:?}", server.addr);
+        let transport = steam::transport::tcp::TcpTransport::connect(server).await?;
+        let (client, _rx) = SteamClient::connect(transport).await?;
+        info!("encrypting...");
+        client.encrypt().await?
+    } else {
+        let ws_server = servers
+            .iter()
+            .find(|s| s.protocol == connection::Protocol::WebSocket)
+            .ok_or_else(|| CliError::Other("no CM servers".into()))?;
+        info!("connecting via WebSocket to {:?}", ws_server.addr);
+        let transport = WebSocketTransport::connect(ws_server).await?;
+        let (client, _rx) = SteamClient::connect_ws(transport).await?;
+        client
+    };
 
     // Build logon message
     let (logon, steam_id) = build_logon_body(auth);
@@ -79,6 +90,13 @@ async fn connect_and_login(
     Ok(client)
 }
 
+fn load_saved_token(username: &str) -> Option<String> {
+    let path = dirs_next::home_dir()?.join(".depotdownloader").join("tokens.json");
+    let data = std::fs::read_to_string(&path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&data).ok()?;
+    parsed["tokens"][username].as_str().map(|s| s.to_string())
+}
+
 fn build_logon_body(auth: &AuthOptions) -> (steam::generated::CMsgClientLogon, u64) {
     let mut logon = steam::generated::CMsgClientLogon {
         protocol_version: Some(PROTOCOL_VERSION),
@@ -89,6 +107,16 @@ fn build_logon_body(auth: &AuthOptions) -> (steam::generated::CMsgClientLogon, u
 
     if let Some(ref username) = auth.username {
         logon.account_name = Some(username.clone());
+
+        // Try saved refresh token first
+        if let Some(token) = load_saved_token(username) {
+            info!("using saved refresh token for {username}");
+            logon.access_token = Some(token);
+            // Individual account: universe=1, type=1, instance=1, id=0
+            let steam_id = steam::types::SteamId::from_parts(1, 1, 1, 0);
+            return (logon, steam_id.raw());
+        }
+
         if let Some(ref password) = auth.password {
             logon.password = Some(password.clone());
         }

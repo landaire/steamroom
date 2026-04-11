@@ -25,3 +25,4 @@ regex = { workspace = true }
 prost = { workspace = true }
 reqwest = { workspace = true }
 zip = { workspace = true }
+dirs-next = { workspace = true }

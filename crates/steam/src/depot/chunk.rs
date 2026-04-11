@@ -54,17 +54,25 @@ pub fn process_chunk(
     expected_size: u32,
     expected_checksum: u32,
 ) -> Result<Vec<u8>, ChunkError> {
+    let _ = expected_checksum; // Used after decompress
     if data.len() < 4 {
         return Err(ChunkError::TooShort);
     }
 
-    // Decrypt with AES-256-ECB (no padding — chunks are block-aligned)
-    let decrypted = crate::crypto::symmetric_decrypt_ecb_nopad(data, &depot_key.0)?;
+    if data.len() < 32 {
+        return Err(ChunkError::TooShort);
+    }
+
+    // Chunk format: ECB_encrypted_IV(16) + CBC_ciphertext(remaining)
+    // 1. ECB decrypt first 16 bytes to get IV
+    let iv = crate::crypto::symmetric_decrypt_ecb_nopad(&data[..16], &depot_key.0)?;
+    // 2. CBC decrypt the rest using the decrypted IV
+    let decrypted = crate::crypto::symmetric_decrypt_cbc(&data[16..], &depot_key.0, &iv)?;
 
     // Detect compression and decompress
-    tracing::debug!("chunk decrypted: {} bytes, first 4: {:02x?}, compression: {:?}",
-        decrypted.len(), &decrypted[..decrypted.len().min(4)], ChunkCompression::detect(&decrypted));
-    let decompressed = decompress(&decrypted)?;
+    tracing::debug!("chunk decrypted: {} bytes, first 20: {:02x?}, compression: {:?}",
+        decrypted.len(), &decrypted[..decrypted.len().min(20)], ChunkCompression::detect(&decrypted));
+    let decompressed = decompress(&decrypted, expected_size)?;
 
     // Verify size
     if decompressed.len() != expected_size as usize {
@@ -86,19 +94,24 @@ pub fn process_chunk(
     Ok(decompressed)
 }
 
-fn decompress(data: &[u8]) -> Result<Vec<u8>, ChunkError> {
+fn decompress(data: &[u8], expected_size: u32) -> Result<Vec<u8>, ChunkError> {
     match ChunkCompression::detect(data) {
         ChunkCompression::VZstd => {
-            // "VZ" header (2 bytes) + original_size (4 bytes LE) + zstd-compressed data
-            if data.len() < 6 {
+            // Valve LZMA: "VZ" + LZMA properties(5) + compressed data
+            // The uncompressed size is NOT in the stream — it comes from the manifest
+            // VZ header: "VZ"(2) + 5 bytes VZ-specific + LZMA props(5) + LZMA data
+            if data.len() < 12 {
                 return Err(ChunkError::TooShort);
             }
-            let original_size =
-                u32::from_le_bytes(data[2..6].try_into().unwrap()) as usize;
-            let compressed = &data[6..];
-            let mut output = Vec::with_capacity(original_size);
-            let mut decoder = zstd::stream::read::Decoder::new(compressed)?;
-            decoder.read_to_end(&mut output)?;
+            // Build standard LZMA stream: props(5) + uncompressed_size(8 LE) + data
+            let mut lzma_stream = Vec::with_capacity(13 + data.len() - 7);
+            lzma_stream.extend_from_slice(&data[7..12]); // 5 bytes LZMA properties at offset 7
+            lzma_stream.extend_from_slice(&(expected_size as u64).to_le_bytes());
+            lzma_stream.extend_from_slice(&data[12..]); // compressed data at offset 12
+
+            let mut output = Vec::with_capacity(expected_size as usize);
+            lzma_rs::lzma_decompress(&mut std::io::Cursor::new(&lzma_stream), &mut output)
+                .map_err(|e| ChunkError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
             Ok(output)
         }
         ChunkCompression::Lzma => {

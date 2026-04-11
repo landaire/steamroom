@@ -182,9 +182,13 @@ impl DepotManifest {
                     ManifestError::InvalidMagic
                 })?;
 
-                // Filenames are AES-256-CBC encrypted with IV = all zeros
-                let iv = [0u8; 16];
-                let decrypted = crate::crypto::symmetric_decrypt_cbc(&decoded, &key.0, &iv)
+                // Filenames use same format as chunks: ECB(IV) + CBC(data)
+                if decoded.len() < 32 {
+                    return Err(ManifestError::InvalidMagic);
+                }
+                let iv = crate::crypto::symmetric_decrypt_ecb_nopad(&decoded[..16], &key.0)
+                    .map_err(|_| ManifestError::InvalidMagic)?;
+                let decrypted = crate::crypto::symmetric_decrypt_cbc(&decoded[16..], &key.0, &iv)
                     .map_err(|e| {
                         tracing::debug!("filename decrypt failed ({} bytes): {e:?}", decoded.len());
                         ManifestError::InvalidMagic
