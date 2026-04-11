@@ -73,36 +73,49 @@ steamroom download --app 480 --depot 481 --max-downloads 16 -o output/
 
 ### `info`
 
-Show app metadata: name, type, depots, branches, encrypted manifests.
+Show app metadata, depots with sizes, and branches.
 
 ```bash
-steamroom info --app 480
+steamroom info --app 730
+
+# Filter depots by OS
+steamroom info --app 730 --os linux
+
+# Include redistributable depots
+steamroom info --app 730 --show-all
 
 # JSON output for scripting
-steamroom info --app 480 --format json
+steamroom info --app 730 --format json
 ```
 
 Example output:
 
 ```
-App ID:  480
-Name:    Spacewar
+App ID:  730
+Name:    Counter-Strike 2
 Type:    Game
 
-Depots (2):
-  229006:
-  481:
+Depots:
+  ID        CONFIGURATION          SIZE          DL.
+  2347770   64-bit            50.44 GiB    42.93 GiB
+  2347771   Windows            7.07 GiB     5.05 GiB
+  2347772   macOS              9.06 KiB     1.66 KiB
+  2347773   Linux, 64-bit      6.62 GiB     4.71 GiB
+  2347774   64-bit          1023.01 MiB   843.02 MiB
+  ...
 
 Branches:
-  previous: build 316058 updated 1503510482 (SDK 1.30)
-  public: build 3538192 updated 1549489971
+  NAME               DESCRIPTION                           BUILD      TIME BUILT    TIME UPDATED
+  animgraph_2_beta   Animgraph 2 Beta                      22720547   2d ago        2d ago
+  1.41.4.1           1.41.4.1                              22627914   9d ago        9d ago
+  public                                                   22627914   9d ago        9d ago
+  1.41.4.0           1.41.4.0                              22370414   26d ago       26d ago
+  ...
 ```
-
-JSON output (`--format json`) returns the raw PICS app info as JSON, useful for scripting.
 
 ### `manifests`
 
-List depot manifests for a branch.
+List depot manifest IDs for a branch.
 
 ```bash
 steamroom manifests --app 480
@@ -113,7 +126,10 @@ steamroom manifests --app 480 --format json
 Example output:
 
 ```
-481	3183503801510301321
+Manifests for branch 'public':
+
+  depot 229006   -> --
+  depot 481      -> 3183503801510301321
 ```
 
 ### `files`
@@ -126,37 +142,31 @@ steamroom files --app 480 --depot 481
 # Plain output (one filename per line, for piping)
 steamroom files --app 480 --depot 481 --format plain
 
+# Raw byte sizes
+steamroom files --app 480 --depot 481 --bytes
+
 # JSON output
 steamroom files --app 480 --depot 481 --format json
-
-# Show raw encrypted filenames
-steamroom files --app 480 --depot 481 --raw
 ```
 
 Example output:
 
 ```
-DejaVuSans.txt              2.8 KB
-sdkencryptedappticket.dll   558.3 KB
-DejaVuSans.ttf              704.0 KB
-installscript.vdf           514 B
-steam_api.dll               219.8 KB
-SteamworksExample.exe       374.0 KB
-controller.vdf              1.5 KB
-D3D9VRDistort.cso           576 B
-```
+Depot:    481
+Manifest: 3183503801510301321
+Created:  2019-02-06 21:51:33 UTC
+Size:     1.82 MiB
+Files:    8
 
-Plain output (one filename per line, for piping):
-
-```
-DejaVuSans.txt
-sdkencryptedappticket.dll
-DejaVuSans.ttf
-installscript.vdf
-steam_api.dll
-SteamworksExample.exe
-controller.vdf
-D3D9VRDistort.cso
+FILENAME                          SIZE   CHUNKS
+DejaVuSans.txt                2.76 KiB        1
+sdkencryptedappticket.dll   558.28 KiB        1
+DejaVuSans.ttf              703.96 KiB        1
+installscript.vdf                514 B        1
+steam_api.dll               219.78 KiB        1
+SteamworksExample.exe       374.00 KiB        1
+controller.vdf                1.53 KiB        1
+D3D9VRDistort.cso                576 B        1
 ```
 
 ### `workshop`
