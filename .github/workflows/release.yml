@@ -99,8 +99,8 @@ jobs:
         shell: bash
         run: |
           cd examples/python
-          STEAM_FFI_LIB_DIR="$GITHUB_WORKSPACE/target/release" \
-          STEAM_FFI_BINDINGS_DIR="$GITHUB_WORKSPACE/crates/steamroom-ffi/bindings/cpp" \
+          STEAMROOM_FFI_LIB_DIR="$GITHUB_WORKSPACE/target/release" \
+          STEAMROOM_FFI_BINDINGS_DIR="$GITHUB_WORKSPACE/crates/steamroom-ffi/bindings/cpp" \
           uv build --wheel
         env:
           GITHUB_WORKSPACE: ${{ github.workspace }}
