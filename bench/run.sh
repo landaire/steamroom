@@ -73,22 +73,22 @@ hyperfine \
 echo ""
 
 # ──────────────────────────────────────────────────────────
-# 4. Large download: CS2 client depot (depot 2347771 DLLs)
+# 4. Large download: CS2 pak01 subset (~2.5 GB, depot 2347770)
 #    Uses a filelist with regex prefix for DD compatibility
 # ──────────────────────────────────────────────────────────
-echo "=== Benchmark: download CS2 DLLs (depot 2347771) ==="
+echo "=== Benchmark: download CS2 pak01 subset (~2.5 GB) ==="
 echo "  (This will take a while depending on your connection)"
 DD_FILELIST="$SCRATCH/cs2-filelist.txt"
-echo 'regex:\.dll$' > "$DD_FILELIST"
+echo 'regex:pak01_0[01][0-9]\.vpk$' > "$DD_FILELIST"
 hyperfine \
   --warmup 0 \
   --min-runs 1 \
   --export-json "$RESULTS/cs2.json" \
   --prepare "rm -rf $SCRATCH/sr-cs2 $SCRATCH/dd-cs2" \
   --command-name "steamroom" \
-    "$STEAMROOM download --app 730 --depot 2347771 --file-regex '\\.dll$' -o $SCRATCH/sr-cs2" \
+    "$STEAMROOM download --app 730 --depot 2347770 --file-regex 'pak01_0[01][0-9]\\.vpk$' -o $SCRATCH/sr-cs2" \
   --command-name "DepotDownloader" \
-    "$DD -app 730 -depot 2347771 -filelist $DD_FILELIST -dir $SCRATCH/dd-cs2" \
+    "$DD -app 730 -depot 2347770 -filelist $DD_FILELIST -dir $SCRATCH/dd-cs2" \
   2>&1 | tee "$RESULTS/cs2.txt"
 echo ""
 

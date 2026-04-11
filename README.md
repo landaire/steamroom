@@ -185,17 +185,14 @@ Set `DD_COMPAT=1` to use flat arguments compatible with the original DepotDownlo
 DD_COMPAT=1 steamroom --app 480 --depot 481 --dir output/ --verify
 ```
 
-## Unique Features
+## Features
 
-- **Pure Rust** — no C dependencies, no system OpenSSL, fully static binary
-- **Dual transport** — TCP (with custom session cipher) and WebSocket (TLS) to Steam CM servers
-- **Async runtime-agnostic core** — the `steamroom` protocol library uses `futures` primitives, not tokio directly
-- **Pipelined downloads** — network fetch and CPU-bound decrypt/decompress run concurrently via a channel-based pipeline, matching Steam client's multi-pool architecture
-- **Download resumption** — staging files survive interrupts, chunk-level resume on restart
-- **Serde deserializer for Valve KV** — `#[derive(Deserialize)]` your structs and deserialize directly from PICS data
-- **C/C++ FFI via Diplomat** — generated C and C++ headers, Python bindings via nanobind
-- **Proto extraction tool** — extracts `.proto` definitions from `steamclient64.dll` using pure Rust PE parser
-- **Fuzz testing** — cargo-fuzz targets with seed corpora for all binary parsers
+- TCP and WebSocket transports
+- Pipelined chunk downloads with resume support
+- Serde deserializer for Valve KeyValue format
+- C/C++ FFI bindings via Diplomat, Python bindings via nanobind
+- Proto extraction tool for `steamclient64.dll`
+- Fuzz targets for binary parsers
 
 ## Architecture
 
@@ -209,16 +206,16 @@ steamroom-proto-extract — Tool to extract protobuf definitions from Steam bina
 
 ## Benchmarks
 
-Compared against [DepotDownloader](https://github.com/SteamRE/DepotDownloader) v3.4.0 (C#/.NET) using [hyperfine](https://github.com/sharkdp/hyperfine). Anonymous login, Windows 11, same network.
+Compared against [DepotDownloader](https://github.com/SteamRE/DepotDownloader) v3.4.0 (C#/.NET) using [hyperfine](https://github.com/sharkdp/hyperfine). Anonymous login, macOS (Apple Silicon), same network.
 
 | Benchmark | steamroom | DepotDownloader | Speedup |
 |-----------|-----------|-----------------|---------|
-| App info query (480) | 1.15s ± 0.09s | 2.37s ± 0.73s | **2.1x** |
-| File listing (480/481) | 0.88s ± 0.10s | 2.79s ± 1.14s | **3.2x** |
-| Download Spacewar (1.8 MB) | 1.75s ± 0.56s | 3.61s ± 1.18s | **2.1x** |
-| Download CS2 maps (1.7 GB) | 18.4s ± 0.2s | 18.0s ± 0.2s | **1.0x** |
+| App info query (480) | 0.83s ± 0.21s | 2.28s ± 1.17s | **2.7x** |
+| File listing (480/481) | 0.81s ± 0.02s | 1.05s ± 0.18s | **1.3x** |
+| Download Spacewar (1.8 MB) | 1.80s ± 0.12s | 4.03s ± 0.16s | **2.2x** |
+| Download CS2 content (2.5 GB) | 22.0s ± 0.5s | 33.1s ± 2.2s | **1.5x** |
 
-steamroom is significantly faster for metadata operations and small downloads due to lower startup overhead (no .NET runtime), pipelined chunk processing, and a more efficient connection setup. Both tools are network-bound for large downloads.
+Results will vary by network and hardware. Run `bench/run.sh` to reproduce on your own setup.
 
 <details>
 <summary>Reproduce benchmarks</summary>

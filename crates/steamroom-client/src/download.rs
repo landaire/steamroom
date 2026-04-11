@@ -166,12 +166,12 @@ impl DepotJob {
             std::fs::create_dir_all(&staging_dir)?;
             let staging_path = staging_dir.join(filename.replace(['/', '\\'], "_"));
 
-            let file_data =
+            let file_size =
                 self.download_file_chunks_with_resume(file, &fetcher, &sem, &staging_path).await?;
 
-            std::fs::write(&file_path, &file_data)?;
-            let _ = std::fs::remove_file(&staging_path);
-            stats.bytes_downloaded += file_data.len() as u64;
+            // Staging file has the complete contents — just move it into place.
+            std::fs::rename(&staging_path, &file_path)?;
+            stats.bytes_downloaded += file_size;
             stats.files_completed += 1;
 
             self.emit(DownloadEvent::FileCompleted {
@@ -325,13 +325,14 @@ impl DepotJob {
         unreachable!()
     }
 
+    /// Downloads remaining chunks to the staging file. Returns total file size in bytes.
     async fn download_file_chunks_with_resume<F: ChunkFetcher + 'static>(
         &self,
         file: &ManifestFile,
         fetcher: &std::sync::Arc<F>,
         sem: &std::sync::Arc<tokio::sync::Semaphore>,
         staging_path: &Path,
-    ) -> Result<Vec<u8>, BoxError> {
+    ) -> Result<u64, BoxError> {
         let existing_bytes = std::fs::metadata(staging_path)
             .map(|m| m.len())
             .unwrap_or(0);
@@ -352,7 +353,7 @@ impl DepotJob {
         }
 
         if skip_count == file.chunks.len() {
-            return Ok(std::fs::read(staging_path)?);
+            return Ok(staged_offset);
         }
 
         if skip_count > 0 {
@@ -376,6 +377,7 @@ impl DepotJob {
         };
 
         let new_data = self.download_file_chunks(&remaining, fetcher, sem).await?;
+        let new_len = new_data.len() as u64;
 
         // Append to staging for crash safety
         {
@@ -386,14 +388,7 @@ impl DepotJob {
             f.write_all(&new_data)?;
         }
 
-        // Assemble: existing staged data + newly downloaded
-        if skip_count > 0 {
-            let mut full = std::fs::read(staging_path)?;
-            full.truncate((staged_offset as usize) + new_data.len());
-            Ok(full)
-        } else {
-            Ok(new_data)
-        }
+        Ok(staged_offset + new_len)
     }
 }
 
@@ -481,7 +476,7 @@ impl DepotJobBuilder {
             depot_id: self.depot_id.ok_or("depot_id required")?,
             depot_key: self.depot_key.ok_or("depot_key required")?,
             install_dir: self.install_dir.ok_or("install_dir required")?,
-            max_downloads: self.max_downloads.unwrap_or(8),
+            max_downloads: self.max_downloads.unwrap_or(16),
             verify: self.verify,
             file_filter: self.file_filter.unwrap_or(FileFilter::None),
             retry: self.retry.unwrap_or_default(),
