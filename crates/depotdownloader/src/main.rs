@@ -232,94 +232,83 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("depots").join(depot_id.0.to_string()));
     std::fs::create_dir_all(&output_dir)?;
 
+    // Set up download orchestration
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let fetcher = steam_client::download::CdnChunkFetcher {
+        cdn,
+        server: cdn_server.clone(),
+        cdn_auth_token: None,
+    };
+
+    let mut builder = steam_client::download::DepotJob::builder()
+        .depot_id(depot_id)
+        .depot_key(depot_key)
+        .install_dir(output_dir.clone())
+        .event_sender(event_tx);
+
+    if let Some(max) = args.max_downloads {
+        builder = builder.max_downloads(max);
+    }
+
+    if let Some(ref filelist_path) = args.filelist {
+        let content = std::fs::read_to_string(filelist_path)?;
+        let files: Vec<String> = content.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+        builder = builder.file_filter(steam_client::download::FileFilter::FileList(files));
+    } else if let Some(ref pattern) = args.file_regex {
+        builder = builder.file_filter(steam_client::download::FileFilter::Regex(regex::Regex::new(pattern)?));
+    }
+
+    let job = builder.build().map_err(|e| CliError::Steam(steam::error::Error::Io(
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
+    )))?;
+
+    let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
     info!(
-        "manifest has {} files, downloading to {}",
+        "downloading {} files ({}) to {}",
         manifest.files.len(),
+        fmt_size(total_bytes),
         output_dir.display()
     );
 
-    // Download chunks
-    let mut downloaded_bytes: u64 = 0;
-    let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
-
-    for file in &manifest.files {
-        let filename = file.filename.as_deref().unwrap_or("unknown");
-        let file_path = output_dir.join(filename);
-
-        // Check if it's a directory
-        if let Some(flags) = file.flags {
-            let depot_flags = steam::enums::DepotFileFlags(flags);
-            if depot_flags.is_directory() {
-                std::fs::create_dir_all(&file_path)?;
-                continue;
+    // Spawn progress renderer
+    let progress_handle = tokio::spawn(async move {
+        let mut completed: u64 = 0;
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                steam_client::event::DownloadEvent::FileCompleted { filename } => {
+                    let pct = if total_bytes > 0 {
+                        completed as f64 / total_bytes as f64 * 100.0
+                    } else {
+                        0.0
+                    };
+                    info!("[{pct:.1}%] {filename}");
+                }
+                steam_client::event::DownloadEvent::ChunkCompleted { bytes } => {
+                    completed += bytes;
+                }
+                steam_client::event::DownloadEvent::ChunkFailed { error } => {
+                    warn!("chunk failed (retrying): {error}");
+                }
+                _ => {}
             }
         }
+    });
 
-        // Skip zero-size files (just create them)
-        if file.size.unwrap_or(0) == 0 && file.chunks.is_empty() {
-            if let Some(parent) = file_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&file_path, &[])?;
-            continue;
-        }
+    let stats = job.download(&manifest, &fetcher).await.map_err(|e| {
+        CliError::Steam(steam::error::Error::Io(
+            std::io::Error::new(std::io::ErrorKind::Other, e),
+        ))
+    })?;
 
-        // Check for symlinks
-        if let Some(ref target) = file.link_target {
-            if let Some(parent) = file_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            // Just write a text file with the target for now
-            debug!("symlink: {} -> {}", filename, target);
-            continue;
-        }
+    drop(job); // drop to close the event channel
+    let _ = progress_handle.await;
 
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        debug!("downloading: {} ({} chunks)", filename, file.chunks.len());
-
-        // Download and assemble chunks in order
-        let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
-
-        for chunk_meta in &file.chunks {
-            let chunk_id = chunk_meta.id.as_ref().ok_or_else(|| {
-                CliError::ChunkMissingId
-            })?;
-
-            let chunk_data = cdn
-                .download_chunk(cdn_server, depot_id, chunk_id, None)
-                .await?;
-
-            debug!("chunk {} bytes, first 16: {:02x?}", chunk_data.len(), &chunk_data[..chunk_data.len().min(16)]);
-            let processed = chunk::process_chunk(
-                &chunk_data,
-                &depot_key,
-                chunk_meta.uncompressed_size.unwrap_or(0),
-                chunk_meta.checksum.unwrap_or(0),
-            )?;
-
-            file_data.extend_from_slice(&processed);
-            downloaded_bytes += processed.len() as u64;
-        }
-
-        std::fs::write(&file_path, &file_data)?;
-
-        let pct = if total_bytes > 0 {
-            downloaded_bytes as f64 / total_bytes as f64 * 100.0
-        } else {
-            100.0
-        };
-        info!(
-            "[{:.1}%] {} ({})",
-            pct,
-            filename,
-            fmt_size(file_data.len() as u64)
-        );
-    }
-
-    info!("download complete: {} total", fmt_size(downloaded_bytes));
+    info!(
+        "download complete: {} files, {}",
+        stats.files_completed,
+        fmt_size(stats.bytes_downloaded)
+    );
     Ok(())
 }
 

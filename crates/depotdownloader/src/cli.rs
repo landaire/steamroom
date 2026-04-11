@@ -108,6 +108,8 @@ pub struct DownloadArgs {
     #[arg(long)]
     pub lancache: bool,
     #[arg(long)]
+    pub max_downloads: Option<usize>,
+    #[arg(long)]
     pub branch: Option<String>,
     #[arg(long)]
     pub branch_password: Option<String>,
