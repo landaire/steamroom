@@ -1,9 +1,9 @@
 pub mod encryption;
 pub mod framing;
 
-use std::net::SocketAddr;
-use serde::Deserialize;
 use crate::error::Error;
+use serde::Deserialize;
+use std::net::SocketAddr;
 
 #[derive(Clone, Debug)]
 pub struct CmServer {

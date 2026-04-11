@@ -1,8 +1,10 @@
-use aes::cipher::{BlockModeEncrypt, KeyInit};
-use hmac::{Hmac, Mac};
-use sha1::Sha1;
 use crate::crypto;
 use crate::error::CryptoError;
+use aes::cipher::BlockModeEncrypt;
+use aes::cipher::KeyInit;
+use hmac::Hmac;
+use hmac::Mac;
+use sha1::Sha1;
 
 type HmacSha1 = Hmac<Sha1>;
 type Aes256EcbEnc = ecb::Encryptor<aes::Aes256>;
@@ -49,11 +51,8 @@ impl SessionCipher {
         // ECB encrypt the IV
         let enc = Aes256EcbEnc::new_from_slice(&self.session_key).unwrap();
         let mut encrypted_iv = [0u8; 16];
-        enc.encrypt_padded_b2b::<aes::cipher::block_padding::NoPadding>(
-            &iv,
-            &mut encrypted_iv,
-        )
-        .unwrap();
+        enc.encrypt_padded_b2b::<aes::cipher::block_padding::NoPadding>(&iv, &mut encrypted_iv)
+            .unwrap();
 
         let mut output = Vec::with_capacity(16 + ciphertext.len());
         output.extend_from_slice(&encrypted_iv);

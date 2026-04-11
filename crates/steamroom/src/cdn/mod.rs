@@ -2,11 +2,13 @@ pub mod lancache;
 pub mod pool;
 pub mod server;
 
-use bytes::Bytes;
 pub use self::pool::CdnServerPool;
 pub use self::server::CdnServer;
-use crate::depot::{ChunkId, DepotId, ManifestId};
+use crate::depot::ChunkId;
+use crate::depot::DepotId;
+use crate::depot::ManifestId;
 use crate::error::Error;
+use bytes::Bytes;
 
 pub struct CdnClient {
     client: reqwest::Client,
@@ -15,9 +17,7 @@ pub struct CdnClient {
 
 impl CdnClient {
     pub fn new() -> Result<Self, Error> {
-        let client = reqwest::Client::builder()
-            .build()
-            .map_err(Error::Http)?;
+        let client = reqwest::Client::builder().build().map_err(Error::Http)?;
         Ok(Self {
             client,
             lancache_ip: None,
@@ -73,7 +73,10 @@ impl CdnClient {
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
-        Err(Error::CdnStatus { status, retry_after })
+        Err(Error::CdnStatus {
+            status,
+            retry_after,
+        })
     }
 
     fn build_url(&self, server: &CdnServer, path: &str, cdn_auth_token: Option<&str>) -> String {

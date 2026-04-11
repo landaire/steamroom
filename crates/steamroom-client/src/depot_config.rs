@@ -1,6 +1,9 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use steamroom::depot::{DepotId, DepotKey, ManifestId};
+use std::path::Path;
+use std::path::PathBuf;
+use steamroom::depot::DepotId;
+use steamroom::depot::DepotKey;
+use steamroom::depot::ManifestId;
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct DepotInfo {
@@ -37,8 +40,7 @@ impl DepotConfig {
     pub fn save(&self, install_dir: &Path) -> Result<(), std::io::Error> {
         let dir = Self::config_dir(install_dir);
         std::fs::create_dir_all(&dir)?;
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(Self::config_path(install_dir), json)
     }
 
@@ -53,11 +55,19 @@ impl DepotConfig {
         Some((ManifestId(info.manifest_id), DepotKey(key)))
     }
 
-    pub fn set_installed(&mut self, depot_id: DepotId, manifest_id: ManifestId, depot_key: &DepotKey) {
-        self.depots.insert(depot_id.0, DepotInfo {
-            manifest_id: manifest_id.0,
-            depot_key: encode_hex(&depot_key.0),
-        });
+    pub fn set_installed(
+        &mut self,
+        depot_id: DepotId,
+        manifest_id: ManifestId,
+        depot_key: &DepotKey,
+    ) {
+        self.depots.insert(
+            depot_id.0,
+            DepotInfo {
+                manifest_id: manifest_id.0,
+                depot_key: encode_hex(&depot_key.0),
+            },
+        );
     }
 
     /// Save the raw CDN manifest response (zip-compressed, filenames still encrypted).
@@ -112,7 +122,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())

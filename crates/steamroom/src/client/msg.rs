@@ -1,6 +1,7 @@
-use prost::Message;
 use crate::generated::CMsgProtoBufHeader;
-use crate::messages::{EMsg, RawEMsg};
+use crate::messages::EMsg;
+use crate::messages::RawEMsg;
+use prost::Message;
 
 pub struct ClientMsg<'a> {
     pub emsg: EMsg,
@@ -41,7 +42,7 @@ impl<'a> ClientMsg<'a> {
         let mut header_buf = Vec::with_capacity(header_len);
         self.header
             .encode(&mut header_buf)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         writer.write_all(&header_buf)?;
         writer.write_all(self.body)?;
         Ok(())

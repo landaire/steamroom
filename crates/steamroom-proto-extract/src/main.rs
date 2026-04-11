@@ -6,7 +6,10 @@ use std::path::PathBuf;
 mod renderer;
 
 #[derive(Parser)]
-#[command(name = "proto-extract", about = "Extract protobuf definitions from PE binaries")]
+#[command(
+    name = "proto-extract",
+    about = "Extract protobuf definitions from PE binaries"
+)]
 struct Args {
     #[arg(long)]
     dll: PathBuf,
@@ -74,7 +77,8 @@ fn extract_descriptors(
     pe_data: &[u8],
 ) -> Result<Vec<prost_types::FileDescriptorProto>, Box<dyn std::error::Error>> {
     use object::read::pe::PeFile64;
-    use object::{Object, ObjectSection};
+    use object::Object;
+    use object::ObjectSection;
 
     let pe = PeFile64::parse(pe_data)?;
     let image_base = pe.relative_address_base();
@@ -86,7 +90,10 @@ fn extract_descriptors(
         let name = section.name()?;
         let sec_data = section.data()?.to_vec();
         let va = section.address();
-        let file_off = section.file_range().map(|(off, _)| off as usize).unwrap_or(0);
+        let file_off = section
+            .file_range()
+            .map(|(off, _)| off as usize)
+            .unwrap_or(0);
 
         if name == ".rdata" {
             rdata_sections.push(SectionInfo {
@@ -120,7 +127,10 @@ fn extract_descriptors(
         }
     }
 
-    eprintln!("Phase 1: Found {} candidate .proto name references", candidates.len());
+    eprintln!(
+        "Phase 1: Found {} candidate .proto name references",
+        candidates.len()
+    );
 
     // Phase 2: For each candidate, find its size from the .data section
     // The .data section contains registration entries with (size: u32, ptr: u64) pairs
@@ -130,7 +140,10 @@ fn extract_descriptors(
         HashMap::new()
     };
 
-    eprintln!("Phase 2: Found sizes for {} blobs via .data cross-reference", blob_sizes.len());
+    eprintln!(
+        "Phase 2: Found sizes for {} blobs via .data cross-reference",
+        blob_sizes.len()
+    );
 
     // Phase 3: Decode each candidate
     let mut descriptors = Vec::new();
@@ -217,10 +230,7 @@ fn check_proto_name(data: &[u8], offset: usize) -> Option<String> {
     Some(name.to_string())
 }
 
-fn find_blob_sizes(
-    data_section: &SectionInfo,
-    candidates: &[(u64, String)],
-) -> HashMap<u64, u32> {
+fn find_blob_sizes(data_section: &SectionInfo, candidates: &[(u64, String)]) -> HashMap<u64, u32> {
     let mut sizes = HashMap::new();
     let ds = &data_section.data;
 
@@ -250,10 +260,7 @@ fn find_blob_sizes(
     sizes
 }
 
-fn find_va_in_sections<'a>(
-    sections: &'a [SectionInfo],
-    va: u64,
-) -> Option<(&'a [u8], usize)> {
+fn find_va_in_sections<'a>(sections: &'a [SectionInfo], va: u64) -> Option<(&'a [u8], usize)> {
     for sec in sections {
         if va >= sec.virtual_address {
             let offset = (va - sec.virtual_address) as usize;

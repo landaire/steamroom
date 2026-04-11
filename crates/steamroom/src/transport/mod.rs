@@ -1,11 +1,11 @@
-pub mod tcp;
-pub mod websocket;
+pub mod capture;
 pub mod recording;
 pub mod replay;
-pub mod capture;
+pub mod tcp;
+pub mod websocket;
 
-use bytes::Bytes;
 use crate::error::Error;
+use bytes::Bytes;
 
 pub trait Transport: Send + Sync + 'static {
     fn send(

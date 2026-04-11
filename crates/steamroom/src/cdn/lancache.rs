@@ -28,9 +28,7 @@ pub fn host_header(server: &CdnServer) -> String {
 
 fn is_private(ip: &std::net::IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(v4) => {
-            v4.is_private() || v4.is_loopback() || v4.is_link_local()
-        }
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
         std::net::IpAddr::V6(v6) => v6.is_loopback(),
     }
 }

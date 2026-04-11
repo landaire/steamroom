@@ -1,5 +1,6 @@
+use serde::Deserialize;
+use serde::Serialize;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CaptureFile {
@@ -16,8 +17,7 @@ impl CaptureFile {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(path, json)
     }
 

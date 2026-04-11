@@ -1,6 +1,9 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 use super::server::CdnServer;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
 struct ServerState {
     server: CdnServer,
@@ -17,7 +20,10 @@ pub struct CdnServerPool {
 
 impl CdnServerPool {
     pub fn new(servers: Vec<CdnServer>) -> Self {
-        assert!(!servers.is_empty(), "CdnServerPool requires at least one server");
+        assert!(
+            !servers.is_empty(),
+            "CdnServerPool requires at least one server"
+        );
         let epoch = Instant::now();
         Self {
             servers: servers
@@ -98,6 +104,8 @@ impl CdnServerPool {
     }
 
     fn find(&self, server: &CdnServer) -> Option<&ServerState> {
-        self.servers.iter().find(|s| s.server.host == server.host && s.server.port == server.port)
+        self.servers
+            .iter()
+            .find(|s| s.server.host == server.host && s.server.port == server.port)
     }
 }

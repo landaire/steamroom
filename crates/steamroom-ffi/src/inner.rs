@@ -55,7 +55,9 @@ async fn ws_connect(
         .find(|s| s.protocol == steamroom::connection::Protocol::WebSocket)
         .or_else(|| servers.first())
         .ok_or_else(|| {
-            steamroom::error::Error::Connection(steamroom::error::ConnectionError::DnsResolutionFailed)
+            steamroom::error::Error::Connection(
+                steamroom::error::ConnectionError::DnsResolutionFailed,
+            )
         })?;
     let transport = steamroom::transport::websocket::WebSocketTransport::connect(ws).await?;
     let (client, _) = steamroom::client::SteamClient::connect_ws(transport).await?;
@@ -71,12 +73,17 @@ async fn do_login(
         protocol_version: Some(steamroom::client::PROTOCOL_VERSION),
     };
     let hello_body = hello.encode_to_vec();
-    let hello_msg =
-        steamroom::client::msg::ClientMsg::with_body(steamroom::messages::EMsg::CLIENT_HELLO, &hello_body);
+    let hello_msg = steamroom::client::msg::ClientMsg::with_body(
+        steamroom::messages::EMsg::CLIENT_HELLO,
+        &hello_body,
+    );
     client.send_msg(&hello_msg).await?;
 
     let body = logon.encode_to_vec();
-    let mut msg = steamroom::client::msg::ClientMsg::with_body(steamroom::messages::EMsg::CLIENT_LOGON, &body);
+    let mut msg = steamroom::client::msg::ClientMsg::with_body(
+        steamroom::messages::EMsg::CLIENT_LOGON,
+        &body,
+    );
     msg.header.steamid = Some(steam_id);
     msg.header.client_sessionid = Some(0);
     let (logged_in, _) = client.login(msg).await?;
@@ -92,7 +99,12 @@ async fn do_connect_anon(
         client_os_type: Some(20),
         ..Default::default()
     };
-    do_login(client, logon, steamroom::types::SteamId::from_parts(1, 10, 0, 0).raw()).await
+    do_login(
+        client,
+        logon,
+        steamroom::types::SteamId::from_parts(1, 10, 0, 0).raw(),
+    )
+    .await
 }
 
 async fn do_connect_token(
@@ -108,7 +120,12 @@ async fn do_connect_token(
         access_token: Some(token),
         ..Default::default()
     };
-    do_login(client, logon, steamroom::types::SteamId::from_parts(1, 1, 1, 0).raw()).await
+    do_login(
+        client,
+        logon,
+        steamroom::types::SteamId::from_parts(1, 1, 1, 0).raw(),
+    )
+    .await
 }
 
 async fn do_list_files(
@@ -129,10 +146,7 @@ async fn do_list_files(
             token: 0,
         });
     let infos = client.pics_get_product_info(&[token]).await?;
-    let info = infos
-        .into_iter()
-        .next()
-        .ok_or("no product info")?;
+    let info = infos.into_iter().next().ok_or("no product info")?;
     let kv_data = info.kv_data.ok_or("no kv data")?;
 
     let kv = if kv_data.first() == Some(&0x00) {
@@ -143,7 +157,9 @@ async fn do_list_files(
     };
 
     let depots_kv = kv.get("depots").ok_or("no depots")?;
-    let depot_kv = depots_kv.get(&depot.0.to_string()).ok_or("depot not found")?;
+    let depot_kv = depots_kv
+        .get(&depot.0.to_string())
+        .ok_or("depot not found")?;
     let manifests = depot_kv.get("manifests").ok_or("no manifests")?;
     let branch_kv = manifests.get(branch).ok_or("branch not found")?;
     let gid_str = branch_kv
@@ -159,7 +175,9 @@ async fn do_list_files(
         .await?
         .unwrap_or(0);
 
-    let cdn_servers = client.get_cdn_servers(steamroom::depot::CellId(0), Some(5)).await?;
+    let cdn_servers = client
+        .get_cdn_servers(steamroom::depot::CellId(0), Some(5))
+        .await?;
     let cdn_server = cdn_servers.first().ok_or("no cdn servers")?;
     let cdn = steamroom::cdn::CdnClient::new()?;
     let raw = cdn
@@ -190,7 +208,10 @@ fn decompress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
         let mut archive = zip::ZipArchive::new(cursor)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if archive.is_empty() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "empty"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "empty",
+            ));
         }
         let mut file = archive
             .by_index(0)

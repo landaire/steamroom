@@ -1,6 +1,8 @@
+use byteorder::LittleEndian;
+use byteorder::ReadBytesExt;
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read};
-use byteorder::{LittleEndian, ReadBytesExt};
+use std::io::Cursor;
+use std::io::Read;
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct KeyValue {
@@ -115,7 +117,10 @@ pub fn parse_binary_kv(data: &[u8]) -> Result<KeyValue, std::io::Error> {
 fn read_binary_kv_node(cursor: &mut Cursor<&[u8]>) -> Result<KeyValue, std::io::Error> {
     let tag = cursor.read_u8()?;
     let tag = KvTag::from_u8(tag).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("unknown KV tag: {tag}"))
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unknown KV tag: {tag}"),
+        )
     })?;
 
     if tag == KvTag::None {
@@ -125,7 +130,7 @@ fn read_binary_kv_node(cursor: &mut Cursor<&[u8]>) -> Result<KeyValue, std::io::
         loop {
             let peek = cursor.read_u8()?;
             let peek_tag = KvTag::from_u8(peek);
-            if peek_tag.map_or(false, |t| t.is_end()) {
+            if peek_tag.is_some_and(|t| t.is_end()) {
                 break;
             }
             // Put the byte back by seeking
@@ -167,8 +172,7 @@ fn read_cstring(cursor: &mut Cursor<&[u8]>) -> Result<String, std::io::Error> {
         }
         bytes.push(b);
     }
-    String::from_utf8(bytes)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 pub fn parse_text_kv(input: &str) -> Result<KeyValue, TextKvError> {

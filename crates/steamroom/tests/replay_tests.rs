@@ -1,4 +1,5 @@
-use steamroom::transport::capture::{CaptureFile, CapturedPacket};
+use steamroom::transport::capture::CaptureFile;
+use steamroom::transport::capture::CapturedPacket;
 use steamroom::transport::replay::ReplayTransport;
 use steamroom::transport::Transport;
 

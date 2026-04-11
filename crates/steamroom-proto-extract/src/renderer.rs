@@ -1,8 +1,12 @@
-use prost_types::{
-    DescriptorProto, EnumDescriptorProto, FieldDescriptorProto, FileDescriptorProto,
-    MethodDescriptorProto, OneofDescriptorProto, ServiceDescriptorProto,
-    field_descriptor_proto::{Label, Type},
-};
+use prost_types::field_descriptor_proto::Label;
+use prost_types::field_descriptor_proto::Type;
+use prost_types::DescriptorProto;
+use prost_types::EnumDescriptorProto;
+use prost_types::FieldDescriptorProto;
+use prost_types::FileDescriptorProto;
+use prost_types::MethodDescriptorProto;
+use prost_types::OneofDescriptorProto;
+use prost_types::ServiceDescriptorProto;
 use std::fmt::Write;
 
 pub fn render_proto(desc: &FileDescriptorProto) -> String {
@@ -104,7 +108,11 @@ fn render_message(out: &mut String, msg: &DescriptorProto, depth: usize) {
 
     for nested in &msg.nested_type {
         // Skip map entry types — prost-build handles these
-        if nested.options.as_ref().is_some_and(|o| o.map_entry == Some(true)) {
+        if nested
+            .options
+            .as_ref()
+            .is_some_and(|o| o.map_entry == Some(true))
+        {
             continue;
         }
         render_message(out, nested, depth + 1);
@@ -112,8 +120,7 @@ fn render_message(out: &mut String, msg: &DescriptorProto, depth: usize) {
 
     // Collect oneof field indices
     let oneof_fields: Vec<Vec<&FieldDescriptorProto>> = {
-        let mut groups: Vec<Vec<&FieldDescriptorProto>> =
-            vec![Vec::new(); msg.oneof_decl.len()];
+        let mut groups: Vec<Vec<&FieldDescriptorProto>> = vec![Vec::new(); msg.oneof_decl.len()];
         for field in &msg.field {
             if let Some(idx) = field.oneof_index {
                 if let Some(group) = groups.get_mut(idx as usize) {
@@ -131,12 +138,7 @@ fn render_message(out: &mut String, msg: &DescriptorProto, depth: usize) {
             let idx = idx as usize;
             if !rendered_oneofs[idx] {
                 rendered_oneofs[idx] = true;
-                render_oneof(
-                    out,
-                    &msg.oneof_decl[idx],
-                    &oneof_fields[idx],
-                    depth + 1,
-                );
+                render_oneof(out, &msg.oneof_decl[idx], &oneof_fields[idx], depth + 1);
             }
         } else {
             render_field(out, field, depth + 1);
@@ -147,7 +149,7 @@ fn render_message(out: &mut String, msg: &DescriptorProto, depth: usize) {
         render_extension(out, ext, depth + 1);
     }
 
-    if let Some(ref opts) = msg.options {
+    if let Some(ref opts) = &msg.options {
         // Extension ranges
     }
     for range in &msg.extension_range {
@@ -173,7 +175,12 @@ fn render_field_in_oneof(out: &mut String, field: &FieldDescriptorProto, depth: 
     render_field_inner(out, field, depth, true);
 }
 
-fn render_field_inner(out: &mut String, field: &FieldDescriptorProto, depth: usize, in_oneof: bool) {
+fn render_field_inner(
+    out: &mut String,
+    field: &FieldDescriptorProto,
+    depth: usize,
+    in_oneof: bool,
+) {
     let name = field.name.as_deref().unwrap_or("unknown");
     let number = field.number.unwrap_or(0);
     let type_name = field_type_name(field);
@@ -197,10 +204,18 @@ fn render_field_inner(out: &mut String, field: &FieldDescriptorProto, depth: usi
             options.push(format!("default = {default}"));
         }
     }
-    if field.options.as_ref().is_some_and(|o| o.packed == Some(true)) {
+    if field
+        .options
+        .as_ref()
+        .is_some_and(|o| o.packed == Some(true))
+    {
         options.push("packed = true".into());
     }
-    if field.options.as_ref().is_some_and(|o| o.deprecated == Some(true)) {
+    if field
+        .options
+        .as_ref()
+        .is_some_and(|o| o.deprecated == Some(true))
+    {
         options.push("deprecated = true".into());
     }
     if field.options.as_ref().is_some_and(|o| o.lazy == Some(true)) {
@@ -235,7 +250,10 @@ fn render_enum(out: &mut String, e: &EnumDescriptorProto, depth: usize) {
     indent(out, depth);
     writeln!(out, "enum {name} {{").unwrap();
 
-    if e.options.as_ref().is_some_and(|o| o.allow_alias == Some(true)) {
+    if e.options
+        .as_ref()
+        .is_some_and(|o| o.allow_alias == Some(true))
+    {
         indent(out, depth + 1);
         writeln!(out, "option allow_alias = true;").unwrap();
     }

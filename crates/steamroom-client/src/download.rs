@@ -1,19 +1,22 @@
+use crate::event::DownloadEvent;
+use bytes::Bytes;
 use std::future::Future;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
-use bytes::Bytes;
-use tokio::sync::mpsc;
-use steamroom::cdn::CdnClient;
 use steamroom::cdn::pool::CdnServerPool;
-use steamroom::cdn::server::CdnServer;
-use steamroom::depot::chunk::{self, ChunkError};
-use steamroom::depot::manifest::{DepotManifest, ManifestFile};
-use steamroom::depot::{ChunkId, DepotId, DepotKey};
+use steamroom::cdn::CdnClient;
+use steamroom::depot::chunk;
+use steamroom::depot::manifest::DepotManifest;
+use steamroom::depot::manifest::ManifestFile;
+use steamroom::depot::ChunkId;
+use steamroom::depot::DepotId;
+use steamroom::depot::DepotKey;
 use steamroom::enums::DepotFileFlags;
 use steamroom::error::Error as SteamError;
-use crate::event::DownloadEvent;
+use tokio::sync::mpsc;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -32,11 +35,7 @@ pub struct CdnChunkFetcher {
 }
 
 impl ChunkFetcher for CdnChunkFetcher {
-    async fn fetch_chunk(
-        &self,
-        depot_id: DepotId,
-        chunk_id: &ChunkId,
-    ) -> Result<Bytes, BoxError> {
+    async fn fetch_chunk(&self, depot_id: DepotId, chunk_id: &ChunkId) -> Result<Bytes, BoxError> {
         let (server, wait) = self.pool.pick();
         if !wait.is_zero() {
             tracing::warn!(
@@ -55,7 +54,10 @@ impl ChunkFetcher for CdnChunkFetcher {
                 self.pool.report_success(server);
                 Ok(data)
             }
-            Err(SteamError::CdnStatus { status, retry_after }) => {
+            Err(SteamError::CdnStatus {
+                status,
+                retry_after,
+            }) => {
                 let ra = retry_after.map(Duration::from_secs);
                 if status == 429 || status == 503 {
                     tracing::warn!(
@@ -68,7 +70,10 @@ impl ChunkFetcher for CdnChunkFetcher {
                     tracing::debug!(server = %server.host, status, "CDN error");
                 }
                 self.pool.report_failure(server, ra);
-                Err(Box::new(SteamError::CdnStatus { status, retry_after }))
+                Err(Box::new(SteamError::CdnStatus {
+                    status,
+                    retry_after,
+                }))
             }
             Err(e) => {
                 tracing::debug!(server = %server.host, error = %e, "CDN request failed");
@@ -170,7 +175,7 @@ impl DepotJob {
                 if let Some(parent) = file_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                std::fs::write(&file_path, &[])?;
+                std::fs::write(&file_path, [])?;
                 stats.files_completed += 1;
                 continue;
             }
@@ -204,8 +209,9 @@ impl DepotJob {
             std::fs::create_dir_all(&staging_dir)?;
             let staging_path = staging_dir.join(filename.replace(['/', '\\'], "_"));
 
-            let file_size =
-                self.download_file_chunks_with_resume(file, &fetcher, &sem, &staging_path).await?;
+            let file_size = self
+                .download_file_chunks_with_resume(file, &fetcher, &sem, &staging_path)
+                .await?;
 
             // Staging file has the complete contents — just move it into place.
             std::fs::rename(&staging_path, &file_path)?;
@@ -286,7 +292,9 @@ impl DepotJob {
         let mut fetch_handles = Vec::with_capacity(n);
         for (i, chunk_meta) in file.chunks.iter().enumerate() {
             let chunk_id = chunk_meta.id.clone().ok_or("chunk missing chunk ID")?;
-            let expected_size = chunk_meta.uncompressed_size.ok_or("chunk missing uncompressed_size")?;
+            let expected_size = chunk_meta
+                .uncompressed_size
+                .ok_or("chunk missing uncompressed_size")?;
             let checksum = chunk_meta.checksum.ok_or("chunk missing checksum")?;
             let depot_id = self.depot_id;
             let retry = self.retry.clone();
@@ -296,28 +304,41 @@ impl DepotJob {
             let fetch_tx = fetch_tx.clone();
 
             fetch_handles.push(tokio::spawn(async move {
-                let _permit = sem.acquire().await.map_err(|e| -> BoxError { Box::new(e) })?;
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|e| -> BoxError { Box::new(e) })?;
 
                 let mut delay = retry.initial_delay;
                 let mut result = Err::<Bytes, BoxError>("never attempted".into());
                 for attempt in 0..retry.max_attempts {
                     match fetcher.fetch_chunk(depot_id, &chunk_id).await {
-                        Ok(data) => { result = Ok(data); break; }
+                        Ok(data) => {
+                            result = Ok(data);
+                            break;
+                        }
                         Err(e) if attempt + 1 < retry.max_attempts => {
                             let wait = retry_delay_for_error(&e, delay);
                             if let Some(ref tx) = event_tx {
-                                let _ = tx.send(DownloadEvent::ChunkFailed { error: e.to_string() });
+                                let _ = tx.send(DownloadEvent::ChunkFailed {
+                                    error: e.to_string(),
+                                });
                             }
                             tokio::time::sleep(wait).await;
                             delay = (wait * 2).min(Duration::from_secs(30));
                         }
-                        Err(e) => { result = Err(e); break; }
+                        Err(e) => {
+                            result = Err(e);
+                            break;
+                        }
                     }
                 }
 
                 // Backpressure: if process stage is full, this blocks the fetcher
                 // (which releases the semaphore permit, letting other fetchers proceed)
-                fetch_tx.send((i, result?, expected_size, checksum)).await
+                fetch_tx
+                    .send((i, result?, expected_size, checksum))
+                    .await
                     .map_err(|_| -> BoxError { "process channel closed".into() })?;
                 Ok::<(), BoxError>(())
             }));
@@ -340,7 +361,9 @@ impl DepotJob {
                 block_handles.push(tokio::task::spawn_blocking(move || {
                     let processed = chunk::process_chunk(&raw, &key, expected_size, checksum)?;
                     if let Some(ref tx) = tx {
-                        let _ = tx.send(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
+                        let _ = tx.send(DownloadEvent::ChunkCompleted {
+                            bytes: processed.len() as u64,
+                        });
                     }
                     let _ = slots[i].set(processed);
                     Ok::<(), BoxError>(())
@@ -360,14 +383,12 @@ impl DepotJob {
         process_handle.await??;
 
         // Assemble in order
-        let slots = std::sync::Arc::try_unwrap(slots)
-            .map_err(|_| "slots arc still shared")?;
+        let slots = std::sync::Arc::try_unwrap(slots).map_err(|_| "slots arc still shared")?;
         // size hint only — Vec grows if absent, no correctness impact
         let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
         for slot in slots {
-            file_data.extend_from_slice(
-                &slot.into_inner().ok_or("chunk slot empty after pipeline")?,
-            );
+            file_data
+                .extend_from_slice(&slot.into_inner().ok_or("chunk slot empty after pipeline")?);
         }
         Ok(file_data)
     }
@@ -565,7 +586,11 @@ impl DepotJobBuilder {
 /// Compute retry delay, respecting `Retry-After` from 429/503 responses.
 fn retry_delay_for_error(err: &BoxError, default: Duration) -> Duration {
     if let Some(steam_err) = err.downcast_ref::<SteamError>() {
-        if let SteamError::CdnStatus { status, retry_after } = steam_err {
+        if let SteamError::CdnStatus {
+            status,
+            retry_after,
+        } = steam_err
+        {
             if *status == 429 || *status == 503 {
                 if let Some(secs) = retry_after {
                     return Duration::from_secs((*secs).min(60));

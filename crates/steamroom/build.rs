@@ -34,13 +34,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Use protox (pure Rust) to parse .proto files into a FileDescriptorSet,
     // then feed that to prost-build. No protoc binary needed.
-    let file_descriptors = protox::compile(
-        &proto_paths_as_str(&protos),
-        &[proto_dir.to_str().unwrap()],
-    )?;
+    let file_descriptors =
+        protox::compile(proto_paths_as_str(&protos), [proto_dir.to_str().unwrap()])?;
 
-    prost_build::Config::new()
-        .compile_fds(file_descriptors)?;
+    prost_build::Config::new().compile_fds(file_descriptors)?;
 
     Ok(())
 }

@@ -1,24 +1,39 @@
 pub mod msg;
 pub mod multi;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-use bytes::Bytes;
-use prost::Message;
-use futures_util::lock::Mutex;
-use tracing::{debug, trace};
-use crate::apps::{AccessToken, AppInfo, BetaBranch};
-use crate::auth::{AuthSession, AuthTokens, GuardType, QrAuthSession};
+use self::msg::ClientMsg;
+use crate::apps::AccessToken;
+use crate::apps::AppInfo;
+use crate::apps::BetaBranch;
+use crate::auth::AuthSession;
+use crate::auth::AuthTokens;
+use crate::auth::GuardType;
+use crate::auth::QrAuthSession;
 use crate::cdn::CdnServer;
 use crate::content::CdnAuthToken;
-use crate::depot::{AppId, CellId, DepotId, DepotKey, ManifestId};
-use crate::enums::EResultError;
-use crate::error::{ConnectionError, Error};
+use crate::depot::AppId;
+use crate::depot::CellId;
+use crate::depot::DepotId;
+use crate::depot::DepotKey;
+use crate::depot::ManifestId;
+use crate::error::ConnectionError;
+use crate::error::Error;
 use crate::generated;
-use crate::messages::{EMsg, RawEMsg};
-use crate::messages::header::{self, PacketHeader};
+use crate::messages::header;
+use crate::messages::header::PacketHeader;
+
+use crate::messages::EMsg;
+use crate::messages::RawEMsg;
 use crate::transport::Transport;
-use self::msg::ClientMsg;
+use bytes::Bytes;
+use futures_util::lock::Mutex;
+use prost::Message;
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use tracing::debug;
+use tracing::trace;
 
 pub const PROTOCOL_VERSION: u32 = 65581;
 
@@ -132,7 +147,11 @@ impl SteamClient<Connected> {
 
         // The body contains: protocol version (u32) + universe (u32) + optional nonce (16 bytes)
         // We need to encrypt (session_key + nonce) with Steam's RSA public key
-        let nonce = if body.len() > 8 { &body[8..] } else { &[] as &[u8] };
+        let nonce = if body.len() > 8 {
+            &body[8..]
+        } else {
+            &[] as &[u8]
+        };
 
         let mut plaintext = Vec::with_capacity(32 + nonce.len());
         plaintext.extend_from_slice(&session_key);
@@ -157,7 +176,11 @@ impl SteamClient<Connected> {
         packet.extend_from_slice(&u64::MAX.to_le_bytes()); // source_job_id
         packet.extend_from_slice(&response_body);
 
-        debug!("encrypt response packet ({} bytes): {:02x?}", packet.len(), &packet[..std::cmp::min(64, packet.len())]);
+        debug!(
+            "encrypt response packet ({} bytes): {:02x?}",
+            packet.len(),
+            &packet[..std::cmp::min(64, packet.len())]
+        );
         self.inner.transport.send(&packet).await?;
 
         // Wait for ChannelEncryptResult
@@ -179,8 +202,7 @@ impl SteamClient<Connected> {
         if body.len() >= 4 {
             let code = u32::from_le_bytes(body[..4].try_into().unwrap()) as i32;
             debug!("ChannelEncryptResult code={code}");
-            crate::enums::eresult(code)
-                .map_err(|_| ConnectionError::EncryptionFailed)?;
+            crate::enums::eresult(code).map_err(|_| ConnectionError::EncryptionFailed)?;
         }
 
         // Store the session cipher
@@ -248,8 +270,11 @@ impl SteamClient<Encrypted> {
             match incoming.emsg {
                 EMsg::CLIENT_LOG_ON_RESPONSE => {
                     let resp = generated::CMsgClientLogonResponse::decode(&*incoming.body)?;
-                    crate::enums::eresult(resp.eresult.ok_or(ConnectionError::MissingField("eresult"))?)
-                        .map_err(ConnectionError::LogonFailed)?;
+                    crate::enums::eresult(
+                        resp.eresult
+                            .ok_or(ConnectionError::MissingField("eresult"))?,
+                    )
+                    .map_err(ConnectionError::LogonFailed)?;
 
                     if let Some(sid) = incoming.header.steamid {
                         self.inner.steam_id.store(sid, Ordering::Relaxed);
@@ -258,7 +283,10 @@ impl SteamClient<Encrypted> {
                         self.inner.session_id.store(session_id, Ordering::Relaxed);
                     }
 
-                    debug!("logged in, steamid={}", self.inner.steam_id.load(Ordering::Relaxed));
+                    debug!(
+                        "logged in, steamid={}",
+                        self.inner.steam_id.load(Ordering::Relaxed)
+                    );
 
                     return Ok((
                         SteamClient {
@@ -275,8 +303,11 @@ impl SteamClient<Encrypted> {
                         let sub_msg = parse_incoming(&sub)?;
                         if sub_msg.emsg == EMsg::CLIENT_LOG_ON_RESPONSE {
                             let resp = generated::CMsgClientLogonResponse::decode(&*sub_msg.body)?;
-                            crate::enums::eresult(resp.eresult.ok_or(ConnectionError::MissingField("eresult"))?)
-                                .map_err(ConnectionError::LogonFailed)?;
+                            crate::enums::eresult(
+                                resp.eresult
+                                    .ok_or(ConnectionError::MissingField("eresult"))?,
+                            )
+                            .map_err(ConnectionError::LogonFailed)?;
 
                             if let Some(sid) = sub_msg.header.steamid {
                                 self.inner.steam_id.store(sid, Ordering::Relaxed);
@@ -327,7 +358,9 @@ impl SteamClient<Encrypted> {
                 && incoming.header.jobid_target == Some(job_id)
             {
                 check_service_eresult(&incoming)?;
-                return Ok(ServiceResponse { body: incoming.body });
+                return Ok(ServiceResponse {
+                    body: incoming.body,
+                });
             }
             if incoming.emsg == EMsg::MULTI {
                 let msgs = multi::unpack_multi(&incoming.body)?;
@@ -425,9 +458,7 @@ impl SteamClient<Encrypted> {
             )
             .await?;
         let r: generated::CAuthenticationPollAuthSessionStatusResponse = resp.decode()?;
-        if let (Some(access), Some(refresh)) =
-            (r.access_token.as_ref(), r.refresh_token.as_ref())
-        {
+        if let (Some(access), Some(refresh)) = (r.access_token.as_ref(), r.refresh_token.as_ref()) {
             if !access.is_empty() {
                 return Ok(Some(AuthTokens {
                     access_token: access.clone(),
@@ -523,7 +554,9 @@ impl SteamClient<LoggedIn> {
                 && incoming.header.jobid_target == Some(job_id)
             {
                 check_service_eresult(&incoming)?;
-                return Ok(ServiceResponse { body: incoming.body });
+                return Ok(ServiceResponse {
+                    body: incoming.body,
+                });
             }
             if incoming.emsg == EMsg::MULTI {
                 let msgs = multi::unpack_multi(&incoming.body)?;
@@ -562,7 +595,7 @@ impl SteamClient<LoggedIn> {
                     .iter()
                     .map(|t| AccessToken {
                         app_id: AppId(t.appid.unwrap_or(0)), // appid echoed back from our request
-                        token: t.access_token.unwrap_or(0), // 0 = no token needed (free app)
+                        token: t.access_token.unwrap_or(0),  // 0 = no token needed (free app)
                     })
                     .collect());
             }
@@ -587,18 +620,17 @@ impl SteamClient<LoggedIn> {
         }
     }
 
-    pub async fn pics_get_product_info(
-        &self,
-        apps: &[AccessToken],
-    ) -> Result<Vec<AppInfo>, Error> {
+    pub async fn pics_get_product_info(&self, apps: &[AccessToken]) -> Result<Vec<AppInfo>, Error> {
         let req = generated::CMsgClientPicsProductInfoRequest {
             apps: apps
                 .iter()
-                .map(|a| generated::c_msg_client_pics_product_info_request::AppInfo {
-                    appid: Some(a.app_id.0),
-                    access_token: Some(a.token),
-                    ..Default::default()
-                })
+                .map(
+                    |a| generated::c_msg_client_pics_product_info_request::AppInfo {
+                        appid: Some(a.app_id.0),
+                        access_token: Some(a.token),
+                        ..Default::default()
+                    },
+                )
                 .collect(),
             meta_data_only: Some(false),
             ..Default::default()
@@ -663,9 +695,14 @@ impl SteamClient<LoggedIn> {
                 // k_EMsgClientGetDepotDecryptionKeyResponse
                 let resp =
                     generated::CMsgClientGetDepotDecryptionKeyResponse::decode(&*incoming.body)?;
-                crate::enums::eresult(resp.eresult.ok_or(ConnectionError::MissingField("eresult"))?)
-                    .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
-                let key_data = resp.depot_encryption_key.ok_or(ConnectionError::MissingField("depot_encryption_key"))?;
+                crate::enums::eresult(
+                    resp.eresult
+                        .ok_or(ConnectionError::MissingField("eresult"))?,
+                )
+                .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
+                let key_data = resp
+                    .depot_encryption_key
+                    .ok_or(ConnectionError::MissingField("depot_encryption_key"))?;
                 if key_data.len() != 32 {
                     return Err(ConnectionError::EncryptionFailed.into());
                 }
@@ -681,9 +718,14 @@ impl SteamClient<LoggedIn> {
                         let resp = generated::CMsgClientGetDepotDecryptionKeyResponse::decode(
                             &*sub_msg.body,
                         )?;
-                        crate::enums::eresult(resp.eresult.ok_or(ConnectionError::MissingField("eresult"))?)
-                            .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
-                        let key_data = resp.depot_encryption_key.ok_or(ConnectionError::MissingField("depot_encryption_key"))?;
+                        crate::enums::eresult(
+                            resp.eresult
+                                .ok_or(ConnectionError::MissingField("eresult"))?,
+                        )
+                        .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
+                        let key_data = resp
+                            .depot_encryption_key
+                            .ok_or(ConnectionError::MissingField("depot_encryption_key"))?;
                         if key_data.len() != 32 {
                             return Err(ConnectionError::EncryptionFailed.into());
                         }
@@ -711,7 +753,7 @@ impl SteamClient<LoggedIn> {
     ) -> Result<Vec<CdnServer>, Error> {
         let req = generated::CContentServerDirectoryGetServersForSteamPipeRequest {
             cell_id: Some(cell_id.0),
-            max_servers: max_servers,
+            max_servers,
             ..Default::default()
         };
         let resp = self
@@ -728,7 +770,10 @@ impl SteamClient<LoggedIn> {
                 let https = s.https_support.as_deref() == Some("mandatory")
                     || s.https_support.as_deref() == Some("optional");
                 let (host, port) = if let Some((h, p)) = host_str.rsplit_once(':') {
-                    (h.to_string(), p.parse().unwrap_or(if https { 443 } else { 80 }))
+                    (
+                        h.to_string(),
+                        p.parse().unwrap_or(if https { 443 } else { 80 }),
+                    )
                 } else {
                     (host_str.to_string(), if https { 443 } else { 80 })
                 };
@@ -825,8 +870,7 @@ fn parse_incoming(data: &[u8]) -> Result<IncomingMsg, Error> {
 
 fn check_service_eresult(msg: &IncomingMsg) -> Result<(), Error> {
     if let Some(code) = msg.header.eresult {
-        crate::enums::eresult(code)
-            .map_err(ConnectionError::ServiceMethodFailed)?;
+        crate::enums::eresult(code).map_err(ConnectionError::ServiceMethodFailed)?;
     }
     Ok(())
 }

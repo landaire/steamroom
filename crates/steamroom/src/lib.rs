@@ -14,4 +14,5 @@ pub mod transport;
 pub mod types;
 pub mod util;
 
-pub use error::{Error, Result};
+pub use error::Error;
+pub use error::Result;

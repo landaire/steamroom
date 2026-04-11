@@ -1,7 +1,10 @@
 pub mod rsa;
 
-use aes::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, KeyInit};
 use crate::error::CryptoError;
+use aes::cipher::BlockModeDecrypt;
+use aes::cipher::BlockModeEncrypt;
+use aes::cipher::KeyInit;
+use aes::cipher::KeyIvInit;
 
 type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
@@ -31,8 +34,8 @@ pub fn symmetric_decrypt_ecb_nopad(data: &[u8], key: &[u8]) -> Result<Vec<u8>, C
     if key.len() != 32 {
         return Err(CryptoError::InvalidKeyLength(key.len()));
     }
-    let cipher = Aes256EcbDec::new_from_slice(key)
-        .map_err(|_| CryptoError::InvalidKeyLength(key.len()))?;
+    let cipher =
+        Aes256EcbDec::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength(key.len()))?;
     cipher
         .decrypt_padded_vec::<aes::cipher::block_padding::NoPadding>(data)
         .map_err(|_| CryptoError::InvalidPadding)
@@ -42,8 +45,8 @@ pub fn symmetric_decrypt_ecb(data: &[u8], key: &[u8]) -> Result<Vec<u8>, CryptoE
     if key.len() != 32 {
         return Err(CryptoError::InvalidKeyLength(key.len()));
     }
-    let cipher = Aes256EcbDec::new_from_slice(key)
-        .map_err(|_| CryptoError::InvalidKeyLength(key.len()))?;
+    let cipher =
+        Aes256EcbDec::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength(key.len()))?;
     cipher
         .decrypt_padded_vec::<aes::cipher::block_padding::Pkcs7>(data)
         .map_err(|_| CryptoError::InvalidPadding)
@@ -60,8 +63,8 @@ mod tests {
         let iv: Vec<u8> = (0..16).collect();
         let plaintext = b"Hello Steam CM!";
         let expected_ct: [u8; 16] = [
-            0x08, 0xab, 0x41, 0x23, 0x8a, 0xf7, 0x79, 0x4f,
-            0x21, 0xe7, 0x88, 0xd6, 0xe3, 0x03, 0xbe, 0x06,
+            0x08, 0xab, 0x41, 0x23, 0x8a, 0xf7, 0x79, 0x4f, 0x21, 0xe7, 0x88, 0xd6, 0xe3, 0x03,
+            0xbe, 0x06,
         ];
 
         let ct = symmetric_encrypt_cbc(plaintext, &key, &iv).unwrap();

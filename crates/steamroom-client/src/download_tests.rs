@@ -1,9 +1,14 @@
-use std::sync::Arc;
-use bytes::Bytes;
-use steamroom::depot::{DepotId, DepotKey, ChunkId};
-use steamroom::depot::manifest::{DepotManifest, ManifestFile};
-use crate::download::{ChunkFetcher, DepotJob, BoxError};
+use crate::download::BoxError;
+use crate::download::ChunkFetcher;
+use crate::download::DepotJob;
 use crate::event::DownloadEvent;
+use bytes::Bytes;
+use std::sync::Arc;
+use steamroom::depot::manifest::DepotManifest;
+use steamroom::depot::manifest::ManifestFile;
+use steamroom::depot::ChunkId;
+use steamroom::depot::DepotId;
+use steamroom::depot::DepotKey;
 
 struct NullFetcher;
 
@@ -69,7 +74,10 @@ async fn delta_removes_files_not_in_new_manifest() {
         .build()
         .unwrap();
 
-    let stats = job.download(&new_manifest, Arc::new(NullFetcher)).await.unwrap();
+    let stats = job
+        .download(&new_manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
 
     assert_eq!(stats.files_removed, 2);
     assert!(!install.join("remove_me.txt").exists());
@@ -105,7 +113,10 @@ async fn delta_no_removal_without_old_manifest() {
         .build()
         .unwrap();
 
-    let stats = job.download(&new_manifest, Arc::new(NullFetcher)).await.unwrap();
+    let stats = job
+        .download(&new_manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
 
     assert_eq!(stats.files_removed, 0);
     assert!(install.join("stale.txt").exists());
@@ -128,7 +139,10 @@ async fn delta_skips_already_missing_files() {
         .build()
         .unwrap();
 
-    let stats = job.download(&new_manifest, Arc::new(NullFetcher)).await.unwrap();
+    let stats = job
+        .download(&new_manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
 
     assert_eq!(stats.files_removed, 0);
 }
@@ -152,7 +166,10 @@ async fn delta_removes_empty_directories() {
         .build()
         .unwrap();
 
-    let stats = job.download(&new_manifest, Arc::new(NullFetcher)).await.unwrap();
+    let stats = job
+        .download(&new_manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
 
     assert_eq!(stats.files_removed, 1);
     assert!(!sub.exists());
@@ -178,7 +195,10 @@ async fn delta_does_not_remove_nonempty_directories() {
         .build()
         .unwrap();
 
-    let stats = job.download(&new_manifest, Arc::new(NullFetcher)).await.unwrap();
+    let stats = job
+        .download(&new_manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
 
     // remove_dir fails on non-empty dirs, so it should not be counted
     assert_eq!(stats.files_removed, 0);
@@ -212,7 +232,10 @@ async fn delta_handles_nested_paths() {
         .build()
         .unwrap();
 
-    let stats = job.download(&new_manifest, Arc::new(NullFetcher)).await.unwrap();
+    let stats = job
+        .download(&new_manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
 
     assert_eq!(stats.files_removed, 1);
     assert!(!nested.join("old.dll").exists());

@@ -1,5 +1,5 @@
-use bytes::Bytes;
 use crate::error::ParseError;
+use bytes::Bytes;
 
 pub const MAGIC: [u8; 4] = *b"VT01";
 

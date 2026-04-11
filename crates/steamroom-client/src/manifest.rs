@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use steamroom::depot::manifest::DepotManifest;
-use steamroom::depot::{DepotId, ManifestId};
+use steamroom::depot::DepotId;
+use steamroom::depot::ManifestId;
 use steamroom::error::ManifestError;
 
 pub struct ManifestCache {
@@ -24,11 +25,7 @@ impl ManifestCache {
             .join(format!("{}_{}.manifest", depot_id.0, manifest_id.0))
     }
 
-    pub fn load(
-        &self,
-        depot_id: DepotId,
-        manifest_id: ManifestId,
-    ) -> Option<Vec<u8>> {
+    pub fn load(&self, depot_id: DepotId, manifest_id: ManifestId) -> Option<Vec<u8>> {
         let path = self.cache_path(depot_id, manifest_id);
         std::fs::read(&path).ok()
     }
@@ -51,12 +48,14 @@ pub fn parse_cdn_manifest(data: &[u8]) -> Result<DepotManifest, ManifestError> {
     // Manifest data may be zip-compressed
     let bytes = if data.len() > 2 && data[0] == 0x50 && data[1] == 0x4B {
         let cursor = std::io::Cursor::new(data);
-        let mut archive = zip::ZipArchive::new(cursor)
-            .map_err(|_| ManifestError::MissingSection)?;
+        let mut archive =
+            zip::ZipArchive::new(cursor).map_err(|_| ManifestError::MissingSection)?;
         if archive.is_empty() {
             return Err(ManifestError::MissingSection);
         }
-        let mut file = archive.by_index(0).map_err(|_| ManifestError::MissingSection)?;
+        let mut file = archive
+            .by_index(0)
+            .map_err(|_| ManifestError::MissingSection)?;
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut file, &mut buf)
             .map_err(|_| ManifestError::MissingSection)?;

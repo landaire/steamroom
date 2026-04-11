@@ -1,5 +1,7 @@
-use steamroom::depot::{DepotId, DepotKey, ManifestId};
 use crate::depot_config::DepotConfig;
+use steamroom::depot::DepotId;
+use steamroom::depot::DepotKey;
+use steamroom::depot::ManifestId;
 
 #[test]
 fn round_trip_save_load() {
@@ -40,7 +42,8 @@ fn manifest_raw_round_trip() {
 
     DepotConfig::save_manifest_raw(dir.path(), depot_id, manifest_id, data).unwrap();
 
-    let path = dir.path()
+    let path = dir
+        .path()
         .join(".depotdownloader")
         .join("manifests")
         .join("481_111.zip");
@@ -63,7 +66,9 @@ fn manifest_decompressed_round_trip() {
 #[test]
 fn load_manifest_decompressed_returns_none_for_missing() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(DepotConfig::load_manifest_decompressed(dir.path(), DepotId(1), ManifestId(1)).is_none());
+    assert!(
+        DepotConfig::load_manifest_decompressed(dir.path(), DepotId(1), ManifestId(1)).is_none()
+    );
 }
 
 #[test]

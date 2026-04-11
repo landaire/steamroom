@@ -1,6 +1,6 @@
-use std::io::Read;
 use super::DepotKey;
 use crate::util::checksum::SteamAdler32;
+use std::io::Read;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ChunkCompression {
@@ -20,7 +20,7 @@ impl ChunkCompression {
             [0x56, 0x53] => Self::VZstd,  // "VS" (VSZa header)
             [0x56, 0x5A] => Self::VZlzma, // "VZ" (VZa header)
             [0x5D, _] => Self::Lzma,
-            [0x50, 0x4B] => Self::Zip,    // "PK"
+            [0x50, 0x4B] => Self::Zip, // "PK"
             _ => Self::None,
         }
     }
@@ -72,8 +72,12 @@ pub fn process_chunk(
     let decrypted = crate::crypto::symmetric_decrypt_cbc(&data[16..], &depot_key.0, &iv)?;
 
     // Detect compression and decompress
-    tracing::debug!("chunk decrypted: {} bytes, first 20: {:02x?}, compression: {:?}",
-        decrypted.len(), &decrypted[..decrypted.len().min(20)], ChunkCompression::detect(&decrypted));
+    tracing::debug!(
+        "chunk decrypted: {} bytes, first 20: {:02x?}, compression: {:?}",
+        decrypted.len(),
+        &decrypted[..decrypted.len().min(20)],
+        ChunkCompression::detect(&decrypted)
+    );
     let decompressed = decompress(&decrypted, expected_size)?;
 
     // Verify size
@@ -100,21 +104,21 @@ fn decompress(data: &[u8], expected_size: u32) -> Result<Vec<u8>, ChunkError> {
     match ChunkCompression::detect(data) {
         ChunkCompression::VZstd => {
             // Valve zstd: "VSZa"(4) + CRC32(4) + zstd_data(N) + CRC32(4) + orig_size(8) + "zsv"(3)
-            const HEADER: usize = 4 + 4;       // "VSZa" + CRC32
-            const FOOTER: usize = 4 + 8 + 3;   // CRC32 + orig_size(u64) + "zsv"
+            const HEADER: usize = 4 + 4; // "VSZa" + CRC32
+            const FOOTER: usize = 4 + 8 + 3; // CRC32 + orig_size(u64) + "zsv"
             if data.len() < HEADER + FOOTER {
                 return Err(ChunkError::TooShort);
             }
             let compressed = &data[HEADER..data.len() - FOOTER];
             let output = zstd::bulk::decompress(compressed, expected_size as usize)
-                .map_err(|e| ChunkError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                .map_err(|e| ChunkError::Io(std::io::Error::other(e)))?;
             Ok(output)
         }
         ChunkCompression::VZlzma => {
             // Valve LZMA: "VZa"(3) + CRC32(4) + LZMA_props(5) + LZMA_data(N) + CRC32(4) + orig_size(4) + "zv"(2)
-            const HEADER: usize = 3 + 4;       // "VZa" + CRC32
-            const PROPS: usize = 5;            // LZMA properties
-            const FOOTER: usize = 4 + 4 + 2;   // CRC32 + orig_size(u32) + "zv"
+            const HEADER: usize = 3 + 4; // "VZa" + CRC32
+            const PROPS: usize = 5; // LZMA properties
+            const FOOTER: usize = 4 + 4 + 2; // CRC32 + orig_size(u32) + "zv"
             if data.len() < HEADER + PROPS + FOOTER {
                 return Err(ChunkError::TooShort);
             }
@@ -129,13 +133,13 @@ fn decompress(data: &[u8], expected_size: u32) -> Result<Vec<u8>, ChunkError> {
 
             let mut output = Vec::with_capacity(expected_size as usize);
             lzma_rs::lzma_decompress(&mut std::io::Cursor::new(&lzma_stream), &mut output)
-                .map_err(|e| ChunkError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                .map_err(|e| ChunkError::Io(std::io::Error::other(e)))?;
             Ok(output)
         }
         ChunkCompression::Lzma => {
             let mut output = Vec::new();
             lzma_rs::lzma_decompress(&mut std::io::Cursor::new(data), &mut output)
-                .map_err(|e| ChunkError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                .map_err(|e| ChunkError::Io(std::io::Error::other(e)))?;
             Ok(output)
         }
         ChunkCompression::Zip => {

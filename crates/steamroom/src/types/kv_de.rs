@@ -1,13 +1,21 @@
-use serde::de::{self, DeserializeSeed, MapAccess, Visitor};
+use serde::de;
+use serde::de::DeserializeSeed;
+use serde::de::MapAccess;
+use serde::de::Visitor;
+
 use serde::Deserializer;
 use std::fmt;
 
-use super::key_value::{KeyValue, KvValue};
+use super::key_value::KeyValue;
+use super::key_value::KvValue;
 
 #[derive(Debug)]
 pub enum KvDeError {
     Custom(String),
-    TypeMismatch { expected: &'static str, got: &'static str },
+    TypeMismatch {
+        expected: &'static str,
+        got: &'static str,
+    },
 }
 
 impl fmt::Display for KvDeError {
@@ -216,7 +224,10 @@ struct KvMapAccess<'a> {
 impl<'de> MapAccess<'de> for KvMapAccess<'de> {
     type Error = KvDeError;
 
-    fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error> {
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, Self::Error> {
         match self.iter.next() {
             Some((key, kv)) => {
                 self.value = Some(&kv.value);
@@ -227,8 +238,14 @@ impl<'de> MapAccess<'de> for KvMapAccess<'de> {
         }
     }
 
-    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
-        let value = self.value.take().ok_or_else(|| KvDeError::Custom("value without key".into()))?;
+    fn next_value_seed<V: DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<V::Value, Self::Error> {
+        let value = self
+            .value
+            .take()
+            .ok_or_else(|| KvDeError::Custom("value without key".into()))?;
         seed.deserialize(KvValueDeserializer(value))
     }
 }
@@ -339,7 +356,10 @@ mod tests {
 }"#;
         let kv = parse_text_kv(input).unwrap();
         let root: Root = from_kv(&kv).unwrap();
-        assert_eq!(root.depots.depot_481.manifests.public.gid, "3183503801510301321");
+        assert_eq!(
+            root.depots.depot_481.manifests.public.gid,
+            "3183503801510301321"
+        );
     }
 
     #[test]

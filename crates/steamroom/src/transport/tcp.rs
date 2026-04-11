@@ -1,13 +1,16 @@
+use super::Transport;
+use crate::connection::framing;
+use crate::connection::CmServer;
+use crate::connection::CmServerAddr;
+use crate::error::ConnectionError;
+use crate::error::Error;
 use bytes::Bytes;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use crate::connection::{CmServer, CmServerAddr};
-use crate::connection::framing;
-use crate::error::{ConnectionError, Error};
-use super::Transport;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 
 pub struct TcpTransport {
     reader: Mutex<tokio::io::ReadHalf<TcpStream>>,
@@ -40,13 +43,23 @@ impl TcpTransport {
 }
 
 impl Transport for TcpTransport {
-    fn send(&self, payload: &[u8]) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>> {
+    fn send(
+        &self,
+        payload: &[u8],
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>> {
         let payload_len = payload.len();
         let frame = framing::Frame::encode(payload);
         Box::pin(async move {
-            tracing::debug!("tcp send: {} bytes payload, {} bytes frame", payload_len, frame.len());
+            tracing::debug!(
+                "tcp send: {} bytes payload, {} bytes frame",
+                payload_len,
+                frame.len()
+            );
             let mut writer = self.writer.lock().await;
-            writer.write_all(&frame).await.map_err(ConnectionError::Io)?;
+            writer
+                .write_all(&frame)
+                .await
+                .map_err(ConnectionError::Io)?;
             writer.flush().await.map_err(ConnectionError::Io)?;
             Ok(())
         })
@@ -65,10 +78,16 @@ impl Transport for TcpTransport {
             let length = u32::from_le_bytes(header[..4].try_into().unwrap());
             let magic = &header[4..8];
             if magic != framing::MAGIC {
-                return Err(ConnectionError::BadMagic(u32::from_le_bytes(magic.try_into().unwrap())).into());
+                return Err(ConnectionError::BadMagic(u32::from_le_bytes(
+                    magic.try_into().unwrap(),
+                ))
+                .into());
             }
             let mut payload = vec![0u8; length as usize];
-            reader.read_exact(&mut payload).await.map_err(|_| ConnectionError::Disconnected)?;
+            reader
+                .read_exact(&mut payload)
+                .await
+                .map_err(|_| ConnectionError::Disconnected)?;
             Ok(Bytes::from(payload))
         })
     }

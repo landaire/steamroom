@@ -1,10 +1,12 @@
-use bytes::Bytes;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, Ordering};
-use futures_util::lock::Mutex;
-use crate::error::Error;
+use super::capture::CaptureFile;
+use super::capture::CapturedPacket;
 use super::Transport;
-use super::capture::{CaptureFile, CapturedPacket};
+use crate::error::Error;
+use bytes::Bytes;
+use futures_util::lock::Mutex;
+use std::pin::Pin;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 
 pub struct RecordingTransport<T: Transport> {
     inner: T,
@@ -31,7 +33,10 @@ impl<T: Transport> RecordingTransport<T> {
 }
 
 impl<T: Transport> Transport for RecordingTransport<T> {
-    fn send(&self, payload: &[u8]) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>> {
+    fn send(
+        &self,
+        payload: &[u8],
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>> {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let packet = CapturedPacket::new(seq, payload);
         Box::pin(async move {

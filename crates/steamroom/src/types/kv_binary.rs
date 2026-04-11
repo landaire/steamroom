@@ -1,10 +1,16 @@
 use std::collections::BTreeMap;
-use winnow::binary::{le_f32, le_i32, le_i64, le_u64, le_u8};
+use winnow::binary::le_f32;
+use winnow::binary::le_i32;
+use winnow::binary::le_i64;
+use winnow::binary::le_u64;
+use winnow::binary::le_u8;
 use winnow::error::ContextError;
 use winnow::prelude::*;
 use winnow::token::take_till;
 
-use super::key_value::{KeyValue, KvTag, KvValue};
+use super::key_value::KeyValue;
+use super::key_value::KvTag;
+use super::key_value::KvValue;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BinaryKvError {

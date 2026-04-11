@@ -1,9 +1,11 @@
-use bytes::Bytes;
-use byteorder::{LittleEndian, ReadBytesExt};
-use prost::Message;
-use std::io::{Cursor, Read};
 use crate::error::Error;
 use crate::generated::CMsgMulti;
+use byteorder::LittleEndian;
+use byteorder::ReadBytesExt;
+use bytes::Bytes;
+use prost::Message;
+use std::io::Cursor;
+use std::io::Read;
 
 pub fn unpack_multi(data: &[u8]) -> Result<Vec<Bytes>, Error> {
     let multi = CMsgMulti::decode(data)?;

@@ -2,23 +2,29 @@ mod cli;
 mod download;
 mod errors;
 
-use std::path::PathBuf;
 use clap::Parser;
-use prost::Message;
-use tracing::{debug, info, warn};
 use cli::*;
 use errors::CliError;
+use prost::Message;
+use std::path::PathBuf;
 use steamroom::apps::AccessToken;
 use steamroom::cdn::CdnClient;
-use steamroom::client::{SteamClient, LoggedIn, PROTOCOL_VERSION};
 use steamroom::client::msg::ClientMsg;
+use steamroom::client::LoggedIn;
+use steamroom::client::SteamClient;
+use steamroom::client::PROTOCOL_VERSION;
 use steamroom::connection;
-use steamroom::depot::*;
-use steamroom::depot::chunk;
 use steamroom::depot::manifest::DepotManifest;
+use steamroom::depot::*;
 use steamroom::messages::EMsg;
 use steamroom::transport::websocket::WebSocketTransport;
-use steamroom::types::key_value::{self, KeyValue, KvValue};
+use steamroom::types::key_value;
+use steamroom::types::key_value::KeyValue;
+use steamroom::types::key_value::KvValue;
+
+use tracing::debug;
+use tracing::info;
+use tracing::warn;
 
 fn main() -> Result<(), CliError> {
     let cli = if std::env::var("DD_COMPAT").as_deref() == Ok("1") {
@@ -72,9 +78,7 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
     result
 }
 
-async fn connect_and_login(
-    auth: &AuthOptions,
-) -> Result<SteamClient<LoggedIn>, CliError> {
+async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, CliError> {
     info!("discovering CM servers...");
     let servers = connection::CmServer::fetch().await.unwrap_or_else(|_| {
         warn!("failed to fetch CM servers, using defaults");
@@ -110,7 +114,10 @@ async fn connect_and_login(
             build_token_logon(username, &token)
         } else if auth.qr {
             let tokens = authenticate_qr(&client).await?;
-            save_token(&tokens.account_name.as_deref().unwrap_or(username), &tokens.refresh_token);
+            save_token(
+                tokens.account_name.as_deref().unwrap_or(username),
+                &tokens.refresh_token,
+            );
             build_token_logon(
                 tokens.account_name.as_deref().unwrap_or(username),
                 &tokens.access_token,
@@ -121,24 +128,46 @@ async fn connect_and_login(
             for attempt in 0..3 {
                 let password = if attempt == 0 {
                     auth.password.clone().unwrap_or_else(|| {
-                        rpassword::prompt_password(format!("Password for {username}: ")).unwrap_or_default()
+                        rpassword::prompt_password(format!("Password for {username}: "))
+                            .unwrap_or_default()
                     })
                 } else {
                     eprintln!("Invalid password, try again ({}/3)", attempt + 1);
-                    rpassword::prompt_password(format!("Password for {username}: ")).unwrap_or_default()
+                    rpassword::prompt_password(format!("Password for {username}: "))
+                        .unwrap_or_default()
                 };
-                match authenticate_credentials(&client, username, &password, auth.device_name.as_deref()).await {
-                    Ok(t) => { tokens = Some(t); break; }
+                match authenticate_credentials(
+                    &client,
+                    username,
+                    &password,
+                    auth.device_name.as_deref(),
+                )
+                .await
+                {
+                    Ok(t) => {
+                        tokens = Some(t);
+                        break;
+                    }
                     Err(CliError::Steam(steamroom::error::Error::Connection(
-                        steamroom::error::ConnectionError::LogonFailed(steamroom::enums::EResultError::InvalidPassword),
-                    ))) => { last_err = Some(CliError::Steam(steamroom::error::Error::Connection(
-                        steamroom::error::ConnectionError::LogonFailed(steamroom::enums::EResultError::InvalidPassword),
-                    ))); continue; }
+                        steamroom::error::ConnectionError::LogonFailed(
+                            steamroom::enums::EResultError::InvalidPassword,
+                        ),
+                    ))) => {
+                        last_err = Some(CliError::Steam(steamroom::error::Error::Connection(
+                            steamroom::error::ConnectionError::LogonFailed(
+                                steamroom::enums::EResultError::InvalidPassword,
+                            ),
+                        )));
+                        continue;
+                    }
                     Err(e) => return Err(e),
                 }
             }
             let tokens = tokens.ok_or_else(|| last_err.unwrap())?;
-            save_token(&tokens.account_name.as_deref().unwrap_or(username), &tokens.refresh_token);
+            save_token(
+                tokens.account_name.as_deref().unwrap_or(username),
+                &tokens.refresh_token,
+            );
             build_token_logon(
                 tokens.account_name.as_deref().unwrap_or(username),
                 &tokens.access_token,
@@ -161,7 +190,11 @@ async fn connect_and_login(
 }
 
 fn tokens_path() -> Option<std::path::PathBuf> {
-    Some(dirs_next::home_dir()?.join(".depotdownloader").join("tokens.json"))
+    Some(
+        dirs_next::home_dir()?
+            .join(".depotdownloader")
+            .join("tokens.json"),
+    )
 }
 
 fn load_saved_token(username: &str) -> Option<String> {
@@ -180,7 +213,10 @@ fn save_token(username: &str, refresh_token: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&path, serde_json::to_string_pretty(&root).unwrap_or_default());
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&root).unwrap_or_default(),
+    );
     info!("saved refresh token for {username}");
 }
 
@@ -192,12 +228,16 @@ async fn authenticate_credentials(
 ) -> Result<steamroom::auth::AuthTokens, CliError> {
     info!("getting RSA public key for {username}...");
     let rsa = client.get_password_rsa_public_key(username).await?;
-    let modulus = rsa.publickey_mod.ok_or(CliError::Steam(
-        steamroom::error::Error::Connection(steamroom::error::ConnectionError::EncryptionFailed),
-    ))?;
-    let exponent = rsa.publickey_exp.ok_or(CliError::Steam(
-        steamroom::error::Error::Connection(steamroom::error::ConnectionError::EncryptionFailed),
-    ))?;
+    let modulus = rsa
+        .publickey_mod
+        .ok_or(CliError::Steam(steamroom::error::Error::Connection(
+            steamroom::error::ConnectionError::EncryptionFailed,
+        )))?;
+    let exponent =
+        rsa.publickey_exp
+            .ok_or(CliError::Steam(steamroom::error::Error::Connection(
+                steamroom::error::ConnectionError::EncryptionFailed,
+            )))?;
     let timestamp = rsa.timestamp.unwrap_or(0);
 
     let encrypted_password = steamroom::crypto::rsa::encrypt_with_rsa_public_key(
@@ -227,7 +267,9 @@ async fn authenticate_credentials(
         match guard {
             steamroom::auth::GuardType::DeviceCode | steamroom::auth::GuardType::EmailCode => {
                 let prompt = match guard {
-                    steamroom::auth::GuardType::DeviceCode => "Steam Guard code (from authenticator app): ",
+                    steamroom::auth::GuardType::DeviceCode => {
+                        "Steam Guard code (from authenticator app): "
+                    }
                     steamroom::auth::GuardType::EmailCode => "Steam Guard code (from email): ",
                     _ => unreachable!(),
                 };
@@ -272,15 +314,9 @@ async fn authenticate_qr(
 
     if let Some(ref url) = session.challenge_url {
         // Print QR code to terminal
-        let qr = qrcode::QrCode::new(url.as_bytes()).map_err(|e| {
-            CliError::Steam(steamroom::error::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e,
-            )))
-        })?;
-        let rendered = qr
-            .render::<qrcode::render::unicode::Dense1x2>()
-            .build();
+        let qr = qrcode::QrCode::new(url.as_bytes())
+            .map_err(|e| CliError::Steam(steamroom::error::Error::Io(std::io::Error::other(e))))?;
+        let rendered = qr.render::<qrcode::render::unicode::Dense1x2>().build();
         eprintln!("{rendered}");
         eprintln!("Scan this QR code with the Steam mobile app");
         eprintln!("Or open: {url}");
@@ -329,10 +365,10 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     // Get access tokens
     info!("getting PICS access tokens for app {}", app_id);
     let tokens = client.pics_get_access_tokens(&[app_id]).await?;
-    let token = tokens.into_iter().next().unwrap_or(AccessToken {
-        app_id,
-        token: 0,
-    });
+    let token = tokens
+        .into_iter()
+        .next()
+        .unwrap_or(AccessToken { app_id, token: 0 });
 
     // Get product info
     info!("getting product info...");
@@ -343,7 +379,9 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         .ok_or_else(|| CliError::NoProductInfo(app_id.0))?;
 
     // Parse KV data
-    let kv_data = app_info.kv_data.ok_or_else(|| CliError::NoKvData(app_id.0))?;
+    let kv_data = app_info
+        .kv_data
+        .ok_or_else(|| CliError::NoKvData(app_id.0))?;
     let kv = parse_app_kv(&kv_data)?;
 
     // Find depots
@@ -352,7 +390,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     } else {
         // Find first depot from the KV data
         let depots_kv = kv.get("depots").ok_or_else(|| CliError::NoDepots)?;
-        find_first_depot(&depots_kv)?
+        find_first_depot(depots_kv)?
     };
 
     let branch = args.branch.as_deref().unwrap_or("public");
@@ -362,10 +400,13 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         ManifestId(m)
     } else {
         let depots_kv = kv.get("depots").ok_or_else(|| CliError::NoDepots)?;
-        find_manifest_for_depot(&depots_kv, depot_id, branch)?
+        find_manifest_for_depot(depots_kv, depot_id, branch)?
     };
 
-    info!("depot={}, manifest={}, branch={}", depot_id, manifest_id, branch);
+    info!(
+        "depot={}, manifest={}, branch={}",
+        depot_id, manifest_id, branch
+    );
 
     // Get depot decryption key
     info!("getting depot key for depot {depot_id} app {app_id}...");
@@ -374,9 +415,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
 
     // Get CDN servers
     info!("getting CDN servers...");
-    let cdn_servers = client
-        .get_cdn_servers(CellId(0), Some(20))
-        .await?;
+    let cdn_servers = client.get_cdn_servers(CellId(0), Some(20)).await?;
     if cdn_servers.is_empty() {
         return Err(CliError::NoCdnServers);
     }
@@ -397,7 +436,8 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         steamroom_client::manifest::ManifestCache::default_path(),
     );
 
-    let (manifest_bytes, cdn_raw) = if let Some(cached) = manifest_cache.load(depot_id, manifest_id) {
+    let (manifest_bytes, cdn_raw) = if let Some(cached) = manifest_cache.load(depot_id, manifest_id)
+    {
         debug!("using cached manifest for {depot_id}_{manifest_id}");
         (cached, None)
     } else {
@@ -414,17 +454,23 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     {
         let mut off = 0;
         while off + 8 <= manifest_bytes.len() {
-            let magic = u32::from_le_bytes(manifest_bytes[off..off+4].try_into().unwrap());
-            let size = u32::from_le_bytes(manifest_bytes[off+4..off+8].try_into().unwrap());
+            let magic = u32::from_le_bytes(manifest_bytes[off..off + 4].try_into().unwrap());
+            let size = u32::from_le_bytes(manifest_bytes[off + 4..off + 8].try_into().unwrap());
             debug!("  section at {off}: magic=0x{magic:08x} size={size}");
-            if magic == 0xD64BF064 { break; }
+            if magic == 0xD64BF064 {
+                break;
+            }
             off += 8 + size as usize;
         }
     }
 
     // Parse manifest
     let mut manifest = DepotManifest::parse(&manifest_bytes)?;
-    info!("manifest parsed: {} files, encrypted={}", manifest.files.len(), manifest.filenames_encrypted);
+    info!(
+        "manifest parsed: {} files, encrypted={}",
+        manifest.files.len(),
+        manifest.filenames_encrypted
+    );
     if manifest.filenames_encrypted {
         match manifest.decrypt_filenames(&depot_key) {
             Ok(()) => info!("decrypted filenames"),
@@ -432,7 +478,9 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         }
     }
 
-    let output_dir = args.output.unwrap_or_else(|| PathBuf::from("depots").join(depot_id.0.to_string()));
+    let output_dir = args
+        .output
+        .unwrap_or_else(|| PathBuf::from("depots").join(depot_id.0.to_string()));
     std::fs::create_dir_all(&output_dir)?;
 
     // Load old manifest for delta file removal
@@ -441,7 +489,9 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         Some((old_id, old_key)) if old_id != manifest_id => {
             debug!("previous manifest: {old_id}, loading for delta");
             steamroom_client::depot_config::DepotConfig::load_manifest_decompressed(
-                &output_dir, depot_id, old_id,
+                &output_dir,
+                depot_id,
+                old_id,
             )
             .and_then(|bytes| {
                 let mut old = DepotManifest::parse(&bytes).ok()?;
@@ -486,15 +536,24 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
 
     if let Some(ref filelist_path) = args.filelist {
         let content = std::fs::read_to_string(filelist_path)?;
-        let files: Vec<String> = content.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+        let files: Vec<String> = content
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
         builder = builder.file_filter(steamroom_client::download::FileFilter::FileList(files));
     } else if let Some(ref pattern) = args.file_regex {
-        builder = builder.file_filter(steamroom_client::download::FileFilter::Regex(regex::Regex::new(pattern)?));
+        builder = builder.file_filter(steamroom_client::download::FileFilter::Regex(
+            regex::Regex::new(pattern)?,
+        ));
     }
 
-    let job = builder.build().map_err(|e| CliError::Steam(steamroom::error::Error::Io(
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
-    )))?;
+    let job = builder.build().map_err(|e| {
+        CliError::Steam(steamroom::error::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            e,
+        )))
+    })?;
 
     let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
     info!(
@@ -531,11 +590,10 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         }
     });
 
-    let stats = job.download(&manifest, std::sync::Arc::new(fetcher)).await.map_err(|e| {
-        CliError::Steam(steamroom::error::Error::Io(
-            std::io::Error::new(std::io::ErrorKind::Other, e),
-        ))
-    })?;
+    let stats = job
+        .download(&manifest, std::sync::Arc::new(fetcher))
+        .await
+        .map_err(|e| CliError::Steam(steamroom::error::Error::Io(std::io::Error::other(e))))?;
 
     drop(job); // drop to close the event channel
     let _ = progress_handle.await;
@@ -543,11 +601,17 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     // Save manifest and config for future delta downloads / preservation
     if let Some(raw) = cdn_raw {
         let _ = steamroom_client::depot_config::DepotConfig::save_manifest_raw(
-            &output_dir, depot_id, manifest_id, &raw,
+            &output_dir,
+            depot_id,
+            manifest_id,
+            &raw,
         );
     }
     let _ = steamroom_client::depot_config::DepotConfig::save_manifest_decompressed(
-        &output_dir, depot_id, manifest_id, &manifest_bytes,
+        &output_dir,
+        depot_id,
+        manifest_id,
+        &manifest_bytes,
     );
     let mut depot_config = steamroom_client::depot_config::DepotConfig::load(&output_dir);
     depot_config.set_installed(depot_id, manifest_id, &depot_key);
@@ -579,7 +643,7 @@ fn parse_app_kv(data: &[u8]) -> Result<KeyValue, CliError> {
 
 fn find_first_depot(depots_kv: &KeyValue) -> Result<DepotId, CliError> {
     if let KvValue::Children(ref map) = depots_kv.value {
-        for (key, _) in map {
+        for key in map.keys() {
             if let Ok(id) = key.parse::<u32>() {
                 if id > 0 {
                     return Ok(DepotId(id));
@@ -605,17 +669,13 @@ fn find_manifest_for_depot(
         if let Some(branch_kv) = manifests.get(branch) {
             if let Some(gid) = branch_kv.get("gid") {
                 if let Some(gid_str) = gid.as_str() {
-                    let id: u64 = gid_str
-                        .parse()
-                        .map_err(|_| CliError::InvalidManifestId)?;
+                    let id: u64 = gid_str.parse().map_err(|_| CliError::InvalidManifestId)?;
                     return Ok(ManifestId(id));
                 }
             }
             // Maybe branch_kv itself is a string (manifest ID directly)
             if let Some(gid_str) = branch_kv.as_str() {
-                let id: u64 = gid_str
-                    .parse()
-                    .map_err(|_| CliError::InvalidManifestId)?;
+                let id: u64 = gid_str.parse().map_err(|_| CliError::InvalidManifestId)?;
                 return Ok(ManifestId(id));
             }
         }
@@ -634,9 +694,14 @@ fn decompress_manifest(data: &[u8]) -> Result<Vec<u8>, CliError> {
         let mut archive = zip::ZipArchive::new(cursor)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if archive.is_empty() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "empty manifest archive").into());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "empty manifest archive",
+            )
+            .into());
         }
-        let mut file = archive.by_index(0)
+        let mut file = archive
+            .by_index(0)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut file, &mut buf)?;
@@ -665,10 +730,10 @@ async fn fetch_app_kv(
 ) -> Result<(SteamClient<LoggedIn>, KeyValue), CliError> {
     let client = connect_and_login(auth).await?;
     let tokens = client.pics_get_access_tokens(&[app_id]).await?;
-    let token = tokens.into_iter().next().unwrap_or(AccessToken {
-        app_id,
-        token: 0,
-    });
+    let token = tokens
+        .into_iter()
+        .next()
+        .unwrap_or(AccessToken { app_id, token: 0 });
     let infos = client.pics_get_product_info(&[token]).await?;
     let app_info = infos
         .into_iter()
@@ -688,8 +753,16 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
         return Ok(());
     }
 
-    let name = kv.get("common").and_then(|c| c.get("name")).and_then(|n| n.as_str()).unwrap_or("(unknown)");
-    let app_type = kv.get("common").and_then(|c| c.get("type")).and_then(|t| t.as_str()).unwrap_or("(unknown)");
+    let name = kv
+        .get("common")
+        .and_then(|c| c.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("(unknown)");
+    let app_type = kv
+        .get("common")
+        .and_then(|c| c.get("type"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("(unknown)");
 
     println!("App ID:  {}", app_id);
     println!("Name:    {name}");
@@ -711,13 +784,26 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
             if let Some(branches) = depots.get("branches") {
                 if let KvValue::Children(ref bmap) = branches.value {
                     for (bname, branch) in bmap {
-                        let build_id = branch.get("buildid").and_then(|b| b.as_str()).unwrap_or("-");
-                        let time_updated = branch.get("timeupdated").and_then(|t| t.as_str()).unwrap_or("");
+                        let build_id = branch
+                            .get("buildid")
+                            .and_then(|b| b.as_str())
+                            .unwrap_or("-");
+                        let time_updated = branch
+                            .get("timeupdated")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("");
                         let pwd = branch.get("pwdrequired").and_then(|p| p.as_str()) == Some("1");
-                        let desc = branch.get("description").and_then(|d| d.as_str()).unwrap_or("");
+                        let desc = branch
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("");
                         let mut flags = Vec::new();
-                        if pwd { flags.push("password"); }
-                        if !desc.is_empty() { flags.push(desc); }
+                        if pwd {
+                            flags.push("password");
+                        }
+                        if !desc.is_empty() {
+                            flags.push(desc);
+                        }
                         let extra = if flags.is_empty() {
                             String::new()
                         } else {
@@ -756,10 +842,7 @@ async fn run_manifests(args: ManifestsArgs, auth: &AuthOptions) -> Result<(), Cl
                         .and_then(|g| g.as_str())
                         .or_else(|| branch_kv.as_str());
                     if let Some(manifest_id) = gid {
-                        let dname = depot
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("");
+                        let dname = depot.get("name").and_then(|n| n.as_str()).unwrap_or("");
                         println!("{depot_id}\t{manifest_id}\t{dname}");
                     }
                 }
@@ -778,19 +861,20 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
     let depot_id = args
         .depot
         .map(DepotId)
-        .or_else(|| {
-            kv.get("depots")
-                .and_then(|d| find_first_depot(d).ok())
-        })
+        .or_else(|| kv.get("depots").and_then(|d| find_first_depot(d).ok()))
         .ok_or(CliError::NoDepots)?;
 
-    let manifest_id = args.manifest.map(ManifestId).or_else(|| {
-        kv.get("depots")
-            .and_then(|d| find_manifest_for_depot(d, depot_id, branch).ok())
-    }).ok_or(CliError::ManifestNotFound {
-        depot: depot_id.0,
-        branch: branch.to_string(),
-    })?;
+    let manifest_id = args
+        .manifest
+        .map(ManifestId)
+        .or_else(|| {
+            kv.get("depots")
+                .and_then(|d| find_manifest_for_depot(d, depot_id, branch).ok())
+        })
+        .ok_or(CliError::ManifestNotFound {
+            depot: depot_id.0,
+            branch: branch.to_string(),
+        })?;
 
     let depot_key = client.get_depot_decryption_key(depot_id, app_id).await?;
     let request_code = client
@@ -811,14 +895,18 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
     }
 
     if args.format == Some(OutputFormat::Json) {
-        let entries: Vec<serde_json::Value> = manifest.files.iter().map(|f| {
-            serde_json::json!({
-                "filename": f.filename.as_deref().unwrap_or(""),
-                "size": f.size.unwrap_or(0),
-                "flags": f.flags.unwrap_or(0),
-                "chunks": f.chunks.len(),
+        let entries: Vec<serde_json::Value> = manifest
+            .files
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "filename": f.filename.as_deref().unwrap_or(""),
+                    "size": f.size.unwrap_or(0),
+                    "flags": f.flags.unwrap_or(0),
+                    "chunks": f.chunks.len(),
+                })
             })
-        }).collect();
+            .collect();
         println!("{}", serde_json::to_string_pretty(&entries)?);
         return Ok(());
     }
@@ -853,11 +941,9 @@ fn kv_to_json(kv: &KeyValue) -> serde_json::Value {
         KvValue::Int32(v) => serde_json::Value::Number((*v).into()),
         KvValue::UInt64(v) => serde_json::Value::Number((*v).into()),
         KvValue::Int64(v) => serde_json::Value::Number((*v).into()),
-        KvValue::Float32(v) => {
-            serde_json::Number::from_f64(*v as f64)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
+        KvValue::Float32(v) => serde_json::Number::from_f64(*v as f64)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
         _ => serde_json::Value::Null,
     }
 }
@@ -872,7 +958,10 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
         ..Default::default()
     };
     let resp = client
-        .call_service_method("PublishedFile.GetDetails#1", &prost::Message::encode_to_vec(&req))
+        .call_service_method(
+            "PublishedFile.GetDetails#1",
+            &prost::Message::encode_to_vec(&req),
+        )
         .await?;
     let details: steamroom::generated::CPublishedFileGetDetailsResponse = resp.decode()?;
 
@@ -941,33 +1030,47 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
         .install_dir(output_dir.clone())
         .event_sender(event_tx)
         .build()
-        .map_err(|e| CliError::Steam(steamroom::error::Error::Io(
-            std::io::Error::new(std::io::ErrorKind::Other, e),
-        )))?;
+        .map_err(|e| CliError::Steam(steamroom::error::Error::Io(std::io::Error::other(e))))?;
 
     let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
-    info!("downloading {} files ({}) to {}", manifest.files.len(), fmt_size(total_bytes), output_dir.display());
+    info!(
+        "downloading {} files ({}) to {}",
+        manifest.files.len(),
+        fmt_size(total_bytes),
+        output_dir.display()
+    );
 
     let progress_handle = tokio::spawn(async move {
         let mut completed: u64 = 0;
         while let Some(event) = event_rx.recv().await {
             match event {
                 steamroom_client::event::DownloadEvent::FileCompleted { filename } => {
-                    let pct = if total_bytes > 0 { completed as f64 / total_bytes as f64 * 100.0 } else { 0.0 };
+                    let pct = if total_bytes > 0 {
+                        completed as f64 / total_bytes as f64 * 100.0
+                    } else {
+                        0.0
+                    };
                     info!("[{pct:.1}%] {filename}");
                 }
-                steamroom_client::event::DownloadEvent::ChunkCompleted { bytes } => { completed += bytes; }
+                steamroom_client::event::DownloadEvent::ChunkCompleted { bytes } => {
+                    completed += bytes;
+                }
                 _ => {}
             }
         }
     });
 
-    let stats = job.download(&manifest, std::sync::Arc::new(fetcher)).await.map_err(|e| {
-        CliError::Steam(steamroom::error::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
-    })?;
+    let stats = job
+        .download(&manifest, std::sync::Arc::new(fetcher))
+        .await
+        .map_err(|e| CliError::Steam(steamroom::error::Error::Io(std::io::Error::other(e))))?;
     drop(job);
     let _ = progress_handle.await;
 
-    info!("workshop download complete: {} files, {}", stats.files_completed, fmt_size(stats.bytes_downloaded));
+    info!(
+        "workshop download complete: {} files, {}",
+        stats.files_completed,
+        fmt_size(stats.bytes_downloaded)
+    );
     Ok(())
 }

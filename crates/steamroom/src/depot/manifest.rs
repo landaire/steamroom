@@ -1,10 +1,15 @@
-use byteorder::{LittleEndian, ReadBytesExt};
-use prost::Message;
-use std::io::Cursor;
-use super::{ChunkId, DepotId, DepotKey, ManifestId};
+use super::ChunkId;
+use super::DepotId;
+use super::DepotKey;
+use super::ManifestId;
 use crate::enums::ManifestMagic;
 use crate::error::ManifestError;
-use crate::generated::{ContentManifestMetadata, ContentManifestPayload};
+use crate::generated::ContentManifestMetadata;
+use crate::generated::ContentManifestPayload;
+use byteorder::LittleEndian;
+use byteorder::ReadBytesExt;
+use prost::Message;
+use std::io::Cursor;
 
 #[derive(Clone, Debug)]
 pub struct DepotManifest {
@@ -64,7 +69,10 @@ impl DepotManifest {
                 }
             };
 
-            tracing::trace!("manifest section: {magic:?} at offset {}", cursor.position() as usize - 4);
+            tracing::trace!(
+                "manifest section: {magic:?} at offset {}",
+                cursor.position() as usize - 4
+            );
             if magic == ManifestMagic::EndOfManifest {
                 break;
             }
@@ -85,7 +93,10 @@ impl DepotManifest {
                     if payload.is_none() {
                         match ContentManifestPayload::decode(section_data) {
                             Ok(p) => payload = Some(p),
-                            Err(e) => tracing::warn!("failed to decode payload ({} bytes): {e}", section_data.len()),
+                            Err(e) => tracing::warn!(
+                                "failed to decode payload ({} bytes): {e}",
+                                section_data.len()
+                            ),
                         }
                     }
                 }
@@ -103,7 +114,11 @@ impl DepotManifest {
             }
         }
 
-        tracing::debug!("manifest parse: payload={}, metadata={}", payload.is_some(), metadata.is_some());
+        tracing::debug!(
+            "manifest parse: payload={}, metadata={}",
+            payload.is_some(),
+            metadata.is_some()
+        );
         let payload = payload.ok_or(ManifestError::MissingSection)?;
         // V4 manifests may have metadata in a different magic section that we
         // parse into metadata. If absent, use defaults — the payload is still valid.
@@ -175,12 +190,12 @@ impl DepotManifest {
         }
         for file in &mut self.files {
             if let Some(ref encrypted_name) = file.filename {
-                let clean_b64: String =
-                    encrypted_name.chars().filter(|c| !c.is_whitespace()).collect();
-                let decoded = base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &clean_b64,
-                )?;
+                let clean_b64: String = encrypted_name
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                let decoded =
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &clean_b64)?;
 
                 // ECB(IV) + CBC(data) — same format as chunk encryption
                 if decoded.len() < 32 {

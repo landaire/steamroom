@@ -1,4 +1,5 @@
-use steamroom::types::key_value::{parse_binary_kv, parse_text_kv};
+use steamroom::types::key_value::parse_binary_kv;
+use steamroom::types::key_value::parse_text_kv;
 
 #[test]
 fn text_kv_app_state() {

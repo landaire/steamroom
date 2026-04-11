@@ -1,9 +1,11 @@
-use bytes::Bytes;
-use byteorder::{LittleEndian, ReadBytesExt};
-use std::io::Cursor;
-use prost::Message;
-use super::{EMsg, RawEMsg};
+use super::EMsg;
+use super::RawEMsg;
 use crate::error::ParseError;
+use byteorder::LittleEndian;
+use byteorder::ReadBytesExt;
+use bytes::Bytes;
+use prost::Message;
+use std::io::Cursor;
 
 #[derive(Clone, Debug)]
 pub struct MsgHdr {
@@ -97,8 +99,12 @@ fn parse_simple_header(data: &[u8], raw_emsg: RawEMsg) -> Result<PacketHeader, P
     }
 
     let mut cursor = Cursor::new(&data[4..]);
-    let target_job_id = cursor.read_u64::<LittleEndian>().map_err(|_| ParseError::UnexpectedEof)?;
-    let source_job_id = cursor.read_u64::<LittleEndian>().map_err(|_| ParseError::UnexpectedEof)?;
+    let target_job_id = cursor
+        .read_u64::<LittleEndian>()
+        .map_err(|_| ParseError::UnexpectedEof)?;
+    let source_job_id = cursor
+        .read_u64::<LittleEndian>()
+        .map_err(|_| ParseError::UnexpectedEof)?;
     let body = Bytes::copy_from_slice(&data[20..]);
 
     Ok(PacketHeader::Simple {
@@ -112,7 +118,9 @@ fn parse_simple_header(data: &[u8], raw_emsg: RawEMsg) -> Result<PacketHeader, P
 }
 
 impl MsgHdrProtoBuf {
-    pub fn decode_header(&self) -> Result<crate::generated::CMsgProtoBufHeader, prost::DecodeError> {
+    pub fn decode_header(
+        &self,
+    ) -> Result<crate::generated::CMsgProtoBufHeader, prost::DecodeError> {
         crate::generated::CMsgProtoBufHeader::decode(&*self.header_data)
     }
 }

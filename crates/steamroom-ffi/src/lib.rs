@@ -3,7 +3,8 @@ pub(crate) mod inner;
 #[allow(clippy::needless_lifetimes)]
 #[diplomat::bridge]
 mod ffi {
-    use diplomat_runtime::{DiplomatStr, DiplomatWrite};
+    use diplomat_runtime::DiplomatStr;
+    use diplomat_runtime::DiplomatWrite;
     use std::fmt::Write;
 
     #[diplomat::opaque]
@@ -27,10 +28,10 @@ mod ffi {
             username: &DiplomatStr,
             token: &DiplomatStr,
         ) -> Result<Box<SteamSession>, Box<SteamError>> {
-            let username = core::str::from_utf8(username)
-                .map_err(|e| Box::new(SteamError(e.to_string())))?;
-            let token = core::str::from_utf8(token)
-                .map_err(|e| Box::new(SteamError(e.to_string())))?;
+            let username =
+                core::str::from_utf8(username).map_err(|e| Box::new(SteamError(e.to_string())))?;
+            let token =
+                core::str::from_utf8(token).map_err(|e| Box::new(SteamError(e.to_string())))?;
             crate::inner::connect_with_token(username, token)
                 .map(|s| Box::new(SteamSession(s)))
                 .map_err(|e| Box::new(SteamError(e)))
@@ -42,8 +43,8 @@ mod ffi {
             depot_id: u32,
             branch: &DiplomatStr,
         ) -> Result<Box<ManifestFileList>, Box<SteamError>> {
-            let branch = core::str::from_utf8(branch)
-                .map_err(|e| Box::new(SteamError(e.to_string())))?;
+            let branch =
+                core::str::from_utf8(branch).map_err(|e| Box::new(SteamError(e.to_string())))?;
             crate::inner::list_depot_files(&self.0, app_id, depot_id, branch)
                 .map(|f| Box::new(ManifestFileList(f)))
                 .map_err(|e| Box::new(SteamError(e)))
