@@ -60,7 +60,7 @@ pub struct AuthOptions {
     #[arg(long)]
     pub remember_password: bool,
 
-    #[arg(long)]
+    #[arg(long, env = "DD_DEVICE_NAME")]
     pub device_name: Option<String>,
 }
 
@@ -131,6 +131,8 @@ pub struct FilesArgs {
     pub os: Option<String>,
     #[arg(long, value_enum)]
     pub format: Option<OutputFormat>,
+    #[arg(long)]
+    pub raw: bool,
 }
 
 #[derive(Parser, Debug)]

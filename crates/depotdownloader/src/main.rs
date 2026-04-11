@@ -100,10 +100,28 @@ async fn connect_and_login(
                 &tokens.access_token,
             )
         } else {
-            let password = auth.password.clone().unwrap_or_else(|| {
-                rpassword::prompt_password(format!("Password for {username}: ")).unwrap_or_default()
-            });
-            let tokens = authenticate_credentials(&client, username, &password).await?;
+            let mut last_err = None;
+            let mut tokens = None;
+            for attempt in 0..3 {
+                let password = if attempt == 0 {
+                    auth.password.clone().unwrap_or_else(|| {
+                        rpassword::prompt_password(format!("Password for {username}: ")).unwrap_or_default()
+                    })
+                } else {
+                    eprintln!("Invalid password, try again ({}/3)", attempt + 1);
+                    rpassword::prompt_password(format!("Password for {username}: ")).unwrap_or_default()
+                };
+                match authenticate_credentials(&client, username, &password, auth.device_name.as_deref()).await {
+                    Ok(t) => { tokens = Some(t); break; }
+                    Err(CliError::Steam(steam::error::Error::Connection(
+                        steam::error::ConnectionError::LogonFailed(steam::enums::EResultError::InvalidPassword),
+                    ))) => { last_err = Some(CliError::Steam(steam::error::Error::Connection(
+                        steam::error::ConnectionError::LogonFailed(steam::enums::EResultError::InvalidPassword),
+                    ))); continue; }
+                    Err(e) => return Err(e),
+                }
+            }
+            let tokens = tokens.ok_or_else(|| last_err.unwrap())?;
             save_token(&tokens.account_name.as_deref().unwrap_or(username), &tokens.refresh_token);
             build_token_logon(
                 tokens.account_name.as_deref().unwrap_or(username),
@@ -154,6 +172,7 @@ async fn authenticate_credentials(
     client: &SteamClient<steam::client::Encrypted>,
     username: &str,
     password: &str,
+    device_name: Option<&str>,
 ) -> Result<steam::auth::AuthTokens, CliError> {
     info!("getting RSA public key for {username}...");
     let rsa = client.get_password_rsa_public_key(username).await?;
@@ -181,7 +200,8 @@ async fn authenticate_credentials(
         encrypted_password: Some(encoded_password),
         encryption_timestamp: Some(timestamp),
         remember_login: Some(true),
-        persistence: Some(1), // Persistent
+        persistence: Some(1),
+        device_friendly_name: device_name.map(|s| s.to_string()),
         ..Default::default()
     };
     let session = client.begin_auth_session_via_credentials(req).await?;
@@ -595,16 +615,13 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
     let app_id = AppId(args.app);
     let (_client, kv) = fetch_app_kv(auth, app_id).await?;
 
-    let name = kv
-        .get("common")
-        .and_then(|c| c.get("name"))
-        .and_then(|n| n.as_str())
-        .unwrap_or("(unknown)");
-    let app_type = kv
-        .get("common")
-        .and_then(|c| c.get("type"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("(unknown)");
+    if args.format == Some(OutputFormat::Json) {
+        println!("{}", serde_json::to_string_pretty(&kv_to_json(&kv))?);
+        return Ok(());
+    }
+
+    let name = kv.get("common").and_then(|c| c.get("name")).and_then(|n| n.as_str()).unwrap_or("(unknown)");
+    let app_type = kv.get("common").and_then(|c| c.get("type")).and_then(|t| t.as_str()).unwrap_or("(unknown)");
 
     println!("App ID:  {}", app_id);
     println!("Name:    {name}");
@@ -612,41 +629,42 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
 
     if let Some(depots) = kv.get("depots") {
         if let KvValue::Children(ref map) = depots.value {
-            let depot_ids: Vec<&String> = map
-                .keys()
-                .filter(|k| k.parse::<u32>().is_ok())
-                .collect();
-            println!("Depots:  {}", depot_ids.len());
+            let depot_ids: Vec<&String> = map.keys().filter(|k| k.parse::<u32>().is_ok()).collect();
+            println!("\nDepots ({}):", depot_ids.len());
             for id in &depot_ids {
-                let depot = map.get(*id).unwrap();
-                let dname = depot
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("");
-                println!("  {id}: {dname}");
+                let depot = &map[*id];
+                let dname = depot.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let encrypted = depot.get("encryptedmanifests").is_some();
+                let enc_tag = if encrypted { " [encrypted]" } else { "" };
+                println!("  {id}: {dname}{enc_tag}");
             }
-        }
-    }
 
-    if let Some(depots) = kv.get("depots") {
-        if let Some(branches) = depots.get("branches") {
-            if let KvValue::Children(ref map) = branches.value {
-                println!("Branches: {}", map.len());
-                for (name, branch) in map {
-                    let build_id = branch
-                        .get("buildid")
-                        .and_then(|b| b.as_str())
-                        .unwrap_or("-");
-                    let pwd = branch.get("pwdrequired").and_then(|p| p.as_str());
-                    let lock = if pwd == Some("1") { " (password)" } else { "" };
-                    println!("  {name}: build {build_id}{lock}");
+            println!("\nBranches:");
+            if let Some(branches) = depots.get("branches") {
+                if let KvValue::Children(ref bmap) = branches.value {
+                    for (bname, branch) in bmap {
+                        let build_id = branch.get("buildid").and_then(|b| b.as_str()).unwrap_or("-");
+                        let time_updated = branch.get("timeupdated").and_then(|t| t.as_str()).unwrap_or("");
+                        let pwd = branch.get("pwdrequired").and_then(|p| p.as_str()) == Some("1");
+                        let desc = branch.get("description").and_then(|d| d.as_str()).unwrap_or("");
+                        let mut flags = Vec::new();
+                        if pwd { flags.push("password"); }
+                        if !desc.is_empty() { flags.push(desc); }
+                        let extra = if flags.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", flags.join(", "))
+                        };
+                        let ts = if time_updated.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" updated {time_updated}")
+                        };
+                        println!("  {bname}: build {build_id}{ts}{extra}");
+                    }
                 }
             }
         }
-    }
-
-    if args.format == Some(OutputFormat::Json) {
-        println!("{}", serde_json::to_string_pretty(&kv_to_json(&kv))?);
     }
 
     Ok(())
@@ -720,8 +738,21 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
         .await?;
     let manifest_bytes = decompress_manifest(&manifest_data)?;
     let mut manifest = DepotManifest::parse(&manifest_bytes)?;
-    if manifest.filenames_encrypted {
+    if manifest.filenames_encrypted && !args.raw {
         manifest.decrypt_filenames(&depot_key)?;
+    }
+
+    if args.format == Some(OutputFormat::Json) {
+        let entries: Vec<serde_json::Value> = manifest.files.iter().map(|f| {
+            serde_json::json!({
+                "filename": f.filename.as_deref().unwrap_or(""),
+                "size": f.size.unwrap_or(0),
+                "flags": f.flags.unwrap_or(0),
+                "chunks": f.chunks.len(),
+            })
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
     }
 
     for file in &manifest.files {
@@ -729,7 +760,9 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
         let size = file.size.unwrap_or(0);
         let flags = file.flags.unwrap_or(0);
         let is_dir = steam::enums::DepotFileFlags(flags).is_directory();
-        if is_dir {
+        if args.format == Some(OutputFormat::Plain) {
+            println!("{name}");
+        } else if is_dir {
             println!("{name}/");
         } else {
             println!("{name}\t{}", fmt_size(size));
