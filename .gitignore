@@ -1,6 +1,23 @@
 target/
 .claude/
+
+# Test output directories
 test_output/
 test_auth/
 test_spacewar*/
 capture_test.json
+
+# Python build artifacts
+examples/python/.venv/
+examples/python/build/
+examples/python/*.egg-info/
+examples/python/uv.lock
+__pycache__/
+*.pyc
+*.pyd
+*.so
+
+# Generated Diplomat FFI bindings (regenerate with diplomat-tool)
+crates/steam-ffi/bindings/
+*.dll.lib
+examples/python/steam_ffi.dll

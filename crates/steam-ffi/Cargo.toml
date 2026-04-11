@@ -11,3 +11,7 @@ crate-type = ["cdylib", "staticlib"]
 steam = { workspace = true }
 steam-client = { workspace = true }
 tokio = { workspace = true }
+diplomat = "0.15"
+diplomat-runtime = "0.15"
+prost = { workspace = true }
+zip = { workspace = true }

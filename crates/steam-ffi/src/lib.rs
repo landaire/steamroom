@@ -1,28 +1,78 @@
-use std::ffi::{c_char, CString};
+pub(crate) mod inner;
 
-static mut RUNTIME: Option<tokio::runtime::Runtime> = None;
-static mut LAST_ERROR: Option<CString> = None;
+#[allow(clippy::needless_lifetimes)]
+#[diplomat::bridge]
+mod ffi {
+    use diplomat_runtime::{DiplomatStr, DiplomatWrite};
+    use std::fmt::Write;
 
-#[no_mangle]
-pub extern "C" fn steam_init() -> i32 {
-    todo!()
-}
+    #[diplomat::opaque]
+    pub struct SteamSession(pub(crate) crate::inner::SessionInner);
 
-#[no_mangle]
-pub extern "C" fn steam_shutdown() {
-    todo!()
-}
+    #[diplomat::opaque]
+    pub struct ManifestFileList(pub(crate) crate::inner::FileListInner);
 
-#[no_mangle]
-pub extern "C" fn steam_last_error() -> *const c_char {
-    todo!()
-}
+    #[diplomat::opaque]
+    pub struct SteamError(pub(crate) String);
 
-#[no_mangle]
-pub extern "C" fn steam_free_string(s: *mut c_char) {
-    if !s.is_null() {
-        unsafe {
-            drop(CString::from_raw(s));
+    impl SteamSession {
+        #[diplomat::attr(auto, constructor)]
+        pub fn connect_anonymous() -> Result<Box<SteamSession>, Box<SteamError>> {
+            crate::inner::connect_anonymous()
+                .map(|s| Box::new(SteamSession(s)))
+                .map_err(|e| Box::new(SteamError(e)))
+        }
+
+        pub fn connect_with_token(
+            username: &DiplomatStr,
+            token: &DiplomatStr,
+        ) -> Result<Box<SteamSession>, Box<SteamError>> {
+            let username = core::str::from_utf8(username)
+                .map_err(|e| Box::new(SteamError(e.to_string())))?;
+            let token = core::str::from_utf8(token)
+                .map_err(|e| Box::new(SteamError(e.to_string())))?;
+            crate::inner::connect_with_token(username, token)
+                .map(|s| Box::new(SteamSession(s)))
+                .map_err(|e| Box::new(SteamError(e)))
+        }
+
+        pub fn list_depot_files(
+            &self,
+            app_id: u32,
+            depot_id: u32,
+            branch: &DiplomatStr,
+        ) -> Result<Box<ManifestFileList>, Box<SteamError>> {
+            let branch = core::str::from_utf8(branch)
+                .map_err(|e| Box::new(SteamError(e.to_string())))?;
+            crate::inner::list_depot_files(&self.0, app_id, depot_id, branch)
+                .map(|f| Box::new(ManifestFileList(f)))
+                .map_err(|e| Box::new(SteamError(e)))
+        }
+    }
+
+    impl ManifestFileList {
+        pub fn len(&self) -> usize {
+            self.0.names.len()
+        }
+
+        pub fn get_name(&self, index: usize, write: &mut DiplomatWrite) {
+            if let Some(name) = self.0.names.get(index) {
+                let _ = write!(write, "{}", name);
+            }
+        }
+
+        pub fn get_size(&self, index: usize) -> u64 {
+            self.0.sizes.get(index).copied().unwrap_or(0)
+        }
+
+        pub fn is_directory(&self, index: usize) -> bool {
+            self.0.dirs.get(index).copied().unwrap_or(false)
+        }
+    }
+
+    impl SteamError {
+        pub fn message(&self, write: &mut DiplomatWrite) {
+            let _ = write!(write, "{}", self.0);
         }
     }
 }
