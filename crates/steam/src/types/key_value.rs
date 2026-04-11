@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use byteorder::{LittleEndian, ReadBytesExt};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct KeyValue {
     pub key: String,
     pub value: KvValue,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub enum KvValue {
     String(String),
     Int32(i32),

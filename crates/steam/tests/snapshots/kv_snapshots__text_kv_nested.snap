@@ -1,0 +1,17 @@
+---
+source: crates/steam/tests/kv_snapshots.rs
+expression: kv
+---
+key = 'root'
+[value.Children.depots]
+key = 'depots'
+[value.Children.depots.value.Children.481]
+key = '481'
+[value.Children.depots.value.Children.481.value.Children.manifests]
+key = 'manifests'
+[value.Children.depots.value.Children.481.value.Children.manifests.value.Children.public]
+key = 'public'
+[value.Children.depots.value.Children.481.value.Children.manifests.value.Children.public.value.Children.gid]
+key = 'gid'
+[value.Children.depots.value.Children.481.value.Children.manifests.value.Children.public.value.Children.gid.value]
+String = '3183503801510301321'

@@ -1,0 +1,13 @@
+---
+source: crates/steam/tests/kv_snapshots.rs
+expression: kv
+---
+key = 'test'
+[value.Children.path]
+key = 'path'
+[value.Children.path.value]
+String = 'C:\Program Files\Steam'
+[value.Children.quote]
+key = 'quote'
+[value.Children.quote.value]
+String = 'say "hello"'

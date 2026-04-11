@@ -1,0 +1,25 @@
+---
+source: crates/steam/tests/kv_snapshots.rs
+expression: kv
+---
+key = 'AppState'
+[value.Children.StateFlags]
+key = 'StateFlags'
+[value.Children.StateFlags.value]
+String = '4'
+[value.Children.Universe]
+key = 'Universe'
+[value.Children.Universe.value]
+String = '1'
+[value.Children.appid]
+key = 'appid'
+[value.Children.appid.value]
+String = '480'
+[value.Children.installdir]
+key = 'installdir'
+[value.Children.installdir.value]
+String = 'Spacewar'
+[value.Children.name]
+key = 'name'
+[value.Children.name.value]
+String = 'Spacewar'

@@ -41,7 +41,7 @@ async fn main() -> Result<(), CliError> {
         Command::Manifests(args) => run_manifests(args, &cli.auth).await,
         Command::Files(args) => run_files(args, &cli.auth).await,
         Command::Download(args) => run_download(args, &cli.auth).await,
-        Command::Workshop(args) => run_workshop(args).await,
+        Command::Workshop(args) => run_workshop(args, &cli.auth).await,
     }
 }
 
@@ -750,6 +750,108 @@ fn kv_to_json(kv: &KeyValue) -> serde_json::Value {
     }
 }
 
-async fn run_workshop(_args: WorkshopArgs) -> Result<(), CliError> {
-    todo!()
+async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliError> {
+    let client = connect_and_login(auth).await?;
+
+    info!("fetching workshop item {} details...", args.item);
+    let req = steam::generated::CPublishedFileGetDetailsRequest {
+        publishedfileids: vec![args.item],
+        includechildren: Some(true),
+        ..Default::default()
+    };
+    let resp = client
+        .call_service_method("PublishedFile.GetDetails#1", &prost::Message::encode_to_vec(&req))
+        .await?;
+    let details: steam::generated::CPublishedFileGetDetailsResponse = resp.decode()?;
+
+    let item = details
+        .publishedfiledetails
+        .first()
+        .ok_or(CliError::NoProductInfo(args.app))?;
+
+    let title = item.title.as_deref().unwrap_or("(untitled)");
+    let hcontent = item.hcontent_file.unwrap_or(0);
+    let file_size = item.file_size.unwrap_or(0);
+    let consumer_app = item.consumer_appid.unwrap_or(args.app);
+    let filename = item.filename.as_deref().unwrap_or("workshop_content");
+
+    info!("workshop item: {title}");
+    info!("  content manifest: {hcontent}");
+    info!("  file: {filename} ({} bytes)", file_size);
+
+    if hcontent == 0 {
+        info!("no downloadable content for this workshop item");
+        return Ok(());
+    }
+
+    // Workshop items use the app's depot
+    let app_id = AppId(consumer_app);
+    let depot_id = DepotId(consumer_app);
+    let manifest_id = ManifestId(hcontent);
+
+    let depot_key = client.get_depot_decryption_key(depot_id, app_id).await?;
+    let cdn_servers = client.get_cdn_servers(CellId(0), Some(5)).await?;
+    let cdn_server = cdn_servers.first().ok_or(CliError::NoCdnServers)?;
+    let cdn = CdnClient::new().map_err(CliError::Steam)?;
+
+    let request_code = client
+        .get_manifest_request_code(app_id, depot_id, manifest_id, None, None)
+        .await?
+        .unwrap_or(0);
+
+    let manifest_data = cdn
+        .download_manifest(cdn_server, depot_id, manifest_id, request_code, None)
+        .await?;
+    let manifest_bytes = decompress_manifest(&manifest_data)?;
+    let mut manifest = DepotManifest::parse(&manifest_bytes)?;
+    if manifest.filenames_encrypted {
+        manifest.decrypt_filenames(&depot_key)?;
+    }
+
+    let output_dir = args
+        .output
+        .unwrap_or_else(|| PathBuf::from("workshop").join(args.item.to_string()));
+    std::fs::create_dir_all(&output_dir)?;
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let fetcher = steam_client::download::CdnChunkFetcher {
+        cdn,
+        server: cdn_server.clone(),
+        cdn_auth_token: None,
+    };
+    let job = steam_client::download::DepotJob::builder()
+        .depot_id(depot_id)
+        .depot_key(depot_key)
+        .install_dir(output_dir.clone())
+        .event_sender(event_tx)
+        .build()
+        .map_err(|e| CliError::Steam(steam::error::Error::Io(
+            std::io::Error::new(std::io::ErrorKind::Other, e),
+        )))?;
+
+    let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
+    info!("downloading {} files ({}) to {}", manifest.files.len(), fmt_size(total_bytes), output_dir.display());
+
+    let progress_handle = tokio::spawn(async move {
+        let mut completed: u64 = 0;
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                steam_client::event::DownloadEvent::FileCompleted { filename } => {
+                    let pct = if total_bytes > 0 { completed as f64 / total_bytes as f64 * 100.0 } else { 0.0 };
+                    info!("[{pct:.1}%] {filename}");
+                }
+                steam_client::event::DownloadEvent::ChunkCompleted { bytes } => { completed += bytes; }
+                _ => {}
+            }
+        }
+    });
+
+    let stats = job.download(&manifest, &fetcher).await.map_err(|e| {
+        CliError::Steam(steam::error::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
+    })?;
+    drop(job);
+    let _ = progress_handle.await;
+
+    info!("workshop download complete: {} files, {}", stats.files_completed, fmt_size(stats.bytes_downloaded));
+    Ok(())
 }
