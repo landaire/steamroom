@@ -37,9 +37,9 @@ async fn main() -> Result<(), CliError> {
         .init();
 
     match cli.command {
-        Command::Info(args) => run_info(args).await,
-        Command::Manifests(args) => run_manifests(args).await,
-        Command::Files(args) => run_files(args).await,
+        Command::Info(args) => run_info(args, &cli.auth).await,
+        Command::Manifests(args) => run_manifests(args, &cli.auth).await,
+        Command::Files(args) => run_files(args, &cli.auth).await,
         Command::Download(args) => run_download(args, &cli.auth).await,
         Command::Workshop(args) => run_workshop(args).await,
     }
@@ -417,16 +417,194 @@ fn fmt_size(bytes: u64) -> String {
     }
 }
 
-async fn run_info(_args: InfoArgs) -> Result<(), CliError> {
-    todo!()
+async fn fetch_app_kv(
+    auth: &AuthOptions,
+    app_id: AppId,
+) -> Result<(SteamClient<LoggedIn>, KeyValue), CliError> {
+    let client = connect_and_login(auth).await?;
+    let tokens = client.pics_get_access_tokens(&[app_id]).await?;
+    let token = tokens.into_iter().next().unwrap_or(AccessToken {
+        app_id,
+        token: 0,
+    });
+    let infos = client.pics_get_product_info(&[token]).await?;
+    let app_info = infos
+        .into_iter()
+        .next()
+        .ok_or(CliError::NoProductInfo(app_id.0))?;
+    let kv_data = app_info.kv_data.ok_or(CliError::NoKvData(app_id.0))?;
+    let kv = parse_app_kv(&kv_data)?;
+    Ok((client, kv))
 }
 
-async fn run_manifests(_args: ManifestsArgs) -> Result<(), CliError> {
-    todo!()
+async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
+    let app_id = AppId(args.app);
+    let (_client, kv) = fetch_app_kv(auth, app_id).await?;
+
+    let name = kv
+        .get("common")
+        .and_then(|c| c.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("(unknown)");
+    let app_type = kv
+        .get("common")
+        .and_then(|c| c.get("type"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("(unknown)");
+
+    println!("App ID:  {}", app_id);
+    println!("Name:    {name}");
+    println!("Type:    {app_type}");
+
+    if let Some(depots) = kv.get("depots") {
+        if let KvValue::Children(ref map) = depots.value {
+            let depot_ids: Vec<&String> = map
+                .keys()
+                .filter(|k| k.parse::<u32>().is_ok())
+                .collect();
+            println!("Depots:  {}", depot_ids.len());
+            for id in &depot_ids {
+                let depot = map.get(*id).unwrap();
+                let dname = depot
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("");
+                println!("  {id}: {dname}");
+            }
+        }
+    }
+
+    if let Some(depots) = kv.get("depots") {
+        if let Some(branches) = depots.get("branches") {
+            if let KvValue::Children(ref map) = branches.value {
+                println!("Branches: {}", map.len());
+                for (name, branch) in map {
+                    let build_id = branch
+                        .get("buildid")
+                        .and_then(|b| b.as_str())
+                        .unwrap_or("-");
+                    let pwd = branch.get("pwdrequired").and_then(|p| p.as_str());
+                    let lock = if pwd == Some("1") { " (password)" } else { "" };
+                    println!("  {name}: build {build_id}{lock}");
+                }
+            }
+        }
+    }
+
+    if args.format == Some(OutputFormat::Json) {
+        println!("{}", serde_json::to_string_pretty(&kv_to_json(&kv))?);
+    }
+
+    Ok(())
 }
 
-async fn run_files(_args: FilesArgs) -> Result<(), CliError> {
-    todo!()
+async fn run_manifests(args: ManifestsArgs, auth: &AuthOptions) -> Result<(), CliError> {
+    let app_id = AppId(args.app);
+    let (_client, kv) = fetch_app_kv(auth, app_id).await?;
+    let branch = args.branch.as_deref().unwrap_or("public");
+
+    let depots = kv.get("depots").ok_or(CliError::NoDepots)?;
+    if let KvValue::Children(ref map) = depots.value {
+        for (key, depot) in map {
+            let Ok(depot_id) = key.parse::<u32>() else {
+                continue;
+            };
+            if let Some(manifests) = depot.get("manifests") {
+                if let Some(branch_kv) = manifests.get(branch) {
+                    let gid = branch_kv
+                        .get("gid")
+                        .and_then(|g| g.as_str())
+                        .or_else(|| branch_kv.as_str());
+                    if let Some(manifest_id) = gid {
+                        let dname = depot
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("");
+                        println!("{depot_id}\t{manifest_id}\t{dname}");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> {
+    let app_id = AppId(args.app);
+    let (client, kv) = fetch_app_kv(auth, app_id).await?;
+    let branch = args.branch.as_deref().unwrap_or("public");
+
+    let depot_id = args
+        .depot
+        .map(DepotId)
+        .or_else(|| {
+            kv.get("depots")
+                .and_then(|d| find_first_depot(d).ok())
+        })
+        .ok_or(CliError::NoDepots)?;
+
+    let manifest_id = args.manifest.map(ManifestId).or_else(|| {
+        kv.get("depots")
+            .and_then(|d| find_manifest_for_depot(d, depot_id, branch).ok())
+    }).ok_or(CliError::ManifestNotFound {
+        depot: depot_id.0,
+        branch: branch.to_string(),
+    })?;
+
+    let depot_key = client.get_depot_decryption_key(depot_id, app_id).await?;
+    let request_code = client
+        .get_manifest_request_code(app_id, depot_id, manifest_id, Some(branch), None)
+        .await?
+        .unwrap_or(0);
+
+    let cdn_servers = client.get_cdn_servers(CellId(0), Some(5)).await?;
+    let cdn_server = cdn_servers.first().ok_or(CliError::NoCdnServers)?;
+    let cdn = CdnClient::new().map_err(CliError::Steam)?;
+    let manifest_data = cdn
+        .download_manifest(cdn_server, depot_id, manifest_id, request_code, None)
+        .await?;
+    let manifest_bytes = decompress_manifest(&manifest_data)?;
+    let mut manifest = DepotManifest::parse(&manifest_bytes)?;
+    if manifest.filenames_encrypted {
+        manifest.decrypt_filenames(&depot_key)?;
+    }
+
+    for file in &manifest.files {
+        let name = file.filename.as_deref().unwrap_or("(encrypted)");
+        let size = file.size.unwrap_or(0);
+        let flags = file.flags.unwrap_or(0);
+        let is_dir = steam::enums::DepotFileFlags(flags).is_directory();
+        if is_dir {
+            println!("{name}/");
+        } else {
+            println!("{name}\t{}", fmt_size(size));
+        }
+    }
+
+    Ok(())
+}
+
+fn kv_to_json(kv: &KeyValue) -> serde_json::Value {
+    match &kv.value {
+        KvValue::Children(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), kv_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        KvValue::String(s) => serde_json::Value::String(s.clone()),
+        KvValue::Int32(v) => serde_json::Value::Number((*v).into()),
+        KvValue::UInt64(v) => serde_json::Value::Number((*v).into()),
+        KvValue::Int64(v) => serde_json::Value::Number((*v).into()),
+        KvValue::Float32(v) => {
+            serde_json::Number::from_f64(*v as f64)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        }
+        _ => serde_json::Value::Null,
+    }
 }
 
 async fn run_workshop(_args: WorkshopArgs) -> Result<(), CliError> {

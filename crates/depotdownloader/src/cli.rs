@@ -161,7 +161,7 @@ pub struct WorkshopArgs {
     pub output: Option<std::path::PathBuf>,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
     Table,
     Json,
