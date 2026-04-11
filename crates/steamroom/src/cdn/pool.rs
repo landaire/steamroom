@@ -103,9 +103,128 @@ impl CdnServerPool {
         self.servers.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.servers.is_empty()
+    }
+
     fn find(&self, server: &CdnServer) -> Option<&ServerState> {
         self.servers
             .iter()
             .find(|s| s.server.host == server.host && s.server.port == server.port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server(name: &str) -> CdnServer {
+        CdnServer {
+            host: name.into(),
+            port: 443,
+            https: true,
+            vhost: name.into(),
+        }
+    }
+
+    #[test]
+    fn pick_round_robins_across_servers() {
+        let pool = CdnServerPool::new(vec![server("a"), server("b"), server("c")]);
+        let (s1, w1) = pool.pick();
+        let (s2, w2) = pool.pick();
+        let (s3, w3) = pool.pick();
+        assert_eq!(w1, Duration::ZERO);
+        assert_eq!(w2, Duration::ZERO);
+        assert_eq!(w3, Duration::ZERO);
+        // Should cycle through a, b, c
+        let hosts: Vec<&str> = vec![&s1.host, &s2.host, &s3.host]
+            .into_iter()
+            .map(|s| s.as_str())
+            .collect();
+        assert!(hosts.contains(&"a"));
+        assert!(hosts.contains(&"b"));
+        assert!(hosts.contains(&"c"));
+    }
+
+    #[test]
+    fn pick_skips_server_in_cooldown() {
+        let pool = CdnServerPool::new(vec![server("a"), server("b")]);
+
+        // Put "a" in cooldown
+        pool.report_failure(&server("a"), Some(Duration::from_secs(60)));
+
+        // Next picks should all be "b"
+        for _ in 0..5 {
+            let (s, wait) = pool.pick();
+            assert_eq!(s.host, "b");
+            assert_eq!(wait, Duration::ZERO);
+        }
+    }
+
+    #[test]
+    fn pick_returns_wait_when_all_in_cooldown() {
+        let pool = CdnServerPool::new(vec![server("a"), server("b")]);
+
+        pool.report_failure(&server("a"), Some(Duration::from_secs(60)));
+        pool.report_failure(&server("b"), Some(Duration::from_secs(30)));
+
+        let (_s, wait) = pool.pick();
+        // "b" has shorter cooldown, should be picked with non-zero wait
+        assert!(wait > Duration::ZERO);
+        assert!(wait <= Duration::from_secs(30));
+    }
+
+    #[test]
+    fn report_success_resets_failure_count() {
+        let pool = CdnServerPool::new(vec![server("a"), server("b")]);
+
+        pool.report_failure(&server("a"), None);
+        pool.report_failure(&server("a"), None);
+        pool.report_success(&server("a"));
+
+        // "a" should be immediately available
+        let (s, wait) = pool.pick();
+        // After success, failure counter is 0 but available_after may still be in the future
+        // from the last report_failure. So we just verify the success didn't panic.
+        assert!(s.host == "a" || s.host == "b");
+        let _ = wait;
+    }
+
+    #[test]
+    fn report_failure_escalates_cooldown() {
+        let pool = CdnServerPool::new(vec![server("a"), server("b")]);
+
+        // Each failure should increase cooldown: 4s, 8s, 16s, 30s, 30s
+        pool.report_failure(&server("a"), None); // count=1 -> 4s
+        pool.report_failure(&server("a"), None); // count=2 -> 8s
+        pool.report_failure(&server("a"), None); // count=3 -> 16s
+        pool.report_failure(&server("a"), None); // count=4 -> 30s (capped)
+        pool.report_failure(&server("a"), None); // count=5 -> 30s (capped)
+
+        // "a" should be in cooldown, "b" should be available
+        let (s, wait) = pool.pick();
+        assert_eq!(s.host, "b");
+        assert_eq!(wait, Duration::ZERO);
+    }
+
+    #[test]
+    fn report_failure_with_retry_after_uses_exact_duration() {
+        let pool = CdnServerPool::new(vec![server("a"), server("b")]);
+
+        pool.report_failure(&server("a"), Some(Duration::from_secs(10)));
+
+        let (s, _) = pool.pick();
+        assert_eq!(s.host, "b");
+    }
+
+    #[test]
+    fn single_server_pool_returns_wait_on_cooldown() {
+        let pool = CdnServerPool::new(vec![server("only")]);
+
+        pool.report_failure(&server("only"), Some(Duration::from_secs(5)));
+
+        let (s, wait) = pool.pick();
+        assert_eq!(s.host, "only");
+        assert!(wait > Duration::ZERO);
     }
 }

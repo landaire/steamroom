@@ -2,7 +2,6 @@ use byteorder::LittleEndian;
 use byteorder::ReadBytesExt;
 use std::collections::BTreeMap;
 use std::io::Cursor;
-use std::io::Read;
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct KeyValue {

@@ -159,3 +159,116 @@ fn decompress(data: &[u8], expected_size: u32) -> Result<Vec<u8>, ChunkError> {
         ChunkCompression::None => Ok(data.to_vec()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_vzstd() {
+        assert_eq!(
+            ChunkCompression::detect(b"VSZa\x00\x00\x00\x00rest"),
+            ChunkCompression::VZstd
+        );
+    }
+
+    #[test]
+    fn detect_vzlzma() {
+        assert_eq!(
+            ChunkCompression::detect(b"VZa\x00\x00\x00\x00rest"),
+            ChunkCompression::VZlzma
+        );
+    }
+
+    #[test]
+    fn detect_lzma() {
+        assert_eq!(
+            ChunkCompression::detect(&[0x5D, 0x00, 0x00]),
+            ChunkCompression::Lzma
+        );
+    }
+
+    #[test]
+    fn detect_zip() {
+        assert_eq!(
+            ChunkCompression::detect(b"PK\x03\x04"),
+            ChunkCompression::Zip
+        );
+    }
+
+    #[test]
+    fn detect_none_for_unknown() {
+        assert_eq!(
+            ChunkCompression::detect(b"\x00\x00\x00\x00"),
+            ChunkCompression::None
+        );
+    }
+
+    #[test]
+    fn detect_none_for_short_input() {
+        assert_eq!(ChunkCompression::detect(b""), ChunkCompression::None);
+        assert_eq!(ChunkCompression::detect(b"V"), ChunkCompression::None);
+    }
+
+    #[test]
+    fn process_chunk_too_short() {
+        let key = DepotKey([0; 32]);
+        assert!(matches!(
+            process_chunk(b"short", &key, 0, 0),
+            Err(ChunkError::TooShort)
+        ));
+    }
+
+    #[test]
+    fn process_chunk_uncompressed_roundtrip() {
+        let key = DepotKey([0xAA; 32]);
+        let plaintext = b"test chunk data!";
+        let checksum = crate::util::checksum::SteamAdler32::compute(plaintext);
+
+        let iv = [0x42u8; 16];
+        let encrypted_iv = crate::crypto::symmetric_encrypt_ecb_nopad(&iv, &key.0).unwrap();
+        let encrypted_body = crate::crypto::symmetric_encrypt_cbc(plaintext, &key.0, &iv).unwrap();
+
+        let mut chunk_data = Vec::new();
+        chunk_data.extend_from_slice(&encrypted_iv);
+        chunk_data.extend_from_slice(&encrypted_body);
+
+        let result = process_chunk(&chunk_data, &key, plaintext.len() as u32, checksum.0).unwrap();
+        assert_eq!(result, plaintext);
+    }
+
+    #[test]
+    fn process_chunk_bad_checksum() {
+        let key = DepotKey([0xAA; 32]);
+        let plaintext = b"test chunk data!";
+
+        let iv = [0x42u8; 16];
+        let encrypted_iv = crate::crypto::symmetric_encrypt_ecb_nopad(&iv, &key.0).unwrap();
+        let encrypted_body = crate::crypto::symmetric_encrypt_cbc(plaintext, &key.0, &iv).unwrap();
+
+        let mut chunk_data = Vec::new();
+        chunk_data.extend_from_slice(&encrypted_iv);
+        chunk_data.extend_from_slice(&encrypted_body);
+
+        let result = process_chunk(&chunk_data, &key, plaintext.len() as u32, 0xDEADBEEF);
+        assert!(matches!(result, Err(ChunkError::ChecksumMismatch { .. })));
+    }
+
+    #[test]
+    fn process_chunk_wrong_key_fails() {
+        let key = DepotKey([0xAA; 32]);
+        let wrong_key = DepotKey([0xBB; 32]);
+        let plaintext = b"test chunk data!";
+
+        let iv = [0x42u8; 16];
+        let encrypted_iv = crate::crypto::symmetric_encrypt_ecb_nopad(&iv, &key.0).unwrap();
+        let encrypted_body = crate::crypto::symmetric_encrypt_cbc(plaintext, &key.0, &iv).unwrap();
+
+        let mut chunk_data = Vec::new();
+        chunk_data.extend_from_slice(&encrypted_iv);
+        chunk_data.extend_from_slice(&encrypted_body);
+
+        let result = process_chunk(&chunk_data, &wrong_key, plaintext.len() as u32, 0);
+        assert!(result.is_err());
+    }
+}

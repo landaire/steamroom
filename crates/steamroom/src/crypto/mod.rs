@@ -52,6 +52,17 @@ pub fn symmetric_decrypt_ecb(data: &[u8], key: &[u8]) -> Result<Vec<u8>, CryptoE
         .map_err(|_| CryptoError::InvalidPadding)
 }
 
+type Aes256EcbEnc = ecb::Encryptor<aes::Aes256>;
+
+pub fn symmetric_encrypt_ecb_nopad(data: &[u8], key: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    if key.len() != 32 {
+        return Err(CryptoError::InvalidKeyLength(key.len()));
+    }
+    let cipher =
+        Aes256EcbEnc::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength(key.len()))?;
+    Ok(cipher.encrypt_padded_vec::<aes::cipher::block_padding::NoPadding>(data))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,6 @@
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
-use steamroom::depot::CellId;
 
 #[derive(Parser, Debug)]
 #[command(name = "steamroom", about = "Steam depot downloader")]
@@ -29,6 +28,10 @@ pub struct Cli {
 
     #[arg(long)]
     pub capture: Option<std::path::PathBuf>,
+
+    /// Disable progress bars
+    #[arg(long)]
+    pub no_progress: bool,
 }
 
 /// Legacy flat-argument CLI compatible with the original DepotDownloader.
@@ -112,20 +115,9 @@ impl CompatCli {
             cell_id: self.cell_id,
             max_downloads: self.max_downloads,
             capture: None,
+            no_progress: false,
         }
     }
-}
-
-#[derive(Debug)]
-pub struct Options {
-    pub action: Action,
-    pub auth: AuthOptions,
-    pub debug: bool,
-    pub raw_bytes: bool,
-    pub cell_id: Option<CellId>,
-    pub max_downloads: Option<usize>,
-    pub capture: Option<std::path::PathBuf>,
-    pub raw_errors: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -154,8 +146,6 @@ pub enum Command {
     Manifests(ManifestsArgs),
     Workshop(WorkshopArgs),
 }
-
-pub type Action = Command;
 
 #[derive(Parser, Debug)]
 pub struct DownloadArgs {

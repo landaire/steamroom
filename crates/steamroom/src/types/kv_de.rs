@@ -365,6 +365,7 @@ mod tests {
     #[test]
     fn deserialize_optional_fields() {
         #[derive(serde::Deserialize, Debug)]
+        #[allow(dead_code)]
         struct Branch {
             buildid: String,
             #[serde(default)]

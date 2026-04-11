@@ -20,9 +20,9 @@ pub enum Error {
     #[error("http: {0}")]
     Http(#[from] reqwest::Error),
 
-    #[error("CDN returned HTTP {status}")]
+    #[error("CDN returned HTTP {}", status.as_u16())]
     CdnStatus {
-        status: u16,
+        status: reqwest::StatusCode,
         retry_after: Option<u64>,
     },
 

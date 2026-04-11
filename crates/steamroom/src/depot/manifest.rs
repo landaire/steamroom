@@ -48,12 +48,7 @@ impl DepotManifest {
         let mut payload = None;
         let mut metadata = None;
 
-        loop {
-            let magic_val = match cursor.read_u32::<LittleEndian>() {
-                Ok(v) => v,
-                Err(_) => break,
-            };
-
+        while let Ok(magic_val) = cursor.read_u32::<LittleEndian>() {
             let magic = match ManifestMagic::from_u32(magic_val) {
                 Ok(m) => m,
                 Err(_) => {

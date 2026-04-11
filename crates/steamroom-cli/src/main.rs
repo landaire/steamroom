@@ -26,7 +26,7 @@ use tracing::debug;
 use tracing::info;
 use tracing::warn;
 
-fn main() -> Result<(), CliError> {
+fn main() {
     let cli = if std::env::var("DD_COMPAT").as_deref() == Ok("1") {
         cli::CompatCli::parse().into_cli()
     } else {
@@ -35,7 +35,6 @@ fn main() -> Result<(), CliError> {
     let default_filter = if cli.debug {
         "debug"
     } else if cfg!(debug_assertions) {
-        // Debug builds: show debug for our crates, warn for deps
         "warn,steamroom=debug,steamroom_client=debug,steamroom_ffi=debug,steamroom_cli=debug"
     } else {
         "warn"
@@ -56,26 +55,28 @@ fn main() -> Result<(), CliError> {
         .build()
         .expect("failed to build tokio runtime");
 
-    rt.block_on(async_main(cli))
+    let raw_errors = cli.raw_errors;
+    if let Err(err) = rt.block_on(async_main(cli)) {
+        if raw_errors {
+            // Wrap in rootcause Report for full context chain
+            let report: rootcause::Report<CliError> = rootcause::report!(err);
+            eprintln!("Error: {report:?}");
+        } else {
+            eprintln!("Error: {err}");
+        }
+        std::process::exit(1);
+    }
 }
 
 async fn async_main(cli: Cli) -> Result<(), CliError> {
-    let result = match cli.command {
+    let show_progress = !cli.no_progress;
+    match cli.command {
         Command::Info(args) => run_info(args, &cli.auth).await,
         Command::Manifests(args) => run_manifests(args, &cli.auth).await,
         Command::Files(args) => run_files(args, &cli.auth).await,
-        Command::Download(args) => run_download(args, &cli.auth).await,
-        Command::Workshop(args) => run_workshop(args, &cli.auth).await,
-    };
-
-    if let Err(ref e) = result {
-        if cli.raw_errors {
-            eprintln!("Error: {e:?}");
-        } else {
-            eprintln!("Error: {e}");
-        }
+        Command::Download(args) => run_download(args, &cli.auth, show_progress).await,
+        Command::Workshop(args) => run_workshop(args, &cli.auth, show_progress).await,
     }
-    result
 }
 
 async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, CliError> {
@@ -315,7 +316,7 @@ async fn authenticate_qr(
     if let Some(ref url) = session.challenge_url {
         // Print QR code to terminal
         let qr = qrcode::QrCode::new(url.as_bytes())
-            .map_err(|e| CliError::Steam(steamroom::error::Error::Io(std::io::Error::other(e))))?;
+            .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
         let rendered = qr.render::<qrcode::render::unicode::Dense1x2>().build();
         eprintln!("{rendered}");
         eprintln!("Scan this QR code with the Steam mobile app");
@@ -358,7 +359,11 @@ fn build_anon_logon() -> (steamroom::generated::CMsgClientLogon, u64) {
     (logon, steam_id.raw())
 }
 
-async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliError> {
+async fn run_download(
+    args: DownloadArgs,
+    auth: &AuthOptions,
+    show_progress: bool,
+) -> Result<(), CliError> {
     let client = connect_and_login(auth).await?;
     let app_id = AppId(args.app);
 
@@ -510,7 +515,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     };
 
     // Set up download orchestration
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let fetcher = steamroom_client::download::CdnChunkFetcher {
         cdn,
@@ -536,12 +541,14 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
 
     if let Some(ref filelist_path) = args.filelist {
         let content = std::fs::read_to_string(filelist_path)?;
-        let files: Vec<String> = content
+        let lines: Vec<String> = content
             .lines()
             .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect();
-        builder = builder.file_filter(steamroom_client::download::FileFilter::FileList(files));
+        builder = builder.file_filter(steamroom_client::download::FileFilter::from_filelist(
+            &lines,
+        )?);
     } else if let Some(ref pattern) = args.file_regex {
         builder = builder.file_filter(steamroom_client::download::FileFilter::Regex(
             regex::Regex::new(pattern)?,
@@ -563,37 +570,12 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         output_dir.display()
     );
 
-    // Spawn progress renderer
-    let progress_handle = tokio::spawn(async move {
-        let mut completed: u64 = 0;
-        while let Some(event) = event_rx.recv().await {
-            match event {
-                steamroom_client::event::DownloadEvent::FileCompleted { filename } => {
-                    let pct = if total_bytes > 0 {
-                        completed as f64 / total_bytes as f64 * 100.0
-                    } else {
-                        0.0
-                    };
-                    info!("[{pct:.1}%] {filename}");
-                }
-                steamroom_client::event::DownloadEvent::ChunkCompleted { bytes } => {
-                    completed += bytes;
-                }
-                steamroom_client::event::DownloadEvent::FileRemoved { filename } => {
-                    info!("removed {filename}");
-                }
-                steamroom_client::event::DownloadEvent::ChunkFailed { error } => {
-                    warn!("chunk failed (retrying): {error}");
-                }
-                _ => {}
-            }
-        }
-    });
+    let progress_handle = download::spawn_progress_renderer(event_rx, total_bytes, show_progress);
 
     let stats = job
         .download(&manifest, std::sync::Arc::new(fetcher))
         .await
-        .map_err(|e| CliError::Steam(steamroom::error::Error::Io(std::io::Error::other(e))))?;
+        .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
 
     drop(job); // drop to close the event channel
     let _ = progress_handle.await;
@@ -948,7 +930,11 @@ fn kv_to_json(kv: &KeyValue) -> serde_json::Value {
     }
 }
 
-async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliError> {
+async fn run_workshop(
+    args: WorkshopArgs,
+    auth: &AuthOptions,
+    show_progress: bool,
+) -> Result<(), CliError> {
     let client = connect_and_login(auth).await?;
 
     info!("fetching workshop item {} details...", args.item);
@@ -1018,7 +1004,7 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
         .unwrap_or_else(|| PathBuf::from("workshop").join(args.item.to_string()));
     std::fs::create_dir_all(&output_dir)?;
 
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let fetcher = steamroom_client::download::CdnChunkFetcher {
         cdn,
         pool: cdn_pool,
@@ -1030,7 +1016,7 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
         .install_dir(output_dir.clone())
         .event_sender(event_tx)
         .build()
-        .map_err(|e| CliError::Steam(steamroom::error::Error::Io(std::io::Error::other(e))))?;
+        .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
 
     let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
     info!(
@@ -1040,30 +1026,12 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
         output_dir.display()
     );
 
-    let progress_handle = tokio::spawn(async move {
-        let mut completed: u64 = 0;
-        while let Some(event) = event_rx.recv().await {
-            match event {
-                steamroom_client::event::DownloadEvent::FileCompleted { filename } => {
-                    let pct = if total_bytes > 0 {
-                        completed as f64 / total_bytes as f64 * 100.0
-                    } else {
-                        0.0
-                    };
-                    info!("[{pct:.1}%] {filename}");
-                }
-                steamroom_client::event::DownloadEvent::ChunkCompleted { bytes } => {
-                    completed += bytes;
-                }
-                _ => {}
-            }
-        }
-    });
+    let progress_handle = download::spawn_progress_renderer(event_rx, total_bytes, show_progress);
 
     let stats = job
         .download(&manifest, std::sync::Arc::new(fetcher))
         .await
-        .map_err(|e| CliError::Steam(steamroom::error::Error::Io(std::io::Error::other(e))))?;
+        .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
     drop(job);
     let _ = progress_handle.await;
 

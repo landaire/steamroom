@@ -25,8 +25,7 @@ impl WebSocketTransport {
             crate::connection::CmServerAddr::Resolved(addr) => (addr.ip().to_string(), addr.port()),
         };
 
-        let scheme = if port == 443 { "wss" } else { "wss" };
-        let url = format!("{scheme}://{host}:{port}/cmsocket/");
+        let url = format!("wss://{host}:{port}/cmsocket/");
         tracing::debug!("websocket connecting to {url}");
 
         let (ws, _) = connect_async(&url).await.map_err(|e| {

@@ -64,13 +64,13 @@ impl CdnClient {
     }
 
     async fn check_response(resp: reqwest::Response) -> Result<Bytes, Error> {
-        let status = resp.status().as_u16();
-        if status == 200 {
+        let status = resp.status();
+        if status == reqwest::StatusCode::OK {
             return Ok(resp.bytes().await?);
         }
         let retry_after = resp
             .headers()
-            .get("retry-after")
+            .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
         Err(Error::CdnStatus {

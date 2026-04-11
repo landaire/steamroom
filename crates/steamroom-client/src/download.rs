@@ -59,15 +59,21 @@ impl ChunkFetcher for CdnChunkFetcher {
                 retry_after,
             }) => {
                 let ra = retry_after.map(Duration::from_secs);
-                if status == 429 || status == 503 {
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                {
                     tracing::warn!(
                         server = %server.host,
-                        status,
+                        status = status.as_u16(),
                         retry_after = retry_after.unwrap_or(0),
                         "CDN rate limited, backing off"
                     );
                 } else {
-                    tracing::debug!(server = %server.host, status, "CDN error");
+                    tracing::debug!(
+                        server = %server.host,
+                        status = status.as_u16(),
+                        "CDN error"
+                    );
                 }
                 self.pool.report_failure(server, ra);
                 Err(Box::new(SteamError::CdnStatus {
@@ -101,17 +107,38 @@ impl Default for RetryConfig {
 
 pub enum FileFilter {
     None,
-    FileList(Vec<String>),
+    Combined(Vec<FileFilterEntry>),
+    Regex(regex::Regex),
+}
+
+pub enum FileFilterEntry {
+    Literal(String),
     Regex(regex::Regex),
 }
 
 impl FileFilter {
+    /// Parse a filelist where lines can be literal paths or `regex:pattern` entries.
+    pub fn from_filelist(lines: &[String]) -> Result<Self, regex::Error> {
+        let mut entries = Vec::with_capacity(lines.len());
+        for line in lines {
+            if let Some(pattern) = line.strip_prefix("regex:") {
+                entries.push(FileFilterEntry::Regex(regex::Regex::new(pattern)?));
+            } else {
+                entries.push(FileFilterEntry::Literal(line.clone()));
+            }
+        }
+        Ok(Self::Combined(entries))
+    }
+
     pub fn matches(&self, filename: &str) -> bool {
         match self {
             Self::None => true,
-            Self::FileList(list) => list.iter().any(|f| {
-                filename.eq_ignore_ascii_case(f)
-                    || filename.replace('\\', "/").eq_ignore_ascii_case(f)
+            Self::Combined(entries) => entries.iter().any(|entry| match entry {
+                FileFilterEntry::Literal(lit) => {
+                    filename.eq_ignore_ascii_case(lit)
+                        || filename.replace('\\', "/").eq_ignore_ascii_case(lit)
+                }
+                FileFilterEntry::Regex(re) => re.is_match(filename),
             }),
             Self::Regex(re) => re.is_match(filename),
         }
@@ -213,7 +240,21 @@ impl DepotJob {
                 .download_file_chunks_with_resume(file, &fetcher, &sem, &staging_path)
                 .await?;
 
-            // Staging file has the complete contents — just move it into place.
+            // Move staging file into place. On Windows, rename fails if the
+            // target exists and is read-only, so remove it first.
+            if file_path.exists() {
+                // Clear read-only attribute on Windows before removing
+                #[cfg(windows)]
+                {
+                    let mut perms = std::fs::metadata(&file_path)?.permissions();
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    if perms.readonly() {
+                        perms.set_readonly(false);
+                        let _ = std::fs::set_permissions(&file_path, perms);
+                    }
+                }
+                std::fs::remove_file(&file_path)?;
+            }
             std::fs::rename(&staging_path, &file_path)?;
             stats.bytes_downloaded += file_size;
             stats.files_completed += 1;
@@ -393,28 +434,6 @@ impl DepotJob {
         Ok(file_data)
     }
 
-    async fn fetch_with_retry<F: ChunkFetcher>(
-        &self,
-        fetcher: &F,
-        chunk_id: &ChunkId,
-    ) -> Result<Bytes, BoxError> {
-        let mut delay = self.retry.initial_delay;
-        for attempt in 0..self.retry.max_attempts {
-            match fetcher.fetch_chunk(self.depot_id, chunk_id).await {
-                Ok(data) => return Ok(data),
-                Err(e) if attempt + 1 < self.retry.max_attempts => {
-                    self.emit(DownloadEvent::ChunkFailed {
-                        error: e.to_string(),
-                    });
-                    tokio::time::sleep(delay).await;
-                    delay *= 2;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        unreachable!()
-    }
-
     /// Downloads remaining chunks to the staging file. Returns total file size in bytes.
     async fn download_file_chunks_with_resume<F: ChunkFetcher + 'static>(
         &self,
@@ -585,19 +604,18 @@ impl DepotJobBuilder {
 
 /// Compute retry delay, respecting `Retry-After` from 429/503 responses.
 fn retry_delay_for_error(err: &BoxError, default: Duration) -> Duration {
-    if let Some(steam_err) = err.downcast_ref::<SteamError>() {
-        if let SteamError::CdnStatus {
-            status,
-            retry_after,
-        } = steam_err
+    if let Some(SteamError::CdnStatus {
+        status,
+        retry_after,
+    }) = err.downcast_ref::<SteamError>()
+    {
+        if *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || *status == reqwest::StatusCode::SERVICE_UNAVAILABLE
         {
-            if *status == 429 || *status == 503 {
-                if let Some(secs) = retry_after {
-                    return Duration::from_secs((*secs).min(60));
-                }
-                // No Retry-After header on 429/503 — use a conservative default
-                return default.max(Duration::from_secs(5));
+            if let Some(secs) = retry_after {
+                return Duration::from_secs((*secs).min(60));
             }
+            return default.max(Duration::from_secs(5));
         }
     }
     default

@@ -67,6 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[allow(dead_code)]
 struct SectionInfo {
     file_offset: usize,
     virtual_address: u64,
@@ -81,7 +82,7 @@ fn extract_descriptors(
     use object::ObjectSection;
 
     let pe = PeFile64::parse(pe_data)?;
-    let image_base = pe.relative_address_base();
+    let _image_base = pe.relative_address_base();
 
     let mut rdata_sections = Vec::new();
     let mut data_section: Option<SectionInfo> = None;
@@ -260,7 +261,7 @@ fn find_blob_sizes(data_section: &SectionInfo, candidates: &[(u64, String)]) -> 
     sizes
 }
 
-fn find_va_in_sections<'a>(sections: &'a [SectionInfo], va: u64) -> Option<(&'a [u8], usize)> {
+fn find_va_in_sections(sections: &[SectionInfo], va: u64) -> Option<(&[u8], usize)> {
     for sec in sections {
         if va >= sec.virtual_address {
             let offset = (va - sec.virtual_address) as usize;

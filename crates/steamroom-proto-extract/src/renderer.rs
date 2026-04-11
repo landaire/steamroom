@@ -149,7 +149,7 @@ fn render_message(out: &mut String, msg: &DescriptorProto, depth: usize) {
         render_extension(out, ext, depth + 1);
     }
 
-    if let Some(ref opts) = &msg.options {
+    if let Some(_opts) = &msg.options {
         // Extension ranges
     }
     for range in &msg.extension_range {
