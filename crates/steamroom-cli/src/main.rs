@@ -517,11 +517,7 @@ async fn run_download(
     // Set up download orchestration
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let fetcher = steamroom_client::download::CdnChunkFetcher {
-        cdn,
-        pool: cdn_pool,
-        cdn_auth_token: None,
-    };
+    let fetcher = steamroom_client::download::CdnChunkFetcher::new(cdn, cdn_pool, None);
 
     let mut builder = steamroom_client::download::DepotJob::builder()
         .depot_id(depot_id)
@@ -1003,11 +999,7 @@ async fn run_workshop(
     std::fs::create_dir_all(&output_dir)?;
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let fetcher = steamroom_client::download::CdnChunkFetcher {
-        cdn,
-        pool: cdn_pool,
-        cdn_auth_token: None,
-    };
+    let fetcher = steamroom_client::download::CdnChunkFetcher::new(cdn, cdn_pool, None);
     let job = steamroom_client::download::DepotJob::builder()
         .depot_id(depot_id)
         .depot_key(depot_key)

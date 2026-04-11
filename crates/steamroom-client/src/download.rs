@@ -31,10 +31,21 @@ pub trait ChunkFetcher: Send + Sync {
 }
 
 /// CDN-backed chunk fetcher with server pool rotation and rate-limit handling.
+#[non_exhaustive]
 pub struct CdnChunkFetcher {
     pub cdn: CdnClient,
     pub pool: CdnServerPool,
     pub cdn_auth_token: Option<String>,
+}
+
+impl CdnChunkFetcher {
+    pub fn new(cdn: CdnClient, pool: CdnServerPool, cdn_auth_token: Option<String>) -> Self {
+        Self {
+            cdn,
+            pool,
+            cdn_auth_token,
+        }
+    }
 }
 
 impl ChunkFetcher for CdnChunkFetcher {
@@ -95,6 +106,7 @@ impl ChunkFetcher for CdnChunkFetcher {
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct RetryConfig {
     pub max_attempts: u32,
     pub initial_delay: Duration,
@@ -575,6 +587,7 @@ fn file_matches(path: &Path, expected_size: u64, sha_content: Option<&[u8; 20]>)
 
 #[derive(Default, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct DownloadStats {
     pub files_completed: u64,
     pub files_skipped: u64,

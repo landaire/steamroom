@@ -29,11 +29,11 @@ let job = DepotJob::builder()
     .unwrap();
 
 // Create a CDN fetcher with server pool
-let fetcher = CdnChunkFetcher {
-    cdn: CdnClient::new().unwrap(),
-    pool: CdnServerPool::new(cdn_servers),
-    cdn_auth_token: None,
-};
+let fetcher = CdnChunkFetcher::new(
+    CdnClient::new().unwrap(),
+    CdnServerPool::new(cdn_servers),
+    None,
+);
 
 // Download (returns stats)
 // let stats = job.download(&manifest, std::sync::Arc::new(fetcher)).await?;

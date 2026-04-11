@@ -3,6 +3,7 @@
 /// to drive progress bars, logging, or any other UI.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DownloadEvent {
     FileStarted {
         filename: String,

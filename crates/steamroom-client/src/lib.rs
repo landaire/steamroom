@@ -38,11 +38,11 @@
 //!     .build()
 //!     .expect("missing required fields");
 //!
-//! let fetcher = CdnChunkFetcher {
-//!     cdn: CdnClient::new().expect("http client"),
-//!     pool: CdnServerPool::new(cdn_servers),
-//!     cdn_auth_token: None,
-//! };
+//! let fetcher = CdnChunkFetcher::new(
+//!     CdnClient::new().expect("http client"),
+//!     CdnServerPool::new(cdn_servers),
+//!     None,
+//! );
 //!
 //! let stats = job.download(&manifest, std::sync::Arc::new(fetcher)).await
 //!     .expect("download failed");

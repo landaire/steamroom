@@ -1,4 +1,5 @@
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct AuthSession {
     pub client_id: Option<u64>,
     pub request_id: Option<Vec<u8>>,
@@ -8,6 +9,7 @@ pub struct AuthSession {
 }
 
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct QrAuthSession {
     pub client_id: Option<u64>,
     pub request_id: Option<Vec<u8>>,
@@ -17,6 +19,7 @@ pub struct QrAuthSession {
 }
 
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct AuthTokens {
     pub access_token: String,
     pub refresh_token: String,
@@ -24,6 +27,7 @@ pub struct AuthTokens {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum GuardType {
     None,
     EmailCode,

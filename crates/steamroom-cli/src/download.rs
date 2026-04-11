@@ -57,7 +57,7 @@ async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, total_by
                     tracing::warn!("chunk failed (retrying): {error}");
                 });
             }
-            DownloadEvent::DepotProgress { .. } => {}
+            DownloadEvent::DepotProgress { .. } | _ => {}
         }
     }
 
