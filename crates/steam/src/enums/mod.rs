@@ -31,7 +31,6 @@ pub enum EOSType {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum EResultError {
-    Invalid,
     Fail,
     NoConnection,
     InvalidPassword,
@@ -69,7 +68,73 @@ pub enum EResultError {
     LoginDeniedThrottle,
     TwoFactorCodeMismatch,
     TwoFactorActivationCodeMismatch,
-    Unknown,
+    Unknown(i32),
+}
+
+/// Check a raw Steam EResult code. Returns `Ok(())` for success (1),
+/// `Err(EResultError)` for everything else. There is no intermediate type
+/// to forget to check.
+const ERESULT_OK: i32 = 1;
+
+pub fn eresult(code: i32) -> Result<(), EResultError> {
+    if code == ERESULT_OK {
+        Ok(())
+    } else {
+        Err(EResultError::from_code(code))
+    }
+}
+
+impl EResultError {
+    pub fn from_code(code: i32) -> Self {
+        match code {
+            2 => Self::Fail,
+            3 => Self::NoConnection,
+            5 => Self::InvalidPassword,
+            6 => Self::LoggedInElsewhere,
+            7 => Self::InvalidProtocolVer,
+            8 => Self::InvalidParam,
+            9 => Self::FileNotFound,
+            10 => Self::Busy,
+            11 => Self::InvalidState,
+            12 => Self::InvalidName,
+            13 => Self::InvalidEmail,
+            14 => Self::DuplicateName,
+            15 => Self::AccessDenied,
+            16 => Self::Timeout,
+            17 => Self::Banned,
+            18 => Self::AccountNotFound,
+            19 => Self::InvalidSteamID,
+            20 => Self::ServiceUnavailable,
+            21 => Self::NotLoggedOn,
+            22 => Self::Pending,
+            23 => Self::EncryptionFailure,
+            24 => Self::InsufficientPrivilege,
+            25 => Self::LimitExceeded,
+            26 => Self::Revoked,
+            27 => Self::Expired,
+            28 => Self::AlreadyRedeemed,
+            29 => Self::DuplicateRequest,
+            30 => Self::AlreadyOwned,
+            31 => Self::IPNotFound,
+            32 => Self::PersistFailed,
+            33 => Self::LockingFailed,
+            34 => Self::LogonSessionReplaced,
+            84 => Self::RateLimitExceeded,
+            85 => Self::TwoFactorRequired,
+            88 => Self::TwoFactorCodeMismatch,
+            89 => Self::TwoFactorActivationCodeMismatch,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl std::fmt::Display for EResultError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown(code) => write!(f, "unknown error (code {code})"),
+            other => write!(f, "{other:?}"),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

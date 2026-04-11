@@ -142,7 +142,7 @@ async fn connect_and_login(
     };
 
     let logon_bytes = logon.encode_to_vec();
-    let mut msg = ClientMsg::with_body(EMsg(5514), &logon_bytes);
+    let mut msg = ClientMsg::with_body(EMsg::CLIENT_LOGON, &logon_bytes);
     msg.header.steamid = Some(steam_id);
     msg.header.client_sessionid = Some(0);
 

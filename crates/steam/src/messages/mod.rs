@@ -29,6 +29,14 @@ impl EMsg {
     pub const CHANNEL_ENCRYPT_REQUEST: Self = Self(1303);
     pub const CHANNEL_ENCRYPT_RESPONSE: Self = Self(1304);
     pub const CHANNEL_ENCRYPT_RESULT: Self = Self(1305);
+    pub const CLIENT_LOGON: Self = Self(5514);
+    pub const CLIENT_GET_DEPOT_DECRYPTION_KEY: Self = Self(5438);
+    pub const CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE: Self = Self(5439);
+    pub const CLIENT_PICS_ACCESS_TOKEN_REQUEST: Self = Self(8905);
+    pub const CLIENT_PICS_ACCESS_TOKEN_RESPONSE: Self = Self(8906);
+    pub const CLIENT_PICS_PRODUCT_INFO_REQUEST: Self = Self(8903);
+    pub const CLIENT_PICS_PRODUCT_INFO_RESPONSE: Self = Self(8904);
+    pub const CLIENT_HELLO: Self = Self(9805);
 }
 
 impl std::fmt::Display for EMsg {

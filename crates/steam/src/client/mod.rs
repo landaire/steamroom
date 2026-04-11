@@ -176,14 +176,11 @@ impl SteamClient<Connected> {
             .into());
         }
 
-        // Result body contains: eresult (u32)
         if body.len() >= 4 {
-            let eresult = u32::from_le_bytes(body[..4].try_into().unwrap());
-            debug!("ChannelEncryptResult eresult={}", eresult);
-            if eresult != 1 {
-                // 1 = OK
-                return Err(ConnectionError::EncryptionFailed.into());
-            }
+            let code = u32::from_le_bytes(body[..4].try_into().unwrap()) as i32;
+            debug!("ChannelEncryptResult code={code}");
+            crate::enums::eresult(code)
+                .map_err(|_| ConnectionError::EncryptionFailed)?;
         }
 
         // Store the session cipher
@@ -230,7 +227,7 @@ impl SteamClient<Encrypted> {
             protocol_version: Some(PROTOCOL_VERSION),
         };
         let body = hello.encode_to_vec();
-        let msg = ClientMsg::with_body(EMsg(9805), &body);
+        let msg = ClientMsg::with_body(EMsg::CLIENT_HELLO, &body);
         self.send_raw(&msg).await
     }
 
@@ -251,13 +248,8 @@ impl SteamClient<Encrypted> {
             match incoming.emsg {
                 EMsg::CLIENT_LOG_ON_RESPONSE => {
                     let resp = generated::CMsgClientLogonResponse::decode(&*incoming.body)?;
-                    let eresult = resp.eresult.unwrap_or(0);
-                    if eresult != 1 {
-                        return Err(ConnectionError::LogonFailed(
-                            eresult_to_error(eresult),
-                        )
-                        .into());
-                    }
+                    crate::enums::eresult(resp.eresult.unwrap_or(0))
+                        .map_err(ConnectionError::LogonFailed)?;
 
                     if let Some(sid) = incoming.header.steamid {
                         self.inner.steam_id.store(sid, Ordering::Relaxed);
@@ -283,13 +275,8 @@ impl SteamClient<Encrypted> {
                         let sub_msg = parse_incoming(&sub)?;
                         if sub_msg.emsg == EMsg::CLIENT_LOG_ON_RESPONSE {
                             let resp = generated::CMsgClientLogonResponse::decode(&*sub_msg.body)?;
-                            let eresult = resp.eresult.unwrap_or(0);
-                            if eresult != 1 {
-                                return Err(ConnectionError::LogonFailed(
-                                    eresult_to_error(eresult),
-                                )
-                                .into());
-                            }
+                            crate::enums::eresult(resp.eresult.unwrap_or(0))
+                                .map_err(ConnectionError::LogonFailed)?;
 
                             if let Some(sid) = sub_msg.header.steamid {
                                 self.inner.steam_id.store(sid, Ordering::Relaxed);
@@ -459,16 +446,11 @@ impl SteamClient<Encrypted> {
         code: &str,
         code_type: GuardType,
     ) -> Result<(), Error> {
-        let guard_type = match code_type {
-            GuardType::EmailCode => 2,
-            GuardType::DeviceCode => 3,
-            _ => 0,
-        };
         let req = generated::CAuthenticationUpdateAuthSessionWithSteamGuardCodeRequest {
             client_id: Some(client_id),
             steamid: Some(steam_id),
             code: Some(code.to_string()),
-            code_type: Some(guard_type),
+            code_type: Some(code_type.to_proto()),
         };
         self.call_service_method_non_authed(
             "Authentication.UpdateAuthSessionWithSteamGuardCode#1",
@@ -567,12 +549,12 @@ impl SteamClient<LoggedIn> {
             ..Default::default()
         };
         let body = req.encode_to_vec();
-        let msg = self.make_msg(EMsg(8905), &body); // k_EMsgClientPICSAccessTokenRequest
+        let msg = self.make_msg(EMsg::CLIENT_PICS_ACCESS_TOKEN_REQUEST, &body); // k_EMsgClientPICSAccessTokenRequest
         self.send_raw(&msg).await?;
 
         loop {
             let incoming = self.recv_raw().await?;
-            if incoming.emsg == EMsg(8906) {
+            if incoming.emsg == EMsg::CLIENT_PICS_ACCESS_TOKEN_RESPONSE {
                 // k_EMsgClientPICSAccessTokenResponse
                 let resp = generated::CMsgClientPicsAccessTokenResponse::decode(&*incoming.body)?;
                 return Ok(resp
@@ -588,7 +570,7 @@ impl SteamClient<LoggedIn> {
                 let msgs = multi::unpack_multi(&incoming.body)?;
                 for sub in msgs {
                     let sub_msg = parse_incoming(&sub)?;
-                    if sub_msg.emsg == EMsg(8906) {
+                    if sub_msg.emsg == EMsg::CLIENT_PICS_ACCESS_TOKEN_RESPONSE {
                         let resp =
                             generated::CMsgClientPicsAccessTokenResponse::decode(&*sub_msg.body)?;
                         return Ok(resp
@@ -622,12 +604,12 @@ impl SteamClient<LoggedIn> {
             ..Default::default()
         };
         let body = req.encode_to_vec();
-        let msg = self.make_msg(EMsg(8903), &body); // k_EMsgClientPICSProductInfoRequest
+        let msg = self.make_msg(EMsg::CLIENT_PICS_PRODUCT_INFO_REQUEST, &body); // k_EMsgClientPICSProductInfoRequest
         self.send_raw(&msg).await?;
 
         loop {
             let incoming = self.recv_raw().await?;
-            if incoming.emsg == EMsg(8904) {
+            if incoming.emsg == EMsg::CLIENT_PICS_PRODUCT_INFO_RESPONSE {
                 // k_EMsgClientPICSProductInfoResponse
                 let resp = generated::CMsgClientPicsProductInfoResponse::decode(&*incoming.body)?;
                 return Ok(resp
@@ -644,7 +626,7 @@ impl SteamClient<LoggedIn> {
                 let msgs = multi::unpack_multi(&incoming.body)?;
                 for sub in msgs {
                     let sub_msg = parse_incoming(&sub)?;
-                    if sub_msg.emsg == EMsg(8904) {
+                    if sub_msg.emsg == EMsg::CLIENT_PICS_PRODUCT_INFO_RESPONSE {
                         let resp =
                             generated::CMsgClientPicsProductInfoResponse::decode(&*sub_msg.body)?;
                         return Ok(resp
@@ -672,21 +654,17 @@ impl SteamClient<LoggedIn> {
             app_id: Some(app_id.0),
         };
         let body = req.encode_to_vec();
-        let msg = self.make_msg(EMsg(5438), &body); // k_EMsgClientGetDepotDecryptionKey
+        let msg = self.make_msg(EMsg::CLIENT_GET_DEPOT_DECRYPTION_KEY, &body); // k_EMsgClientGetDepotDecryptionKey
         self.send_raw(&msg).await?;
 
         loop {
             let incoming = self.recv_raw().await?;
-            if incoming.emsg == EMsg(5439) {
+            if incoming.emsg == EMsg::CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE {
                 // k_EMsgClientGetDepotDecryptionKeyResponse
                 let resp =
                     generated::CMsgClientGetDepotDecryptionKeyResponse::decode(&*incoming.body)?;
-                let eresult = resp.eresult.unwrap_or(0);
-                if eresult != 1 {
-                    return Err(
-                        ConnectionError::DepotAccessDenied(depot_id.0).into()
-                    );
-                }
+                crate::enums::eresult(resp.eresult.unwrap_or(0))
+                    .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
                 let key_data = resp.depot_encryption_key.unwrap_or_default();
                 if key_data.len() != 32 {
                     return Err(ConnectionError::EncryptionFailed.into());
@@ -699,16 +677,12 @@ impl SteamClient<LoggedIn> {
                 let msgs = multi::unpack_multi(&incoming.body)?;
                 for sub in msgs {
                     let sub_msg = parse_incoming(&sub)?;
-                    if sub_msg.emsg == EMsg(5439) {
+                    if sub_msg.emsg == EMsg::CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE {
                         let resp = generated::CMsgClientGetDepotDecryptionKeyResponse::decode(
                             &*sub_msg.body,
                         )?;
-                        let eresult = resp.eresult.unwrap_or(0);
-                        if eresult != 1 {
-                            return Err(
-                                ConnectionError::DepotAccessDenied(depot_id.0).into()
-                            );
-                        }
+                        crate::enums::eresult(resp.eresult.unwrap_or(0))
+                            .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
                         let key_data = resp.depot_encryption_key.unwrap_or_default();
                         if key_data.len() != 32 {
                             return Err(ConnectionError::EncryptionFailed.into());
@@ -850,48 +824,13 @@ fn parse_incoming(data: &[u8]) -> Result<IncomingMsg, Error> {
 }
 
 fn check_service_eresult(msg: &IncomingMsg) -> Result<(), Error> {
-    if let Some(eresult) = msg.header.eresult {
-        if eresult != 1 {
-            return Err(ConnectionError::ServiceMethodFailed(eresult_to_error(eresult)).into());
-        }
+    if let Some(code) = msg.header.eresult {
+        crate::enums::eresult(code)
+            .map_err(ConnectionError::ServiceMethodFailed)?;
     }
     Ok(())
 }
 
-fn eresult_to_error(code: i32) -> EResultError {
-    match code {
-        2 => EResultError::Fail,
-        3 => EResultError::NoConnection,
-        5 => EResultError::InvalidPassword,
-        6 => EResultError::LoggedInElsewhere,
-        8 => EResultError::InvalidParam,
-        9 => EResultError::FileNotFound,
-        10 => EResultError::Busy,
-        15 => EResultError::AccessDenied,
-        16 => EResultError::Timeout,
-        17 => EResultError::Banned,
-        18 => EResultError::AccountNotFound,
-        20 => EResultError::ServiceUnavailable,
-        21 => EResultError::NotLoggedOn,
-        22 => EResultError::Pending,
-        25 => EResultError::LimitExceeded,
-        34 => EResultError::DuplicateRequest,
-        50 => EResultError::Expired,
-        84 => EResultError::RateLimitExceeded,
-        85 => EResultError::TwoFactorRequired,
-        88 => EResultError::TwoFactorCodeMismatch,
-        _ => EResultError::Unknown,
-    }
-}
-
-fn guard_type_from_proto(
-    confirmation_type: Option<i32>,
-) -> Option<GuardType> {
-    match confirmation_type? {
-        1 => Some(GuardType::None),
-        2 => Some(GuardType::EmailCode),
-        3 => Some(GuardType::DeviceCode),
-        4 => Some(GuardType::DeviceConfirmation),
-        _ => None,
-    }
+fn guard_type_from_proto(confirmation_type: Option<i32>) -> Option<GuardType> {
+    GuardType::from_proto(confirmation_type?)
 }

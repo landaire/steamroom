@@ -72,11 +72,11 @@ async fn do_login(
     };
     let hello_body = hello.encode_to_vec();
     let hello_msg =
-        steam::client::msg::ClientMsg::with_body(steam::messages::EMsg(9805), &hello_body);
+        steam::client::msg::ClientMsg::with_body(steam::messages::EMsg::CLIENT_HELLO, &hello_body);
     client.send_msg(&hello_msg).await?;
 
     let body = logon.encode_to_vec();
-    let mut msg = steam::client::msg::ClientMsg::with_body(steam::messages::EMsg(5514), &body);
+    let mut msg = steam::client::msg::ClientMsg::with_body(steam::messages::EMsg::CLIENT_LOGON, &body);
     msg.header.steamid = Some(steam_id);
     msg.header.client_sessionid = Some(0);
     let (logged_in, _) = client.login(msg).await?;
