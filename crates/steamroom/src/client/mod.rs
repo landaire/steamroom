@@ -28,12 +28,12 @@ use crate::messages::EMsg;
 use crate::messages::RawEMsg;
 use crate::transport::Transport;
 use bytes::Bytes;
-use futures_util::lock::Mutex;
 use prost::Message;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tracing::debug;
 use tracing::trace;
 
@@ -41,7 +41,7 @@ pub const PROTOCOL_VERSION: u32 = 65581;
 
 struct ClientInner {
     transport: Box<dyn Transport>,
-    cipher: Mutex<Option<crate::connection::encryption::SessionCipher>>,
+    cipher: OnceLock<crate::connection::encryption::SessionCipher>,
     steam_id: AtomicU64,
     session_id: AtomicI32,
     source_job_id: AtomicU64,
@@ -84,7 +84,7 @@ impl SteamClient<Disconnected> {
         let (_tx, rx) = async_channel::unbounded();
         let inner = Arc::new(ClientInner {
             transport: Box::new(transport),
-            cipher: Mutex::new(None),
+            cipher: OnceLock::new(),
             steam_id: AtomicU64::new(0),
             session_id: AtomicI32::new(0),
             source_job_id: AtomicU64::new(1),
@@ -107,7 +107,7 @@ impl SteamClient<Disconnected> {
         let (_tx, rx) = async_channel::unbounded();
         let inner = Arc::new(ClientInner {
             transport: Box::new(transport),
-            cipher: Mutex::new(None),
+            cipher: OnceLock::new(),
             steam_id: AtomicU64::new(0),
             session_id: AtomicI32::new(0),
             source_job_id: AtomicU64::new(1),
@@ -209,7 +209,7 @@ impl SteamClient<Connected> {
 
         // Store the session cipher
         let cipher = crate::connection::encryption::SessionCipher::new(session_key);
-        *self.inner.cipher.lock().await = Some(cipher);
+        let _ = self.inner.cipher.set(cipher);
 
         debug!("encryption handshake complete");
         Ok(SteamClient {
@@ -222,12 +222,10 @@ impl SteamClient<Connected> {
 impl SteamClient<Encrypted> {
     async fn send_raw(&self, msg: &ClientMsg<'_>) -> Result<(), Error> {
         let data = msg.to_bytes();
-        let cipher_guard = self.inner.cipher.lock().await;
-        if let Some(cipher) = cipher_guard.as_ref() {
+        if let Some(cipher) = self.inner.cipher.get() {
             let encrypted = cipher.encrypt(&data);
             self.inner.transport.send(&encrypted).await
         } else {
-            // WebSocket mode: no cipher, send plaintext
             self.inner.transport.send(&data).await
         }
     }
@@ -235,8 +233,7 @@ impl SteamClient<Encrypted> {
     async fn recv_raw(&self) -> Result<IncomingMsg, Error> {
         let raw = self.inner.transport.recv().await?;
 
-        let cipher_guard = self.inner.cipher.lock().await;
-        let data = if let Some(cipher) = cipher_guard.as_ref() {
+        let data = if let Some(cipher) = self.inner.cipher.get() {
             cipher
                 .decrypt(&raw)
                 .map_err(|_| ConnectionError::EncryptionFailed)?
@@ -497,8 +494,7 @@ impl SteamClient<Encrypted> {
 impl SteamClient<LoggedIn> {
     async fn send_raw(&self, msg: &ClientMsg<'_>) -> Result<(), Error> {
         let data = msg.to_bytes();
-        let cipher_guard = self.inner.cipher.lock().await;
-        if let Some(cipher) = cipher_guard.as_ref() {
+        if let Some(cipher) = self.inner.cipher.get() {
             let encrypted = cipher.encrypt(&data);
             self.inner.transport.send(&encrypted).await
         } else {
@@ -508,8 +504,7 @@ impl SteamClient<LoggedIn> {
 
     async fn recv_raw(&self) -> Result<IncomingMsg, Error> {
         let raw = self.inner.transport.recv().await?;
-        let cipher_guard = self.inner.cipher.lock().await;
-        let data = if let Some(cipher) = cipher_guard.as_ref() {
+        let data = if let Some(cipher) = self.inner.cipher.get() {
             cipher
                 .decrypt(&raw)
                 .map_err(|_| ConnectionError::EncryptionFailed)?
