@@ -76,8 +76,33 @@ async fn connect_and_login(
         client
     };
 
-    // Build logon message
-    let (logon, steam_id) = build_logon_body(auth);
+    // Determine auth mode and get token if needed
+    let (logon, steam_id) = if let Some(ref username) = auth.username {
+        if let Some(token) = load_saved_token(username) {
+            info!("using saved refresh token for {username}");
+            build_token_logon(username, &token)
+        } else if auth.qr {
+            let tokens = authenticate_qr(&client).await?;
+            save_token(&tokens.account_name.as_deref().unwrap_or(username), &tokens.refresh_token);
+            build_token_logon(
+                tokens.account_name.as_deref().unwrap_or(username),
+                &tokens.access_token,
+            )
+        } else {
+            let password = auth.password.clone().unwrap_or_else(|| {
+                rpassword::prompt_password(format!("Password for {username}: ")).unwrap_or_default()
+            });
+            let tokens = authenticate_credentials(&client, username, &password).await?;
+            save_token(&tokens.account_name.as_deref().unwrap_or(username), &tokens.refresh_token);
+            build_token_logon(
+                tokens.account_name.as_deref().unwrap_or(username),
+                &tokens.access_token,
+            )
+        }
+    } else {
+        build_anon_logon()
+    };
+
     let logon_bytes = logon.encode_to_vec();
     let mut msg = ClientMsg::with_body(EMsg(5514), &logon_bytes);
     msg.header.steamid = Some(steam_id);
@@ -90,41 +115,162 @@ async fn connect_and_login(
     Ok(client)
 }
 
+fn tokens_path() -> Option<std::path::PathBuf> {
+    Some(dirs_next::home_dir()?.join(".depotdownloader").join("tokens.json"))
+}
+
 fn load_saved_token(username: &str) -> Option<String> {
-    let path = dirs_next::home_dir()?.join(".depotdownloader").join("tokens.json");
-    let data = std::fs::read_to_string(&path).ok()?;
+    let data = std::fs::read_to_string(tokens_path()?).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&data).ok()?;
     parsed["tokens"][username].as_str().map(|s| s.to_string())
 }
 
-fn build_logon_body(auth: &AuthOptions) -> (steam::generated::CMsgClientLogon, u64) {
-    let mut logon = steam::generated::CMsgClientLogon {
+fn save_token(username: &str, refresh_token: &str) {
+    let Some(path) = tokens_path() else { return };
+    let mut root = match std::fs::read_to_string(&path) {
+        Ok(data) => serde_json::from_str::<serde_json::Value>(&data).unwrap_or_default(),
+        Err(_) => serde_json::json!({}),
+    };
+    root["tokens"][username] = serde_json::Value::String(refresh_token.to_string());
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&root).unwrap_or_default());
+    info!("saved refresh token for {username}");
+}
+
+async fn authenticate_credentials(
+    client: &SteamClient<steam::client::Encrypted>,
+    username: &str,
+    password: &str,
+) -> Result<steam::auth::AuthTokens, CliError> {
+    info!("getting RSA public key for {username}...");
+    let rsa = client.get_password_rsa_public_key(username).await?;
+    let modulus = rsa.publickey_mod.ok_or(CliError::Steam(
+        steam::error::Error::Connection(steam::error::ConnectionError::EncryptionFailed),
+    ))?;
+    let exponent = rsa.publickey_exp.ok_or(CliError::Steam(
+        steam::error::Error::Connection(steam::error::ConnectionError::EncryptionFailed),
+    ))?;
+    let timestamp = rsa.timestamp.unwrap_or(0);
+
+    let encrypted_password = steam::crypto::rsa::encrypt_with_rsa_public_key(
+        password.as_bytes(),
+        &modulus,
+        &exponent,
+    )?;
+    let encoded_password = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &encrypted_password,
+    );
+
+    info!("beginning auth session...");
+    let req = steam::generated::CAuthenticationBeginAuthSessionViaCredentialsRequest {
+        account_name: Some(username.to_string()),
+        encrypted_password: Some(encoded_password),
+        encryption_timestamp: Some(timestamp),
+        remember_login: Some(true),
+        persistence: Some(1), // Persistent
+        ..Default::default()
+    };
+    let session = client.begin_auth_session_via_credentials(req).await?;
+
+    // Handle 2FA if required
+    for guard in &session.allowed_confirmations {
+        match guard {
+            steam::auth::GuardType::DeviceCode | steam::auth::GuardType::EmailCode => {
+                let prompt = match guard {
+                    steam::auth::GuardType::DeviceCode => "Steam Guard code (from authenticator app): ",
+                    steam::auth::GuardType::EmailCode => "Steam Guard code (from email): ",
+                    _ => unreachable!(),
+                };
+                let code = rpassword::prompt_password(prompt).unwrap_or_default();
+                if let (Some(client_id), Some(steam_id)) = (session.client_id, session.steam_id) {
+                    client
+                        .submit_steam_guard_code(client_id, steam_id, &code, *guard)
+                        .await?;
+                }
+                break;
+            }
+            steam::auth::GuardType::DeviceConfirmation => {
+                info!("confirm login on your Steam mobile app...");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    // Poll for tokens
+    let client_id = session.client_id.unwrap_or(0);
+    let request_id = session.request_id.unwrap_or_default();
+    let interval = session.poll_interval.unwrap_or(5.0);
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs_f32(interval)).await;
+        if let Some(tokens) = client.poll_auth_session(client_id, &request_id).await? {
+            return Ok(tokens);
+        }
+    }
+}
+
+async fn authenticate_qr(
+    client: &SteamClient<steam::client::Encrypted>,
+) -> Result<steam::auth::AuthTokens, CliError> {
+    info!("generating QR code...");
+    let req = steam::generated::CAuthenticationBeginAuthSessionViaQrRequest {
+        device_friendly_name: Some("ddl".to_string()),
+        ..Default::default()
+    };
+    let session = client.begin_auth_session_via_qr(req).await?;
+
+    if let Some(ref url) = session.challenge_url {
+        // Print QR code to terminal
+        let qr = qrcode::QrCode::new(url.as_bytes()).map_err(|e| {
+            CliError::Steam(steam::error::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e,
+            )))
+        })?;
+        let rendered = qr
+            .render::<qrcode::render::unicode::Dense1x2>()
+            .build();
+        eprintln!("{rendered}");
+        eprintln!("Scan this QR code with the Steam mobile app");
+        eprintln!("Or open: {url}");
+    }
+
+    let client_id = session.client_id.unwrap_or(0);
+    let request_id = session.request_id.unwrap_or_default();
+    let interval = session.poll_interval.unwrap_or(5.0);
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs_f32(interval)).await;
+        if let Some(tokens) = client.poll_auth_session(client_id, &request_id).await? {
+            return Ok(tokens);
+        }
+    }
+}
+
+fn build_token_logon(username: &str, token: &str) -> (steam::generated::CMsgClientLogon, u64) {
+    let logon = steam::generated::CMsgClientLogon {
+        protocol_version: Some(PROTOCOL_VERSION),
+        cell_id: Some(0),
+        client_os_type: Some(20),
+        account_name: Some(username.to_string()),
+        access_token: Some(token.to_string()),
+        ..Default::default()
+    };
+    let steam_id = steam::types::SteamId::from_parts(1, 1, 1, 0);
+    (logon, steam_id.raw())
+}
+
+fn build_anon_logon() -> (steam::generated::CMsgClientLogon, u64) {
+    let logon = steam::generated::CMsgClientLogon {
         protocol_version: Some(PROTOCOL_VERSION),
         cell_id: Some(0),
         client_os_type: Some(20),
         ..Default::default()
     };
-
-    if let Some(ref username) = auth.username {
-        logon.account_name = Some(username.clone());
-
-        // Try saved refresh token first
-        if let Some(token) = load_saved_token(username) {
-            info!("using saved refresh token for {username}");
-            logon.access_token = Some(token);
-            // Individual account: universe=1, type=1, instance=1, id=0
-            let steam_id = steam::types::SteamId::from_parts(1, 1, 1, 0);
-            return (logon, steam_id.raw());
-        }
-
-        if let Some(ref password) = auth.password {
-            logon.password = Some(password.clone());
-        }
-        let steam_id = steam::types::SteamId::from_parts(1, 1, 1, 0);
-        return (logon, steam_id.raw());
-    }
-
-    // Anonymous login
     let steam_id = steam::types::SteamId::from_parts(1, 10, 0, 0);
     (logon, steam_id.raw())
 }

@@ -7,6 +7,9 @@ pub enum CliError {
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
+    Crypto(#[from] steam::error::CryptoError),
+
+    #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
 
     #[error(transparent)]
