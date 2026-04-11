@@ -83,6 +83,7 @@ steamroom info --app 480 --format json
 ```
 
 Example output:
+
 ```
 App ID:  480
 Name:    Spacewar
@@ -110,6 +111,7 @@ steamroom manifests --app 480 --format json
 ```
 
 Example output:
+
 ```
 481	3183503801510301321
 ```
@@ -132,6 +134,7 @@ steamroom files --app 480 --depot 481 --raw
 ```
 
 Example output:
+
 ```
 DejaVuSans.txt              2.8 KB
 sdkencryptedappticket.dll   558.3 KB
@@ -144,6 +147,7 @@ D3D9VRDistort.cso           576 B
 ```
 
 Plain output (one filename per line, for piping):
+
 ```
 DejaVuSans.txt
 sdkencryptedappticket.dll
@@ -167,13 +171,13 @@ steamroom workshop --app 440 --item 123456789 -o workshop/
 
 steamroom supports multiple authentication methods:
 
-| Method | Flag | Notes |
-|--------|------|-------|
-| Anonymous | (none) | Works for free games |
-| Password | `--username X --password Y` | Prompts if password omitted |
-| Password + 2FA | `--username X` | Prompts for guard code |
-| QR code | `--username X --qr` | Scan with Steam mobile app |
-| Saved token | `--username X` | Auto-loads from `~/.depotdownloader/tokens.json` |
+| Method         | Flag                        | Notes                                            |
+| -------------- | --------------------------- | ------------------------------------------------ |
+| Anonymous      | (none)                      | Works for free games                             |
+| Password       | `--username X --password Y` | Prompts if password omitted                      |
+| Password + 2FA | `--username X`              | Prompts for guard code                           |
+| QR code        | `--username X --qr`         | Scan with Steam mobile app                       |
+| Saved token    | `--username X`              | Auto-loads from `~/.depotdownloader/tokens.json` |
 
 Tokens are saved automatically after successful login and reused on subsequent runs.
 
@@ -209,11 +213,17 @@ steamroom-proto-extract — Tool to extract protobuf definitions from Steam bina
 Compared against [DepotDownloader](https://github.com/SteamRE/DepotDownloader) v3.4.0 (C#/.NET) using [hyperfine](https://github.com/sharkdp/hyperfine). Anonymous login, Windows 11, same network.
 
 | Benchmark | steamroom | DepotDownloader | Speedup |
-|-----------|-----------|-----------------|---------|
-| App info query (480) | 0.71s ± 0.29s | 3.00s ± 0.33s | **4.2x** |
-| File listing (480/481) | 0.84s ± 0.09s | 3.05s ± 2.28s | **3.6x** |
-| Download Spacewar (1.8 MB) | 1.44s ± 0.37s | 3.91s ± 0.08s | **2.7x** |
-| Download CS2 maps (1.7 GB) | 18.1s ± 0.2s | 17.3s ± 0.9s | **~1.0x** |
+| --------- | --------- | --------------- | ------- |
+
+\\\\\\\ to: mpptwwzu 280b1323 "perf: better-optimized Adler32 implementation" (rebased revision)
+-| App info query (480) | 0.83s ± 0.21s | 2.28s ± 1.17s | **2.7x** |
+-| File listing (480/481) | 0.81s ± 0.02s | 1.05s ± 0.18s | **1.3x** |
+-| Download Spacewar (1.8 MB) | 1.80s ± 0.12s | 4.03s ± 0.16s | **2.2x** |
+-| Download CS2 content (2.5 GB) | 22.0s ± 0.5s | 33.1s ± 2.2s | **1.5x** |
++| App info query (480) | 0.67s ± 0.06s | 2.85s ± 1.02s | **4.3x** |
++| File listing (480/481) | 1.67s ± 0.06s | 3.34s ± 1.01s | **2.0x** |
++| Download Spacewar (1.8 MB) | 1.23s ± 0.14s | 4.04s ± 0.16s | **3.3x** |
++| Download CS2 content (2.5 GB) | 23.6s | 32.1s | **1.4x** |
 
 Both tools are network-bound for large downloads. Results will vary by network and hardware. Run `bench/run.sh` to reproduce on your own setup.
 
@@ -232,10 +242,12 @@ hyperfine --min-runs 3 -N \
 ```
 
 Or use the included benchmark script with nix:
+
 ```bash
 nix develop
 ./bench/run.sh /path/to/scratch
 ```
+
 </details>
 
 See [FEATURES.md](FEATURES.md) for a full feature comparison.

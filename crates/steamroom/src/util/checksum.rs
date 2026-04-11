@@ -12,14 +12,20 @@ pub struct SteamAdler32(pub u32);
 
 impl SteamAdler32 {
     pub fn compute(data: &[u8]) -> Self {
-        // Steam uses a non-standard Adler-32 with zero seed instead of 1
-        let mut a: u32 = 0;
-        let mut b: u32 = 0;
-        for &byte in data {
-            a = (a + byte as u32) % 65521;
-            b = (b + a) % 65521;
-        }
-        Self((b << 16) | a)
+        // Steam uses a non-standard Adler-32 with zero seed (a=0, b=0) instead
+        // of the standard (a=1, b=0). The relationship after n bytes is:
+        //   a_steam = a_std - 1
+        //   b_steam = b_std - n
+        // (all mod 65521). This lets us use the `adler` crate's SIMD-optimized
+        // implementation and adjust the result.
+        const MOD: u32 = 65521;
+        let std_checksum = adler::adler32_slice(data);
+        let a_std = std_checksum & 0xFFFF;
+        let b_std = std_checksum >> 16;
+        let n_mod = (data.len() as u32) % MOD;
+        let a_steam = (a_std + MOD - 1) % MOD;
+        let b_steam = (b_std + MOD - n_mod) % MOD;
+        Self((b_steam << 16) | a_steam)
     }
 }
 
@@ -52,6 +58,40 @@ mod tests {
         let data = b"hello";
         let crc = Crc32::compute(data);
         assert_eq!(crc.0, 0x3610a686);
+    }
+
+    #[test]
+    fn steam_adler32_known_value() {
+        // Hand-computed: zero-seed Adler32 of "hello"
+        assert_eq!(SteamAdler32::compute(b"hello").0, 0x0627_0214);
+        assert_eq!(SteamAdler32::compute(b"").0, 0x0000_0000);
+    }
+
+    #[test]
+    fn steam_adler32_matches_naive() {
+        fn naive_steam_adler32(data: &[u8]) -> u32 {
+            let mut a: u32 = 0;
+            let mut b: u32 = 0;
+            for &byte in data {
+                a = (a + byte as u32) % 65521;
+                b = (b + a) % 65521;
+            }
+            (b << 16) | a
+        }
+
+        // Small inputs
+        for input in [b"" as &[u8], b"a", b"hello", b"test chunk data!"] {
+            assert_eq!(
+                SteamAdler32::compute(input).0,
+                naive_steam_adler32(input),
+                "mismatch for {:?}",
+                input,
+            );
+        }
+
+        // Large input (1 MB)
+        let big: Vec<u8> = (0..1_048_576u32).map(|i| (i % 251) as u8).collect();
+        assert_eq!(SteamAdler32::compute(&big).0, naive_steam_adler32(&big));
     }
 
     #[test]
