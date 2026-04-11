@@ -26,17 +26,18 @@ fn main() -> Result<(), CliError> {
     } else {
         Cli::parse()
     };
-    let default_level = if cli.debug {
+    let default_filter = if cli.debug {
         "debug"
     } else if cfg!(debug_assertions) {
-        "debug"
+        // Debug builds: show debug for our crates, warn for deps
+        "warn,steamroom=debug,steam=debug,steam_client=debug,steam_ffi=debug"
     } else {
         "warn"
     };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| default_level.into()),
+                .unwrap_or_else(|_| default_filter.into()),
         )
         .init();
 
