@@ -20,6 +20,12 @@ pub enum Error {
     #[error("http: {0}")]
     Http(#[from] reqwest::Error),
 
+    #[error("CDN returned HTTP {status}")]
+    CdnStatus {
+        status: u16,
+        retry_after: Option<u64>,
+    },
+
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 

@@ -9,6 +9,9 @@ pub enum DownloadEvent {
     FileSkipped {
         filename: String,
     },
+    FileRemoved {
+        filename: String,
+    },
     ChunkCompleted {
         bytes: u64,
     },

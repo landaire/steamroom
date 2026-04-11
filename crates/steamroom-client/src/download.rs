@@ -6,11 +6,13 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use steamroom::cdn::CdnClient;
+use steamroom::cdn::pool::CdnServerPool;
 use steamroom::cdn::server::CdnServer;
 use steamroom::depot::chunk::{self, ChunkError};
 use steamroom::depot::manifest::{DepotManifest, ManifestFile};
 use steamroom::depot::{ChunkId, DepotId, DepotKey};
 use steamroom::enums::DepotFileFlags;
+use steamroom::error::Error as SteamError;
 use crate::event::DownloadEvent;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -25,7 +27,7 @@ pub trait ChunkFetcher: Send + Sync {
 
 pub struct CdnChunkFetcher {
     pub cdn: CdnClient,
-    pub server: CdnServer,
+    pub pool: CdnServerPool,
     pub cdn_auth_token: Option<String>,
 }
 
@@ -35,10 +37,45 @@ impl ChunkFetcher for CdnChunkFetcher {
         depot_id: DepotId,
         chunk_id: &ChunkId,
     ) -> Result<Bytes, BoxError> {
-        Ok(self
+        let (server, wait) = self.pool.pick();
+        if !wait.is_zero() {
+            tracing::warn!(
+                server = %server.host,
+                wait_secs = wait.as_secs_f32(),
+                "all CDN servers in cooldown, waiting"
+            );
+            tokio::time::sleep(wait).await;
+        }
+        match self
             .cdn
-            .download_chunk(&self.server, depot_id, chunk_id, self.cdn_auth_token.as_deref())
-            .await?)
+            .download_chunk(server, depot_id, chunk_id, self.cdn_auth_token.as_deref())
+            .await
+        {
+            Ok(data) => {
+                self.pool.report_success(server);
+                Ok(data)
+            }
+            Err(SteamError::CdnStatus { status, retry_after }) => {
+                let ra = retry_after.map(Duration::from_secs);
+                if status == 429 || status == 503 {
+                    tracing::warn!(
+                        server = %server.host,
+                        status,
+                        retry_after = retry_after.unwrap_or(0),
+                        "CDN rate limited, backing off"
+                    );
+                } else {
+                    tracing::debug!(server = %server.host, status, "CDN error");
+                }
+                self.pool.report_failure(server, ra);
+                Err(Box::new(SteamError::CdnStatus { status, retry_after }))
+            }
+            Err(e) => {
+                tracing::debug!(server = %server.host, error = %e, "CDN request failed");
+                self.pool.report_failure(server, None);
+                Err(Box::new(e))
+            }
+        }
     }
 }
 
@@ -51,8 +88,8 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            max_attempts: 3,
-            initial_delay: Duration::from_secs(1),
+            max_attempts: 5,
+            initial_delay: Duration::from_millis(500),
         }
     }
 }
@@ -85,6 +122,7 @@ pub struct DepotJob {
     file_filter: FileFilter,
     retry: RetryConfig,
     event_tx: Option<mpsc::UnboundedSender<DownloadEvent>>,
+    old_manifest_files: Option<Vec<String>>,
 }
 
 impl DepotJob {
@@ -183,6 +221,36 @@ impl DepotJob {
             });
         }
 
+        // Remove files from the old manifest that are absent in the new one
+        if let Some(ref old_files) = self.old_manifest_files {
+            let new_files: std::collections::HashSet<&str> = manifest
+                .files
+                .iter()
+                .filter_map(|f| f.filename.as_deref())
+                .collect();
+
+            for old_name in old_files {
+                if new_files.contains(old_name.as_str()) {
+                    continue;
+                }
+                let old_path = self.install_dir.join(old_name);
+                if old_path.exists() {
+                    let is_dir = old_path.is_dir();
+                    let removed = if is_dir {
+                        std::fs::remove_dir(&old_path).is_ok()
+                    } else {
+                        std::fs::remove_file(&old_path).is_ok()
+                    };
+                    if removed {
+                        self.emit(DownloadEvent::FileRemoved {
+                            filename: old_name.clone(),
+                        });
+                        stats.files_removed += 1;
+                    }
+                }
+            }
+        }
+
         Ok(stats)
     }
 
@@ -236,11 +304,12 @@ impl DepotJob {
                     match fetcher.fetch_chunk(depot_id, &chunk_id).await {
                         Ok(data) => { result = Ok(data); break; }
                         Err(e) if attempt + 1 < retry.max_attempts => {
+                            let wait = retry_delay_for_error(&e, delay);
                             if let Some(ref tx) = event_tx {
                                 let _ = tx.send(DownloadEvent::ChunkFailed { error: e.to_string() });
                             }
-                            tokio::time::sleep(delay).await;
-                            delay *= 2;
+                            tokio::time::sleep(wait).await;
+                            delay = (wait * 2).min(Duration::from_secs(30));
                         }
                         Err(e) => { result = Err(e); break; }
                     }
@@ -415,6 +484,7 @@ fn file_matches(path: &Path, expected_size: u64, sha_content: Option<&[u8; 20]>)
 pub struct DownloadStats {
     pub files_completed: u64,
     pub files_skipped: u64,
+    pub files_removed: u64,
     pub bytes_downloaded: u64,
 }
 
@@ -428,6 +498,7 @@ pub struct DepotJobBuilder {
     file_filter: Option<FileFilter>,
     retry: Option<RetryConfig>,
     event_tx: Option<mpsc::UnboundedSender<DownloadEvent>>,
+    old_manifest_files: Option<Vec<String>>,
 }
 
 impl DepotJobBuilder {
@@ -471,6 +542,11 @@ impl DepotJobBuilder {
         self
     }
 
+    pub fn old_manifest_files(mut self, files: Vec<String>) -> Self {
+        self.old_manifest_files = Some(files);
+        self
+    }
+
     pub fn build(self) -> Result<DepotJob, BoxError> {
         Ok(DepotJob {
             depot_id: self.depot_id.ok_or("depot_id required")?,
@@ -481,6 +557,23 @@ impl DepotJobBuilder {
             file_filter: self.file_filter.unwrap_or(FileFilter::None),
             retry: self.retry.unwrap_or_default(),
             event_tx: self.event_tx,
+            old_manifest_files: self.old_manifest_files,
         })
     }
+}
+
+/// Compute retry delay, respecting `Retry-After` from 429/503 responses.
+fn retry_delay_for_error(err: &BoxError, default: Duration) -> Duration {
+    if let Some(steam_err) = err.downcast_ref::<SteamError>() {
+        if let SteamError::CdnStatus { status, retry_after } = steam_err {
+            if *status == 429 || *status == 503 {
+                if let Some(secs) = retry_after {
+                    return Duration::from_secs((*secs).min(60));
+                }
+                // No Retry-After header on 429/503 — use a conservative default
+                return default.max(Duration::from_secs(5));
+            }
+        }
+    }
+    default
 }

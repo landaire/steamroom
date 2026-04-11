@@ -377,10 +377,12 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     let cdn_servers = client
         .get_cdn_servers(CellId(0), Some(20))
         .await?;
-    let cdn_server = cdn_servers
-        .first()
-        .ok_or_else(|| CliError::NoCdnServers)?;
-    info!("using CDN server: {}", cdn_server.host);
+    if cdn_servers.is_empty() {
+        return Err(CliError::NoCdnServers);
+    }
+    info!("got {} CDN servers", cdn_servers.len());
+    let cdn_server = &cdn_servers[0];
+    let cdn_pool = steamroom::cdn::CdnServerPool::new(cdn_servers.clone());
 
     // Get manifest request code
     info!("getting manifest request code...");
@@ -395,9 +397,9 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         steamroom_client::manifest::ManifestCache::default_path(),
     );
 
-    let manifest_bytes = if let Some(cached) = manifest_cache.load(depot_id, manifest_id) {
+    let (manifest_bytes, cdn_raw) = if let Some(cached) = manifest_cache.load(depot_id, manifest_id) {
         debug!("using cached manifest for {depot_id}_{manifest_id}");
-        cached
+        (cached, None)
     } else {
         info!("downloading manifest...");
         let manifest_data = cdn
@@ -405,7 +407,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
             .await?;
         let decompressed = decompress_manifest(&manifest_data)?;
         let _ = manifest_cache.save(depot_id, manifest_id, &decompressed);
-        decompressed
+        (decompressed, Some(manifest_data))
     };
 
     // Debug: dump section magics
@@ -433,21 +435,50 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("depots").join(depot_id.0.to_string()));
     std::fs::create_dir_all(&output_dir)?;
 
+    // Load old manifest for delta file removal
+    let depot_config = steamroom_client::depot_config::DepotConfig::load(&output_dir);
+    let old_manifest_files = match depot_config.get_installed(depot_id) {
+        Some((old_id, old_key)) if old_id != manifest_id => {
+            debug!("previous manifest: {old_id}, loading for delta");
+            steamroom_client::depot_config::DepotConfig::load_manifest_decompressed(
+                &output_dir, depot_id, old_id,
+            )
+            .and_then(|bytes| {
+                let mut old = DepotManifest::parse(&bytes).ok()?;
+                if old.filenames_encrypted {
+                    let _ = old.decrypt_filenames(&old_key);
+                }
+                Some(
+                    old.files
+                        .iter()
+                        .filter_map(|f| f.filename.as_ref().cloned())
+                        .collect::<Vec<_>>(),
+                )
+            })
+        }
+        _ => None,
+    };
+
     // Set up download orchestration
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let fetcher = steamroom_client::download::CdnChunkFetcher {
         cdn,
-        server: cdn_server.clone(),
+        pool: cdn_pool,
         cdn_auth_token: None,
     };
 
     let mut builder = steamroom_client::download::DepotJob::builder()
         .depot_id(depot_id)
-        .depot_key(depot_key)
+        .depot_key(depot_key.clone())
         .install_dir(output_dir.clone())
         .verify(args.verify)
         .event_sender(event_tx);
+
+    if let Some(old_files) = old_manifest_files {
+        info!("delta update: will remove files not in new manifest");
+        builder = builder.old_manifest_files(old_files);
+    }
 
     if let Some(max) = args.max_downloads {
         builder = builder.max_downloads(max);
@@ -489,6 +520,9 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
                 steamroom_client::event::DownloadEvent::ChunkCompleted { bytes } => {
                     completed += bytes;
                 }
+                steamroom_client::event::DownloadEvent::FileRemoved { filename } => {
+                    info!("removed {filename}");
+                }
                 steamroom_client::event::DownloadEvent::ChunkFailed { error } => {
                     warn!("chunk failed (retrying): {error}");
                 }
@@ -506,16 +540,28 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     drop(job); // drop to close the event channel
     let _ = progress_handle.await;
 
-    // Save installed manifest for future delta downloads
+    // Save manifest and config for future delta downloads / preservation
+    if let Some(raw) = cdn_raw {
+        let _ = steamroom_client::depot_config::DepotConfig::save_manifest_raw(
+            &output_dir, depot_id, manifest_id, &raw,
+        );
+    }
+    let _ = steamroom_client::depot_config::DepotConfig::save_manifest_decompressed(
+        &output_dir, depot_id, manifest_id, &manifest_bytes,
+    );
     let mut depot_config = steamroom_client::depot_config::DepotConfig::load(&output_dir);
-    depot_config.set_installed(depot_id, manifest_id);
+    depot_config.set_installed(depot_id, manifest_id, &depot_key);
     let _ = depot_config.save(&output_dir);
 
-    info!(
+    let mut summary = format!(
         "download complete: {} files, {}",
         stats.files_completed,
-        fmt_size(stats.bytes_downloaded)
+        fmt_size(stats.bytes_downloaded),
     );
+    if stats.files_removed > 0 {
+        summary.push_str(&format!(", {} removed", stats.files_removed));
+    }
+    info!("{summary}");
     Ok(())
 }
 
@@ -857,7 +903,11 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
 
     let depot_key = client.get_depot_decryption_key(depot_id, app_id).await?;
     let cdn_servers = client.get_cdn_servers(CellId(0), Some(5)).await?;
-    let cdn_server = cdn_servers.first().ok_or(CliError::NoCdnServers)?;
+    if cdn_servers.is_empty() {
+        return Err(CliError::NoCdnServers);
+    }
+    let cdn_server = &cdn_servers[0];
+    let cdn_pool = steamroom::cdn::CdnServerPool::new(cdn_servers.clone());
     let cdn = CdnClient::new().map_err(CliError::Steam)?;
 
     let request_code = client
@@ -882,7 +932,7 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     let fetcher = steamroom_client::download::CdnChunkFetcher {
         cdn,
-        server: cdn_server.clone(),
+        pool: cdn_pool,
         cdn_auth_token: None,
     };
     let job = steamroom_client::download::DepotJob::builder()

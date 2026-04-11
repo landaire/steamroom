@@ -1,7 +1,9 @@
 pub mod lancache;
+pub mod pool;
 pub mod server;
 
 use bytes::Bytes;
+pub use self::pool::CdnServerPool;
 pub use self::server::CdnServer;
 use crate::depot::{ChunkId, DepotId, ManifestId};
 use crate::error::Error;
@@ -45,7 +47,7 @@ impl CdnClient {
         );
         let url = self.build_url(server, &path, cdn_auth_token);
         let resp = self.build_request(server, &url).send().await?;
-        Ok(resp.bytes().await?)
+        Self::check_response(resp).await
     }
 
     pub async fn download_chunk(
@@ -58,7 +60,20 @@ impl CdnClient {
         let path = format!("/depot/{}/chunk/{}", depot_id.0, chunk_id);
         let url = self.build_url(server, &path, cdn_auth_token);
         let resp = self.build_request(server, &url).send().await?;
-        Ok(resp.bytes().await?)
+        Self::check_response(resp).await
+    }
+
+    async fn check_response(resp: reqwest::Response) -> Result<Bytes, Error> {
+        let status = resp.status().as_u16();
+        if status == 200 {
+            return Ok(resp.bytes().await?);
+        }
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        Err(Error::CdnStatus { status, retry_after })
     }
 
     fn build_url(&self, server: &CdnServer, path: &str, cdn_auth_token: Option<&str>) -> String {
