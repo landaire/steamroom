@@ -366,7 +366,7 @@ impl DepotJob {
                 if new_files.contains(old_name.as_str()) {
                     continue;
                 }
-                let old_path = self.install_dir.join(old_name);
+                let old_path = self.install_dir.join(old_name.replace('\\', "/"));
                 if old_path.exists() {
                     let is_dir = old_path.is_dir();
                     let removed = if is_dir {
