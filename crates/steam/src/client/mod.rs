@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use bytes::Bytes;
 use prost::Message;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 use crate::apps::{AccessToken, AppInfo, BetaBranch};
 use crate::auth::{AuthSession, AuthTokens, GuardType, QrAuthSession};
 use crate::cdn::CdnServer;
@@ -15,7 +15,7 @@ use crate::depot::{AppId, CellId, DepotId, DepotKey, ManifestId};
 use crate::enums::EResultError;
 use crate::error::{ConnectionError, Error};
 use crate::generated;
-use crate::messages::{EMsg, RawEMsg, PROTO_MASK};
+use crate::messages::{EMsg, RawEMsg};
 use crate::messages::header::{self, PacketHeader};
 use crate::transport::Transport;
 use self::msg::ClientMsg;
@@ -729,8 +729,8 @@ impl SteamClient<LoggedIn> {
 
     pub async fn check_beta_password(
         &self,
-        app_id: AppId,
-        password: &str,
+        _app_id: AppId,
+        _password: &str,
     ) -> Result<Vec<BetaBranch>, Error> {
         todo!()
     }

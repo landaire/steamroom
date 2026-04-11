@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use steam::depot::{AppId, CellId, DepotId, ManifestId};
+use steam::depot::CellId;
 
 #[derive(Parser, Debug)]
 #[command(name = "ddl", about = "Steam depot downloader")]

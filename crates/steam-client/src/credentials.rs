@@ -11,11 +11,11 @@ impl TokenStore {
         todo!()
     }
 
-    pub fn load(path: &Path) -> Result<Self, std::io::Error> {
+    pub fn load(_path: &Path) -> Result<Self, std::io::Error> {
         todo!()
     }
 
-    pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+    pub fn save(&self, _path: &Path) -> Result<(), std::io::Error> {
         todo!()
     }
 

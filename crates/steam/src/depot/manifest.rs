@@ -4,7 +4,7 @@ use std::io::Cursor;
 use super::{ChunkId, DepotId, DepotKey, ManifestId};
 use crate::enums::ManifestMagic;
 use crate::error::ManifestError;
-use crate::generated::{ContentManifestMetadata, ContentManifestPayload, ContentManifestSignature};
+use crate::generated::{ContentManifestMetadata, ContentManifestPayload};
 
 #[derive(Clone, Debug)]
 pub struct DepotManifest {

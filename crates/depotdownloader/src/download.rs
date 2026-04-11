@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 pub fn spawn_progress_renderer(
-    rx: mpsc::UnboundedReceiver<DownloadEvent>,
+    _rx: mpsc::UnboundedReceiver<DownloadEvent>,
 ) -> JoinHandle<()> {
     todo!()
 }

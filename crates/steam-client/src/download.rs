@@ -3,8 +3,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use steam::cdn::CdnClient;
 use steam::cdn::server::CdnServer;
-use steam::content::CdnAuthToken;
-use steam::depot::{ChunkId, DepotId, DepotKey, ManifestId};
+use steam::depot::{ChunkId, DepotId, DepotKey};
 use steam::depot::manifest::DepotManifest;
 use crate::event::DownloadEvent;
 
@@ -27,8 +26,8 @@ pub struct CdnChunkFetcher {
 impl ChunkFetcher for CdnChunkFetcher {
     async fn fetch_chunk(
         &self,
-        depot_id: DepotId,
-        chunk_id: &ChunkId,
+        _depot_id: DepotId,
+        _chunk_id: &ChunkId,
     ) -> Result<Bytes, BoxError> {
         todo!()
     }
@@ -67,7 +66,7 @@ impl FileFilter {
         Ok(Self::Regex(regex::Regex::new(pattern)?))
     }
 
-    pub fn matches(&self, filename: &str) -> bool {
+    pub fn matches(&self, _filename: &str) -> bool {
         todo!()
     }
 }
@@ -157,8 +156,8 @@ impl DepotJob {
 
     pub async fn download<F: ChunkFetcher>(
         &self,
-        manifest: &DepotManifest,
-        fetcher: &F,
+        _manifest: &DepotManifest,
+        _fetcher: &F,
     ) -> Result<(), BoxError> {
         todo!()
     }

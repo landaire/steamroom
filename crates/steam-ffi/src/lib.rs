@@ -1,5 +1,4 @@
-use std::ffi::{c_char, CStr, CString};
-use std::ptr;
+use std::ffi::{c_char, CString};
 
 static mut RUNTIME: Option<tokio::runtime::Runtime> = None;
 static mut LAST_ERROR: Option<CString> = None;

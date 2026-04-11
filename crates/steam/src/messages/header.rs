@@ -2,7 +2,7 @@ use bytes::Bytes;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::Cursor;
 use prost::Message;
-use super::{EMsg, RawEMsg, PROTO_MASK};
+use super::{EMsg, RawEMsg};
 use crate::error::ParseError;
 
 #[derive(Clone, Debug)]
