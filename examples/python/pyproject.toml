@@ -12,5 +12,8 @@ build-backend = "scikit_build_core.build"
 [dependency-groups]
 dev = ["pytest"]
 
+[tool.pytest.ini_options]
+markers = ["integration: requires network access to Steam"]
+
 [tool.scikit-build]
 cmake.build-type = "Release"

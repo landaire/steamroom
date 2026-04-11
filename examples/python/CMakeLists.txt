@@ -22,6 +22,10 @@ if(WIN32)
         "${STEAMROOM_FFI_LIB_DIR}/steamroom_ffi.dll.lib"
         ws2_32 bcrypt userenv ntdll
     )
+elseif(APPLE)
+    target_link_libraries(steam_ffi_ext PRIVATE
+        "${STEAMROOM_FFI_LIB_DIR}/libsteamroom_ffi.dylib"
+    )
 else()
     target_link_libraries(steam_ffi_ext PRIVATE
         "${STEAMROOM_FFI_LIB_DIR}/libsteamroom_ffi.so"
