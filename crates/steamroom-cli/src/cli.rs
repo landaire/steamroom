@@ -32,6 +32,10 @@ pub struct Cli {
     /// Disable progress bars
     #[arg(long)]
     pub no_progress: bool,
+
+    /// Suppress all output except errors
+    #[arg(short, long)]
+    pub quiet: bool,
 }
 
 /// Legacy flat-argument CLI compatible with the original DepotDownloader.
@@ -116,6 +120,7 @@ impl CompatCli {
             max_downloads: self.max_downloads,
             capture: None,
             no_progress: false,
+            quiet: false,
         }
     }
 }

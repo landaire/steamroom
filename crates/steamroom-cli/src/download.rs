@@ -7,29 +7,21 @@ use tokio::task::JoinHandle;
 
 pub fn spawn_progress_renderer(
     mut rx: mpsc::UnboundedReceiver<DownloadEvent>,
-    total_bytes: u64,
     show_bars: bool,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         if show_bars {
-            run_with_bars(&mut rx, total_bytes).await;
+            run_with_bars(&mut rx).await;
         } else {
-            run_quiet(&mut rx, total_bytes).await;
+            run_quiet(&mut rx).await;
         }
     })
 }
 
-async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, total_bytes: u64) {
+async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>) {
     let mp = MultiProgress::new();
 
-    let total_bar = mp.add(ProgressBar::new(total_bytes));
-    total_bar.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-
+    let total_bar = mp.add(ProgressBar::hidden());
     let file_bar = mp.add(ProgressBar::new_spinner());
     file_bar.set_style(
         ProgressStyle::default_spinner()
@@ -39,6 +31,24 @@ async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, total_by
 
     while let Some(event) = rx.recv().await {
         match event {
+            DownloadEvent::DownloadStarted {
+                total_bytes,
+                total_files,
+            } => {
+                total_bar.set_length(total_bytes);
+                total_bar.set_style(
+                    ProgressStyle::default_bar()
+                        .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+                        .unwrap()
+                        .progress_chars("=> "),
+                );
+                total_bar.reset();
+                mp.println(format!(
+                    "downloading {total_files} files ({})",
+                    fmt_bytes(total_bytes)
+                ))
+                .ok();
+            }
             DownloadEvent::FileStarted { filename } => {
                 file_bar.set_message(filename);
             }
@@ -47,17 +57,16 @@ async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, total_by
             }
             DownloadEvent::FileSkipped { .. } => {}
             DownloadEvent::FileRemoved { filename } => {
-                file_bar.set_message(format!("removed {filename}"));
+                mp.println(format!("removed {filename}")).ok();
             }
             DownloadEvent::ChunkCompleted { bytes } => {
                 total_bar.inc(bytes);
             }
             DownloadEvent::ChunkFailed { error } => {
-                total_bar.suspend(|| {
-                    tracing::warn!("chunk failed (retrying): {error}");
-                });
+                mp.println(format!("warning: chunk failed (retrying): {error}"))
+                    .ok();
             }
-            DownloadEvent::DepotProgress { .. } | _ => {}
+            _ => {}
         }
     }
 
@@ -65,13 +74,17 @@ async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, total_by
     file_bar.finish_and_clear();
 }
 
-async fn run_quiet(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, total_bytes: u64) {
+async fn run_quiet(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>) {
     let mut completed: u64 = 0;
+    let mut total: u64 = 0;
     while let Some(event) = rx.recv().await {
         match event {
+            DownloadEvent::DownloadStarted { total_bytes, .. } => {
+                total = total_bytes;
+            }
             DownloadEvent::FileCompleted { filename } => {
-                let pct = if total_bytes > 0 {
-                    completed as f64 / total_bytes as f64 * 100.0
+                let pct = if total > 0 {
+                    completed as f64 / total as f64 * 100.0
                 } else {
                     0.0
                 };
@@ -88,5 +101,20 @@ async fn run_quiet(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, total_bytes:
             }
             _ => {}
         }
+    }
+}
+
+fn fmt_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
     }
 }

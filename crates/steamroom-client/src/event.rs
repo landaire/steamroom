@@ -5,6 +5,10 @@
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum DownloadEvent {
+    DownloadStarted {
+        total_bytes: u64,
+        total_files: u64,
+    },
     FileStarted {
         filename: String,
     },

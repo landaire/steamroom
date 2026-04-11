@@ -248,8 +248,23 @@ impl DepotJob {
         manifest: &DepotManifest,
         fetcher: std::sync::Arc<F>,
     ) -> Result<DownloadStats, BoxError> {
-        let total_bytes: u64 = manifest.files.iter().map(|f| f.size).sum();
+        let (total_bytes, total_files) =
+            manifest
+                .files
+                .iter()
+                .fold((0u64, 0u64), |(bytes, count), f| {
+                    if self.file_filter.matches(&f.filename) {
+                        (bytes + f.size, count + 1)
+                    } else {
+                        (bytes, count)
+                    }
+                });
         let mut stats = DownloadStats::default();
+
+        self.emit(DownloadEvent::DownloadStarted {
+            total_bytes,
+            total_files,
+        });
 
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(self.max_downloads));
 

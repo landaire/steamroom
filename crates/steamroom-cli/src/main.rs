@@ -32,7 +32,9 @@ fn main() {
     } else {
         Cli::parse()
     };
-    let default_filter = if cli.debug {
+    let default_filter = if cli.quiet {
+        "off"
+    } else if cli.debug {
         "debug"
     } else if cfg!(debug_assertions) {
         "warn,steamroom=debug,steamroom_client=debug,steamroom_ffi=debug,steamroom_cli=debug"
@@ -558,22 +560,16 @@ async fn run_download(
         )))
     })?;
 
-    let total_bytes: u64 = manifest.files.iter().map(|f| f.size).sum();
-    info!(
-        "downloading {} files ({}) to {}",
-        manifest.files.len(),
-        fmt_size(total_bytes),
-        output_dir.display()
-    );
+    info!("downloading to {}", output_dir.display());
 
-    let progress_handle = download::spawn_progress_renderer(event_rx, total_bytes, show_progress);
+    let progress_handle = download::spawn_progress_renderer(event_rx, show_progress);
 
     let stats = job
         .download(&manifest, std::sync::Arc::new(fetcher))
         .await
         .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
 
-    drop(job); // drop to close the event channel
+    drop(job);
     let _ = progress_handle.await;
 
     // Save manifest and config for future delta downloads / preservation
@@ -1008,15 +1004,9 @@ async fn run_workshop(
         .build()
         .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
 
-    let total_bytes: u64 = manifest.files.iter().map(|f| f.size).sum();
-    info!(
-        "downloading {} files ({}) to {}",
-        manifest.files.len(),
-        fmt_size(total_bytes),
-        output_dir.display()
-    );
+    info!("downloading to {}", output_dir.display());
 
-    let progress_handle = download::spawn_progress_renderer(event_rx, total_bytes, show_progress);
+    let progress_handle = download::spawn_progress_renderer(event_rx, show_progress);
 
     let stats = job
         .download(&manifest, std::sync::Arc::new(fetcher))
