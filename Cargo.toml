@@ -2,11 +2,11 @@
 resolver = "2"
 exclude = ["fuzz"]
 members = [
-    "crates/steam",
-    "crates/steam-client",
-    "crates/depotdownloader",
-    "crates/steam-ffi",
-    "crates/proto-extract",
+    "crates/steamroom",
+    "crates/steamroom-client",
+    "crates/steamroom-cli",
+    "crates/steamroom-ffi",
+    "crates/steamroom-proto-extract",
 ]
 
 [workspace.dependencies]
@@ -52,5 +52,5 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 async-channel = "2"
 
-steamroom = { path = "crates/steam" }
-steamroom-client = { path = "crates/steam-client" }
+steamroom = { path = "crates/steamroom" }
+steamroom-client = { path = "crates/steamroom-client" }

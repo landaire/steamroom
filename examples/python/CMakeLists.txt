@@ -6,7 +6,7 @@ find_package(nanobind CONFIG REQUIRED)
 
 set(STEAM_FFI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(STEAM_FFI_LIB_DIR "${STEAM_FFI_ROOT}/target/release")
-set(STEAM_FFI_CPP_INCLUDE "${STEAM_FFI_ROOT}/crates/steam-ffi/bindings/cpp")
+set(STEAM_FFI_CPP_INCLUDE "${STEAM_FFI_ROOT}/crates/steamroom-ffi/bindings/cpp")
 
 nanobind_add_module(steam_ffi_ext NB_STATIC src/bindings.cpp)
 

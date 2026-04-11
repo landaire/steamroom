@@ -18,7 +18,7 @@ __pycache__/
 *.so
 
 # Generated Diplomat FFI bindings (regenerate with diplomat-tool)
-crates/steam-ffi/bindings/
+crates/steamroom-ffi/bindings/
 *.dll.lib
 examples/python/steam_ffi.dll
 

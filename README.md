@@ -162,32 +162,36 @@ steamroom-proto-extract — Tool to extract protobuf definitions from Steam bina
 
 ## Benchmarks
 
-Benchmarks compare steamroom against DepotDownloader (C#) using [hyperfine](https://github.com/sharkdp/hyperfine). Run inside the nix dev shell:
+Compared against [DepotDownloader](https://github.com/SteamRE/DepotDownloader) v3.4.0 (C#/.NET) using [hyperfine](https://github.com/sharkdp/hyperfine). Anonymous login, Windows 11, same network.
+
+| Benchmark | steamroom | DepotDownloader | Speedup |
+|-----------|-----------|-----------------|---------|
+| App info query (480) | 1.56s ± 0.57s | 3.28s ± 0.48s | **2.1x** |
+| File listing (480/481) | 1.66s ± 0.98s | 1.99s ± 0.98s | **1.2x** |
+| Download Spacewar (1.8 MB) | 1.07s ± 0.17s | 4.60s ± 1.63s | **4.3x** |
+
+Both tools are network-bound for larger downloads — the speedup comes from lower startup overhead (no .NET runtime), pipelined chunk processing, and a more efficient connection setup.
+
+<details>
+<summary>Reproduce benchmarks</summary>
 
 ```bash
-# Enter dev shell (provides rust, hyperfine, dotnet for DepotDownloader)
-nix develop
-
-# Build steamroom in release mode
+# Build release
 cargo build --release -p steamroom-cli
 
-# Install DepotDownloader
-dotnet tool install -g DepotDownloader
-
-# Run benchmarks (scratch dir on a drive with space)
-./bench/run.sh /mnt/g/tmp/steamroom-bench
+# Run with hyperfine (clean state each run to prevent resume skew)
+hyperfine --min-runs 3 -N \
+  --prepare "rm -rf /tmp/sr /tmp/dd" \
+  -n steamroom "steamroom download --app 480 --depot 481 -o /tmp/sr" \
+  -n DepotDownloader "DepotDownloader -app 480 -depot 481 -dir /tmp/dd"
 ```
 
-### Test Matrix
-
-| Test | What it measures | Data size |
-|------|-----------------|-----------|
-| `info` | Login + PICS query latency | — |
-| `files` | Manifest fetch + parse + filename decrypt | — |
-| `spacewar` | Full download pipeline (small) | ~1.8 MB |
-| `cs2` | Full download pipeline (large, DLL subset) | ~2 GB |
-
-Each download test cleans the output directory before every run to prevent resume from skewing results. Results are saved as JSON in `$SCRATCH/results/`.
+Or use the included benchmark script with nix:
+```bash
+nix develop
+./bench/run.sh /path/to/scratch
+```
+</details>
 
 See [FEATURES.md](FEATURES.md) for a full feature comparison.
 

@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-steamroom = { path = "../crates/steam", features = ["__private_fuzzing"] }
+steamroom = { path = "../crates/steamroom", features = ["__private_fuzzing"] }
 
 [[bin]]
 name = "fuzz_binary_kv"
