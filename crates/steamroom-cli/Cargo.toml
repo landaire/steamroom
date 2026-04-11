@@ -14,6 +14,10 @@ categories = ["command-line-utilities"]
 name = "steamroom"
 path = "src/main.rs"
 
+[[bin]]
+name = "bench-profile"
+path = "src/bin/bench_profile.rs"
+
 [dependencies]
 steamroom = { workspace = true }
 steamroom-client = { workspace = true }
