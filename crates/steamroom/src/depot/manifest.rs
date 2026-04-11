@@ -12,6 +12,8 @@ use prost::Message;
 use std::io::Cursor;
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct DepotManifest {
     pub depot_id: Option<DepotId>,
     pub manifest_id: Option<ManifestId>,
@@ -23,25 +25,66 @@ pub struct DepotManifest {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct ManifestFile {
-    pub filename: Option<String>,
-    pub size: Option<u64>,
-    pub flags: Option<u32>,
+    pub filename: String,
+    pub size: u64,
+    pub flags: u32,
     pub sha_content: Option<[u8; 20]>,
     pub chunks: Vec<ManifestChunk>,
     pub link_target: Option<String>,
 }
 
+impl ManifestFile {
+    pub fn new(filename: String, size: u64) -> Self {
+        Self {
+            filename,
+            size,
+            flags: 0,
+            sha_content: None,
+            chunks: vec![],
+            link_target: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct ManifestChunk {
-    pub id: Option<ChunkId>,
-    pub checksum: Option<u32>,
+    pub id: ChunkId,
+    pub checksum: u32,
     pub offset: Option<u64>,
     pub compressed_size: Option<u32>,
-    pub uncompressed_size: Option<u32>,
+    pub uncompressed_size: u32,
+}
+
+impl ManifestChunk {
+    pub fn new(id: ChunkId, checksum: u32, uncompressed_size: u32) -> Self {
+        Self {
+            id,
+            checksum,
+            offset: None,
+            compressed_size: None,
+            uncompressed_size,
+        }
+    }
 }
 
 impl DepotManifest {
+    pub fn new(files: Vec<ManifestFile>) -> Self {
+        Self {
+            depot_id: None,
+            manifest_id: None,
+            creation_time: None,
+            filenames_encrypted: false,
+            total_uncompressed_size: None,
+            total_compressed_size: None,
+            files,
+        }
+    }
+
     pub fn parse(data: &[u8]) -> Result<Self, ManifestError> {
         let mut cursor = Cursor::new(data);
 
@@ -147,19 +190,19 @@ impl DepotManifest {
                             }
                         });
                         ManifestChunk {
-                            id,
-                            checksum: c.crc,
+                            id: id.unwrap_or(ChunkId([0; 20])),
+                            checksum: c.crc.unwrap_or(0),
                             offset: c.offset,
                             compressed_size: c.cb_compressed,
-                            uncompressed_size: c.cb_original,
+                            uncompressed_size: c.cb_original.unwrap_or(0),
                         }
                     })
                     .collect();
 
                 ManifestFile {
-                    filename: m.filename,
-                    size: m.size,
-                    flags: m.flags,
+                    filename: m.filename.unwrap_or_default(),
+                    size: m.size.unwrap_or(0),
+                    flags: m.flags.unwrap_or(0),
                     sha_content,
                     chunks,
                     link_target: m.linktarget,
@@ -184,28 +227,28 @@ impl DepotManifest {
             return Ok(());
         }
         for file in &mut self.files {
-            if let Some(ref encrypted_name) = file.filename {
-                let clean_b64: String = encrypted_name
-                    .chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect();
-                let decoded =
-                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &clean_b64)?;
-
-                // ECB(IV) + CBC(data) — same format as chunk encryption
-                if decoded.len() < 32 {
-                    return Err(ManifestError::DecryptFailed(
-                        crate::error::CryptoError::DecryptionFailed,
-                    ));
-                }
-                let iv = crate::crypto::symmetric_decrypt_ecb_nopad(&decoded[..16], &key.0)?;
-                let decrypted = crate::crypto::symmetric_decrypt_cbc(&decoded[16..], &key.0, &iv)?;
-
-                let name = decrypted.split(|&b| b == 0).next().unwrap_or(&decrypted);
-                file.filename = Some(
-                    String::from_utf8(name.to_vec()).map_err(|_| ManifestError::InvalidFilename)?,
-                );
+            if file.filename.is_empty() {
+                continue;
             }
+            let clean_b64: String = file
+                .filename
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let decoded =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &clean_b64)?;
+
+            if decoded.len() < 32 {
+                return Err(ManifestError::DecryptFailed(
+                    crate::error::CryptoError::DecryptionFailed,
+                ));
+            }
+            let iv = crate::crypto::symmetric_decrypt_ecb_nopad(&decoded[..16], &key.0)?;
+            let decrypted = crate::crypto::symmetric_decrypt_cbc(&decoded[16..], &key.0, &iv)?;
+
+            let name = decrypted.split(|&b| b == 0).next().unwrap_or(&decrypted);
+            file.filename =
+                String::from_utf8(name.to_vec()).map_err(|_| ManifestError::InvalidFilename)?;
         }
         self.filenames_encrypted = false;
         Ok(())

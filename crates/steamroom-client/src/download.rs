@@ -20,6 +20,8 @@ use tokio::sync::mpsc;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Trait for fetching raw encrypted chunk bytes. Implement this to provide
+/// a custom data source (CDN, local cache, LAN peer, etc.).
 pub trait ChunkFetcher: Send + Sync {
     fn fetch_chunk(
         &self,
@@ -28,6 +30,7 @@ pub trait ChunkFetcher: Send + Sync {
     ) -> impl Future<Output = Result<Bytes, BoxError>> + Send;
 }
 
+/// CDN-backed chunk fetcher with server pool rotation and rate-limit handling.
 pub struct CdnChunkFetcher {
     pub cdn: CdnClient,
     pub pool: CdnServerPool,
@@ -91,6 +94,7 @@ impl ChunkFetcher for CdnChunkFetcher {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RetryConfig {
     pub max_attempts: u32,
     pub initial_delay: Duration,
@@ -105,6 +109,24 @@ impl Default for RetryConfig {
     }
 }
 
+/// Controls which manifest files are included in a download.
+///
+/// ```
+/// use steamroom_client::download::FileFilter;
+///
+/// // Match only .dll files
+/// let filter = FileFilter::Regex(regex::Regex::new(r"\.dll$").unwrap());
+/// assert!(filter.matches("bin/server.dll"));
+/// assert!(!filter.matches("bin/server.exe"));
+///
+/// // Parse a filelist with mixed literal and regex entries
+/// let filter = FileFilter::from_filelist(&[
+///     "game/bin/server.dll".into(),
+///     "regex:^maps/.*\\.vpk$".into(),
+/// ]).unwrap();
+/// assert!(filter.matches("game/bin/server.dll"));
+/// assert!(filter.matches("maps/de_dust2.vpk"));
+/// ```
 pub enum FileFilter {
     None,
     Combined(Vec<FileFilterEntry>),
@@ -117,7 +139,24 @@ pub enum FileFilterEntry {
 }
 
 impl FileFilter {
+    /// Convert the filter back into filelist string format.
+    /// Regex entries are prefixed with `regex:`.
+    pub fn to_filelist(&self) -> Vec<String> {
+        match self {
+            Self::None => vec![],
+            Self::Combined(entries) => entries
+                .iter()
+                .map(|e| match e {
+                    FileFilterEntry::Literal(s) => s.clone(),
+                    FileFilterEntry::Regex(re) => format!("regex:{}", re.as_str()),
+                })
+                .collect(),
+            Self::Regex(re) => vec![format!("regex:{}", re.as_str())],
+        }
+    }
+
     /// Parse a filelist where lines can be literal paths or `regex:pattern` entries.
+    /// This is compatible with the filelist format used by DepotDownloader.
     pub fn from_filelist(lines: &[String]) -> Result<Self, regex::Error> {
         let mut entries = Vec::with_capacity(lines.len());
         for line in lines {
@@ -130,6 +169,8 @@ impl FileFilter {
         Ok(Self::Combined(entries))
     }
 
+    /// Returns true if `filename` passes the filter.
+    /// Literal comparisons are case-insensitive and normalize path separators.
     pub fn matches(&self, filename: &str) -> bool {
         match self {
             Self::None => true,
@@ -145,6 +186,28 @@ impl FileFilter {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for FileFilter {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_filelist().serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for FileFilter {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let lines: Vec<String> = Vec::deserialize(deserializer)?;
+        if lines.is_empty() {
+            return Ok(Self::None);
+        }
+        Self::from_filelist(&lines).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A download job for a single depot. Handles chunk fetching, decryption,
+/// decompression, file assembly, resume, and delta removal of stale files.
+///
+/// Create via [`DepotJob::builder()`].
 pub struct DepotJob {
     depot_id: DepotId,
     depot_key: DepotKey,
@@ -173,32 +236,31 @@ impl DepotJob {
         manifest: &DepotManifest,
         fetcher: std::sync::Arc<F>,
     ) -> Result<DownloadStats, BoxError> {
-        let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
+        let total_bytes: u64 = manifest.files.iter().map(|f| f.size).sum();
         let mut stats = DownloadStats::default();
 
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(self.max_downloads));
 
         for file in &manifest.files {
-            let filename = file.filename.as_deref().unwrap_or("(unknown)");
+            let filename = &file.filename;
 
             if !self.file_filter.matches(filename) {
                 self.emit(DownloadEvent::FileSkipped {
-                    filename: filename.to_string(),
+                    filename: filename.clone(),
                 });
                 stats.files_skipped += 1;
                 continue;
             }
 
             let file_path = self.install_dir.join(filename);
-            // proto2 optional: absent flags means normal file (no special attributes)
-            let flags = DepotFileFlags(file.flags.unwrap_or(0));
+            let flags = DepotFileFlags(file.flags);
 
             if flags.is_directory() {
                 std::fs::create_dir_all(&file_path)?;
                 continue;
             }
 
-            if file.size.unwrap_or(0) == 0 && file.chunks.is_empty() {
+            if file.size == 0 && file.chunks.is_empty() {
                 if let Some(parent) = file_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
@@ -217,7 +279,7 @@ impl DepotJob {
             }
 
             // Check if file already matches the manifest (skip if up-to-date)
-            let expected_size = file.size.unwrap_or(0);
+            let expected_size = file.size;
             if self.verify && file_matches(&file_path, expected_size, file.sha_content.as_ref()) {
                 self.emit(DownloadEvent::FileSkipped {
                     filename: filename.to_string(),
@@ -270,11 +332,8 @@ impl DepotJob {
 
         // Remove files from the old manifest that are absent in the new one
         if let Some(ref old_files) = self.old_manifest_files {
-            let new_files: std::collections::HashSet<&str> = manifest
-                .files
-                .iter()
-                .filter_map(|f| f.filename.as_deref())
-                .collect();
+            let new_files: std::collections::HashSet<&str> =
+                manifest.files.iter().map(|f| f.filename.as_str()).collect();
 
             for old_name in old_files {
                 if new_files.contains(old_name.as_str()) {
@@ -332,11 +391,9 @@ impl DepotJob {
         // Stage 1: spawn fetcher tasks
         let mut fetch_handles = Vec::with_capacity(n);
         for (i, chunk_meta) in file.chunks.iter().enumerate() {
-            let chunk_id = chunk_meta.id.clone().ok_or("chunk missing chunk ID")?;
-            let expected_size = chunk_meta
-                .uncompressed_size
-                .ok_or("chunk missing uncompressed_size")?;
-            let checksum = chunk_meta.checksum.ok_or("chunk missing checksum")?;
+            let chunk_id = chunk_meta.id.clone();
+            let expected_size = chunk_meta.uncompressed_size;
+            let checksum = chunk_meta.checksum;
             let depot_id = self.depot_id;
             let retry = self.retry.clone();
             let event_tx = self.event_tx.clone();
@@ -426,7 +483,7 @@ impl DepotJob {
         // Assemble in order
         let slots = std::sync::Arc::try_unwrap(slots).map_err(|_| "slots arc still shared")?;
         // size hint only — Vec grows if absent, no correctness impact
-        let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
+        let mut file_data = Vec::with_capacity(file.size as usize);
         for slot in slots {
             file_data
                 .extend_from_slice(&slot.into_inner().ok_or("chunk slot empty after pipeline")?);
@@ -451,7 +508,7 @@ impl DepotJob {
         let mut skip_count = 0;
         if existing_bytes > 0 {
             for chunk_meta in &file.chunks {
-                let chunk_size = chunk_meta.uncompressed_size.unwrap_or(0) as u64;
+                let chunk_size = chunk_meta.uncompressed_size as u64;
                 if staged_offset + chunk_size <= existing_bytes {
                     staged_offset += chunk_size;
                     skip_count += 1;
@@ -468,7 +525,7 @@ impl DepotJob {
         if skip_count > 0 {
             tracing::debug!(
                 "resuming {}: skipping {skip_count}/{} chunks ({staged_offset} bytes staged)",
-                file.filename.as_deref().unwrap_or("?"),
+                &file.filename,
                 file.chunks.len(),
             );
         } else {
@@ -476,14 +533,10 @@ impl DepotJob {
         }
 
         // Build a trimmed file with only remaining chunks, pipeline-download them
-        let remaining = ManifestFile {
-            filename: file.filename.clone(),
-            size: file.size.map(|s| s - staged_offset),
-            flags: file.flags,
-            sha_content: file.sha_content,
-            chunks: file.chunks[skip_count..].to_vec(),
-            link_target: None,
-        };
+        let mut remaining = ManifestFile::new(file.filename.clone(), file.size - staged_offset);
+        remaining.flags = file.flags;
+        remaining.sha_content = file.sha_content;
+        remaining.chunks = file.chunks[skip_count..].to_vec();
 
         let new_data = self.download_file_chunks(&remaining, fetcher, sem).await?;
         let new_len = new_data.len() as u64;
@@ -521,6 +574,7 @@ fn file_matches(path: &Path, expected_size: u64, sha_content: Option<&[u8; 20]>)
 }
 
 #[derive(Default, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DownloadStats {
     pub files_completed: u64,
     pub files_skipped: u64,

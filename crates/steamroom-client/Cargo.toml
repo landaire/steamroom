@@ -3,6 +3,16 @@ name = "steamroom-client"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+description = "High-level Steam depot download orchestration and delta patching"
+authors = ["Lander Brandt"]
+repository = "https://github.com/landaire/steamroom"
+documentation = "https://docs.rs/steamroom-client"
+readme = "README.md"
+keywords = ["steam", "depot", "download", "delta", "patching"]
+categories = ["network-programming"]
+
+[features]
+serde = ["steamroom/serde"]
 
 [dependencies]
 steamroom = { workspace = true }

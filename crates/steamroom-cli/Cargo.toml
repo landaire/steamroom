@@ -3,6 +3,12 @@ name = "steamroom-cli"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+description = "Command-line tool for downloading Steam depot content"
+authors = ["Lander Brandt"]
+repository = "https://github.com/landaire/steamroom"
+readme = "../../README.md"
+keywords = ["steam", "depot", "download", "cli"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "steamroom"

@@ -4,6 +4,7 @@ use crate::messages::EMsg;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
     Connection(#[from] ConnectionError),
@@ -34,6 +35,7 @@ pub enum Error {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConnectionError {
     #[error("unexpected emsg: expected {expected:?}, got {got:?}")]
     UnexpectedEMsg { expected: EMsg, got: EMsg },
@@ -73,6 +75,7 @@ pub enum ConnectionError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CryptoError {
     #[error("invalid key length: {0}")]
     InvalidKeyLength(usize),
@@ -88,6 +91,7 @@ pub enum CryptoError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ManifestError {
     #[error("invalid section magic: {0:#010x}")]
     InvalidMagic(u32),
@@ -112,6 +116,7 @@ pub enum ManifestError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ParseError {
     #[error("unexpected EOF")]
     UnexpectedEof,

@@ -57,26 +57,18 @@ fn encrypt_chunk(plaintext: &[u8], key: &DepotKey) -> Vec<u8> {
 }
 
 fn empty_file(name: &str) -> ManifestFile {
-    ManifestFile {
-        filename: Some(name.to_string()),
-        size: Some(0),
-        flags: Some(0),
-        sha_content: None,
-        chunks: vec![],
-        link_target: None,
-    }
+    ManifestFile::new(name.to_string(), 0)
 }
 
 fn manifest_with(files: &[&str]) -> DepotManifest {
-    DepotManifest {
-        depot_id: Some(DepotId(481)),
-        manifest_id: None,
-        creation_time: None,
-        filenames_encrypted: false,
-        total_uncompressed_size: None,
-        total_compressed_size: None,
-        files: files.iter().map(|n| empty_file(n)).collect(),
-    }
+    DepotManifest::new(files.iter().map(|n| empty_file(n)).collect())
+}
+
+fn file_with_chunks(name: &str, chunks: Vec<ManifestChunk>) -> ManifestFile {
+    let size: u64 = chunks.iter().map(|c| c.uncompressed_size as u64).sum();
+    let mut f = ManifestFile::new(name.to_string(), size);
+    f.chunks = chunks;
+    f
 }
 
 // ---------------------------------------------------------------------------
@@ -156,28 +148,9 @@ async fn download_single_file_with_one_chunk() {
     let mut chunks = HashMap::new();
     chunks.insert(chunk_id.clone(), Bytes::from(encrypted));
 
-    let manifest = DepotManifest {
-        depot_id: Some(DepotId(481)),
-        manifest_id: None,
-        creation_time: None,
-        filenames_encrypted: false,
-        total_uncompressed_size: None,
-        total_compressed_size: None,
-        files: vec![ManifestFile {
-            filename: Some("test.txt".into()),
-            size: Some(plaintext.len() as u64),
-            flags: Some(0),
-            sha_content: None,
-            chunks: vec![ManifestChunk {
-                id: Some(chunk_id),
-                checksum: Some(checksum.0),
-                offset: Some(0),
-                compressed_size: None,
-                uncompressed_size: Some(plaintext.len() as u32),
-            }],
-            link_target: None,
-        }],
-    };
+    let mut chunk = ManifestChunk::new(chunk_id, checksum.0, plaintext.len() as u32);
+    chunk.offset = Some(0);
+    let manifest = DepotManifest::new(vec![file_with_chunks("test.txt", vec![chunk])]);
 
     let job = DepotJob::builder()
         .depot_id(DepotId(481))
@@ -212,37 +185,13 @@ async fn download_multi_chunk_file_reassembles_in_order() {
     chunks.insert(id_a.clone(), Bytes::from(encrypt_chunk(part_a, &key)));
     chunks.insert(id_b.clone(), Bytes::from(encrypt_chunk(part_b, &key)));
 
-    let manifest = DepotManifest {
-        depot_id: Some(DepotId(481)),
-        manifest_id: None,
-        creation_time: None,
-        filenames_encrypted: false,
-        total_uncompressed_size: None,
-        total_compressed_size: None,
-        files: vec![ManifestFile {
-            filename: Some("multi.bin".into()),
-            size: Some(combined.len() as u64),
-            flags: Some(0),
-            sha_content: None,
-            chunks: vec![
-                ManifestChunk {
-                    id: Some(id_a),
-                    checksum: Some(SteamAdler32::compute(part_a).0),
-                    offset: Some(0),
-                    compressed_size: None,
-                    uncompressed_size: Some(part_a.len() as u32),
-                },
-                ManifestChunk {
-                    id: Some(id_b),
-                    checksum: Some(SteamAdler32::compute(part_b).0),
-                    offset: Some(part_a.len() as u64),
-                    compressed_size: None,
-                    uncompressed_size: Some(part_b.len() as u32),
-                },
-            ],
-            link_target: None,
-        }],
-    };
+    let mut chunk_a =
+        ManifestChunk::new(id_a, SteamAdler32::compute(part_a).0, part_a.len() as u32);
+    chunk_a.offset = Some(0);
+    let mut chunk_b =
+        ManifestChunk::new(id_b, SteamAdler32::compute(part_b).0, part_b.len() as u32);
+    chunk_b.offset = Some(part_a.len() as u64);
+    let manifest = DepotManifest::new(vec![file_with_chunks("multi.bin", vec![chunk_a, chunk_b])]);
 
     let job = DepotJob::builder()
         .depot_id(DepotId(481))
@@ -314,28 +263,9 @@ async fn download_emits_progress_events() {
         Bytes::from(encrypt_chunk(plaintext, &key)),
     );
 
-    let manifest = DepotManifest {
-        depot_id: Some(DepotId(481)),
-        manifest_id: None,
-        creation_time: None,
-        filenames_encrypted: false,
-        total_uncompressed_size: None,
-        total_compressed_size: None,
-        files: vec![ManifestFile {
-            filename: Some("evented.bin".into()),
-            size: Some(plaintext.len() as u64),
-            flags: Some(0),
-            sha_content: None,
-            chunks: vec![ManifestChunk {
-                id: Some(chunk_id),
-                checksum: Some(checksum.0),
-                offset: Some(0),
-                compressed_size: None,
-                uncompressed_size: Some(plaintext.len() as u32),
-            }],
-            link_target: None,
-        }],
-    };
+    let mut chunk = ManifestChunk::new(chunk_id, checksum.0, plaintext.len() as u32);
+    chunk.offset = Some(0);
+    let manifest = DepotManifest::new(vec![file_with_chunks("evented.bin", vec![chunk])]);
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
 

@@ -506,7 +506,7 @@ async fn run_download(
                 Some(
                     old.files
                         .iter()
-                        .filter_map(|f| f.filename.as_ref().cloned())
+                        .map(|f| f.filename.clone())
                         .collect::<Vec<_>>(),
                 )
             })
@@ -562,7 +562,7 @@ async fn run_download(
         )))
     })?;
 
-    let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
+    let total_bytes: u64 = manifest.files.iter().map(|f| f.size).sum();
     info!(
         "downloading {} files ({}) to {}",
         manifest.files.len(),
@@ -882,9 +882,9 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
             .iter()
             .map(|f| {
                 serde_json::json!({
-                    "filename": f.filename.as_deref().unwrap_or(""),
-                    "size": f.size.unwrap_or(0),
-                    "flags": f.flags.unwrap_or(0),
+                    "filename": &f.filename,
+                    "size": f.size,
+                    "flags": f.flags,
                     "chunks": f.chunks.len(),
                 })
             })
@@ -894,16 +894,14 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
     }
 
     for file in &manifest.files {
-        let name = file.filename.as_deref().unwrap_or("(encrypted)");
-        let size = file.size.unwrap_or(0);
-        let flags = file.flags.unwrap_or(0);
-        let is_dir = steamroom::enums::DepotFileFlags(flags).is_directory();
+        let name = &file.filename;
+        let is_dir = steamroom::enums::DepotFileFlags(file.flags).is_directory();
         if args.format == Some(OutputFormat::Plain) {
             println!("{name}");
         } else if is_dir {
             println!("{name}/");
         } else {
-            println!("{name}\t{}", fmt_size(size));
+            println!("{name}\t{}", fmt_size(file.size));
         }
     }
 
@@ -1018,7 +1016,7 @@ async fn run_workshop(
         .build()
         .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
 
-    let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
+    let total_bytes: u64 = manifest.files.iter().map(|f| f.size).sum();
     info!(
         "downloading {} files ({}) to {}",
         manifest.files.len(),

@@ -3,6 +3,7 @@ use crate::util::checksum::SteamAdler32;
 use std::io::Read;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ChunkCompression {
     VZstd,
     VZlzma,
@@ -27,6 +28,7 @@ impl ChunkCompression {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ChunkError {
     #[error("chunk data too short")]
     TooShort,
@@ -50,6 +52,12 @@ pub enum ChunkError {
     Zip(String),
 }
 
+/// Decrypt and decompress a raw depot chunk, verifying size and checksum.
+///
+/// The chunk format is `ECB(IV, 16 bytes) || CBC(compressed_payload)`. After
+/// decryption, the payload is decompressed based on its magic bytes (Valve zstd,
+/// Valve LZMA, raw LZMA, zip, or uncompressed). The result is verified against
+/// `expected_size` and `expected_checksum` (Steam's zero-seeded Adler-32).
 pub fn process_chunk(
     data: &[u8],
     depot_key: &DepotKey,

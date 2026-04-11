@@ -1,4 +1,5 @@
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CdnServer {
     pub host: String,
     pub port: u16,

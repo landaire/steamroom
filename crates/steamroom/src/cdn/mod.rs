@@ -1,5 +1,8 @@
+/// Lancache detection and URL rewriting for local CDN caches.
 pub mod lancache;
+/// Lock-free CDN server pool with health tracking and round-robin selection.
 pub mod pool;
+/// CDN server address representation.
 pub mod server;
 
 pub use self::pool::CdnServerPool;
@@ -10,6 +13,9 @@ use crate::depot::ManifestId;
 use crate::error::Error;
 use bytes::Bytes;
 
+/// HTTP client for downloading manifests and chunks from Steam's CDN.
+/// Validates response status codes and parses `Retry-After` headers.
+/// Supports lancache proxying via [`with_lancache`](Self::with_lancache).
 pub struct CdnClient {
     client: reqwest::Client,
     lancache_ip: Option<std::net::IpAddr>,

@@ -12,6 +12,11 @@ struct ServerState {
     available_after: AtomicU64,
 }
 
+/// Lock-free CDN server pool with round-robin selection and health tracking.
+///
+/// When a server returns a rate-limit or error response, call [`report_failure`](Self::report_failure)
+/// to put it in cooldown. Subsequent [`pick`](Self::pick) calls will skip it
+/// until the cooldown expires, routing traffic to healthy servers.
 pub struct CdnServerPool {
     servers: Vec<ServerState>,
     epoch: Instant,

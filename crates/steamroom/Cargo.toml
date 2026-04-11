@@ -3,8 +3,16 @@ name = "steamroom"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+description = "Steam client protocol library for depots, manifests, and CDN"
+authors = ["Lander Brandt"]
+repository = "https://github.com/landaire/steamroom"
+documentation = "https://docs.rs/steamroom"
+readme = "README.md"
+keywords = ["steam", "valve", "depot", "cdn", "download"]
+categories = ["api-bindings", "network-programming"]
 
 [features]
+serde = []
 __private_fuzzing = []
 
 [dependencies]

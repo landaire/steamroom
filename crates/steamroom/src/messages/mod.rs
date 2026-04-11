@@ -1,3 +1,4 @@
+/// Protobuf header parsing for Steam protocol packets.
 pub mod header;
 
 pub const EMSG_MASK: u32 = 0x7FFF_FFFF;

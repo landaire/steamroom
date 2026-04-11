@@ -1,4 +1,6 @@
+/// Session cipher (AES-256-CBC with HMAC-derived IV).
 pub mod encryption;
+/// VT01 packet framing for TCP transport.
 pub mod framing;
 
 use crate::error::Error;

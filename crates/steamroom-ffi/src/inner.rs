@@ -194,9 +194,9 @@ async fn do_list_files(
     let mut sizes = Vec::with_capacity(manifest.files.len());
     let mut dirs = Vec::with_capacity(manifest.files.len());
     for f in &manifest.files {
-        names.push(f.filename.as_deref().unwrap_or("(encrypted)").to_string());
-        sizes.push(f.size.unwrap_or(0));
-        dirs.push(steamroom::enums::DepotFileFlags(f.flags.unwrap_or(0)).is_directory());
+        names.push(f.filename.clone());
+        sizes.push(f.size);
+        dirs.push(steamroom::enums::DepotFileFlags(f.flags).is_directory());
     }
 
     Ok(FileListInner { names, sizes, dirs })

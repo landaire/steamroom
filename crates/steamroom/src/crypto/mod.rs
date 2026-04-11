@@ -1,3 +1,4 @@
+/// RSA encryption for Steam password authentication.
 pub mod rsa;
 
 use crate::error::CryptoError;

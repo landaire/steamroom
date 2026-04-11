@@ -1,4 +1,6 @@
+/// Client message construction and header encoding.
 pub mod msg;
+/// Multi-message unpacking (gzip-compressed message batches).
 pub mod multi;
 
 use self::msg::ClientMsg;
