@@ -18,11 +18,11 @@ use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::*;
 use steamroom::messages::EMsg;
 use steamroom::transport::websocket::WebSocketTransport;
-use tabled::settings::Style;
-use tabled::builder::Builder as TableBuilder;
 use steamroom::types::key_value;
 use steamroom::types::key_value::KeyValue;
 use steamroom::types::key_value::KvValue;
+use tabled::builder::Builder as TableBuilder;
+use tabled::settings::Style;
 
 use tracing::debug;
 use tracing::info;
@@ -711,35 +711,32 @@ fn fmt_relative(epoch: u64) -> String {
         return epoch.to_string();
     };
     let now = jiff::Timestamp::now();
-    let dur = now.duration_since(ts);
-    let secs = dur.as_secs();
-    let days = (secs / 86400) as i64;
-    if days == 0 {
-        let hours = (secs / 3600) as i64;
-        if hours == 0 {
-            "just now".to_string()
-        } else if hours == 1 {
-            "1 hour ago".to_string()
-        } else {
-            format!("{hours} hours ago")
-        }
-    } else if days == 1 {
-        "1 day ago".to_string()
-    } else if days < 30 {
-        format!("{days} days ago")
-    } else if days < 365 {
-        let months = days / 30;
-        if months == 1 {
-            "1 month ago".to_string()
-        } else {
-            format!("{months} months ago")
-        }
+    let span = now.duration_since(ts);
+    let hours = span.as_hours();
+    if hours < 1 {
+        "just now".to_string()
+    } else if hours < 24 {
+        format!("{hours}h ago")
     } else {
-        let years = days / 365;
-        if years == 1 {
-            "1 year ago".to_string()
+        let days = hours / 24;
+        if days >= 365 {
+            let years = days / 365;
+            let rem_months = (days % 365) / 30;
+            if rem_months > 0 {
+                format!("{years}y {rem_months}mo ago")
+            } else {
+                format!("{years}y ago")
+            }
+        } else if days >= 30 {
+            let months = days / 30;
+            let rem_days = days % 30;
+            if rem_days > 0 {
+                format!("{months}mo {rem_days}d ago")
+            } else {
+                format!("{months}mo ago")
+            }
         } else {
-            format!("{years} years ago")
+            format!("{days}d ago")
         }
     }
 }
@@ -800,8 +797,8 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
                 };
                 let depot = &map[key];
                 let dname = depot.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let is_redist = depot.get("depotfromapp").is_some()
-                    || depot.get("sharedinstall").is_some();
+                let is_redist =
+                    depot.get("depotfromapp").is_some() || depot.get("sharedinstall").is_some();
 
                 let os = depot
                     .get("config")
@@ -811,7 +808,11 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
 
                 // Apply --os filter
                 if let Some(ref filter_os) = args.os {
-                    if !os.is_empty() && !os.split(',').any(|o| o.trim().eq_ignore_ascii_case(filter_os)) {
+                    if !os.is_empty()
+                        && !os
+                            .split(',')
+                            .any(|o| o.trim().eq_ignore_ascii_case(filter_os))
+                    {
                         continue;
                     }
                 }
@@ -842,10 +843,7 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
                     .and_then(|c| c.get("language"))
                     .and_then(|l| l.as_str())
                 {
-                    let cap = lang
-                        .get(..1)
-                        .map(|c| c.to_uppercase())
-                        .unwrap_or_default()
+                    let cap = lang.get(..1).map(|c| c.to_uppercase()).unwrap_or_default()
                         + lang.get(1..).unwrap_or("");
                     config_parts.push(cap);
                 }
@@ -860,10 +858,7 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
                 if depot.get("sharedinstall").is_some() {
                     config_parts.push("Shared Install".to_string());
                 }
-                if let Some(from_app) = depot
-                    .get("depotfromapp")
-                    .and_then(|d| d.as_str())
-                {
+                if let Some(from_app) = depot.get("depotfromapp").and_then(|d| d.as_str()) {
                     config_parts.push(format!("from app {from_app}"));
                 }
                 if !dname.is_empty() {
@@ -877,7 +872,7 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
                     .and_then(|b| b.get("size"))
                     .and_then(|s| s.as_str())
                     .and_then(|s| s.parse::<u64>().ok())
-                    .map(|s| fmt_size(s))
+                    .map(fmt_size)
                     .unwrap_or_default();
                 let dl_str = depot
                     .get("manifests")
@@ -885,7 +880,7 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
                     .and_then(|b| b.get("download"))
                     .and_then(|s| s.as_str())
                     .and_then(|s| s.parse::<u64>().ok())
-                    .map(|s| fmt_size(s))
+                    .map(fmt_size)
                     .unwrap_or_default();
 
                 let row = [key.clone(), config_str, size_str, dl_str];
@@ -965,28 +960,31 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
                         } else {
                             String::new()
                         };
-                        let pwd =
-                            branch.get("pwdrequired").and_then(|p| p.as_str()) == Some("1");
+                        let pwd = branch.get("pwdrequired").and_then(|p| p.as_str()) == Some("1");
                         let mut name_str = bname.clone();
                         if pwd {
                             name_str.push_str(" [password]");
                         }
-                        branch_entries.push((time_updated_epoch, [
-                            name_str,
-                            trimmed_desc,
-                            build_id,
-                            time_built,
-                            time_updated,
-                        ]));
+                        branch_entries.push((
+                            time_updated_epoch,
+                            [name_str, trimmed_desc, build_id, time_built, time_updated],
+                        ));
                     }
 
                     // Sort by most recently updated first
                     branch_entries.sort_by(|a, b| b.0.cmp(&a.0));
-                    let branch_rows: Vec<[String; 5]> = branch_entries.into_iter().map(|(_, r)| r).collect();
+                    let branch_rows: Vec<[String; 5]> =
+                        branch_entries.into_iter().map(|(_, r)| r).collect();
 
                     println!("\nBranches:");
                     let mut builder = TableBuilder::new();
-                    builder.push_record(["NAME", "DESCRIPTION", "BUILD", "TIME BUILT", "TIME UPDATED"]);
+                    builder.push_record([
+                        "NAME",
+                        "DESCRIPTION",
+                        "BUILD",
+                        "TIME BUILT",
+                        "TIME UPDATED",
+                    ]);
                     for r in &branch_rows {
                         builder.push_record(r);
                     }
