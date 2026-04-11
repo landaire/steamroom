@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use bytes::Bytes;
@@ -79,6 +80,7 @@ pub struct DepotJob {
     depot_key: DepotKey,
     install_dir: PathBuf,
     max_downloads: usize,
+    verify: bool,
     file_filter: FileFilter,
     retry: RetryConfig,
     event_tx: Option<mpsc::UnboundedSender<DownloadEvent>>,
@@ -143,14 +145,31 @@ impl DepotJob {
                 std::fs::create_dir_all(parent)?;
             }
 
+            // Check if file already matches the manifest (skip if up-to-date)
+            let expected_size = file.size.unwrap_or(0);
+            if self.verify && file_matches(&file_path, expected_size, file.sha_content.as_ref()) {
+                self.emit(DownloadEvent::FileSkipped {
+                    filename: filename.to_string(),
+                });
+                stats.files_skipped += 1;
+                stats.bytes_downloaded += expected_size;
+                continue;
+            }
+
             self.emit(DownloadEvent::FileStarted {
                 filename: filename.to_string(),
             });
 
+            // Download to staging, then move to final path
+            let staging_dir = self.install_dir.join(".depotdownloader").join("staging");
+            std::fs::create_dir_all(&staging_dir)?;
+            let staging_path = staging_dir.join(filename.replace(['/', '\\'], "_"));
+
             let file_data =
-                self.download_file_chunks(file, &fetcher, &sem).await?;
+                self.download_file_chunks_with_resume(file, &fetcher, &sem, &staging_path).await?;
 
             std::fs::write(&file_path, &file_data)?;
+            let _ = std::fs::remove_file(&staging_path);
             stats.bytes_downloaded += file_data.len() as u64;
             stats.files_completed += 1;
 
@@ -292,6 +311,122 @@ impl DepotJob {
         }
         unreachable!()
     }
+
+    async fn download_file_chunks_with_resume<F: ChunkFetcher + 'static>(
+        &self,
+        file: &ManifestFile,
+        fetcher: &std::sync::Arc<F>,
+        sem: &std::sync::Arc<tokio::sync::Semaphore>,
+        staging_path: &Path,
+    ) -> Result<Vec<u8>, BoxError> {
+        // Check staging file for partial progress
+        let existing_bytes = std::fs::metadata(staging_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        if existing_bytes > 0 {
+            // Count how many complete chunks we already have
+            let mut offset: u64 = 0;
+            let mut skip_count = 0;
+            for chunk_meta in &file.chunks {
+                let chunk_size = chunk_meta.uncompressed_size.unwrap_or(0) as u64;
+                if offset + chunk_size <= existing_bytes {
+                    offset += chunk_size;
+                    skip_count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if skip_count > 0 && skip_count < file.chunks.len() {
+                tracing::debug!(
+                    "resuming {}: skipping {skip_count}/{} chunks ({} bytes staged)",
+                    file.filename.as_deref().unwrap_or("?"),
+                    file.chunks.len(),
+                    existing_bytes,
+                );
+
+                // Read existing staged data
+                let mut file_data = std::fs::read(staging_path)?;
+                file_data.truncate(offset as usize);
+
+                // Download remaining chunks
+                for chunk_meta in file.chunks.iter().skip(skip_count) {
+                    let chunk_id = chunk_meta.id.as_ref().ok_or("chunk missing chunk ID")?;
+                    let raw = self.fetch_with_retry(fetcher.as_ref(), chunk_id).await?;
+                    let expected_size = chunk_meta.uncompressed_size.ok_or("chunk missing uncompressed_size")?;
+                    let checksum = chunk_meta.checksum.ok_or("chunk missing checksum")?;
+                    let depot_key = self.depot_key.clone();
+                    let processed = tokio::task::spawn_blocking(move || {
+                        chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
+                    }).await??;
+                    file_data.extend_from_slice(&processed);
+
+                    // Append to staging file for crash safety
+                    let mut f = std::fs::OpenOptions::new()
+                        .create(true).append(true).open(staging_path)?;
+                    f.write_all(&processed)?;
+
+                    self.emit(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
+                }
+                return Ok(file_data);
+            }
+
+            if skip_count == file.chunks.len() {
+                // Staging file is complete
+                let data = std::fs::read(staging_path)?;
+                return Ok(data);
+            }
+        }
+
+        // No usable staging data — full download, writing chunks as we go
+        let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
+        let _ = std::fs::remove_file(staging_path); // clear stale partial
+
+        if file.chunks.len() <= 1 {
+            // Single chunk: no staging needed
+            return self.download_file_chunks_serial(file, fetcher.as_ref()).await;
+        }
+
+        for chunk_meta in &file.chunks {
+            let chunk_id = chunk_meta.id.as_ref().ok_or("chunk missing chunk ID")?;
+            let raw = self.fetch_with_retry(fetcher.as_ref(), chunk_id).await?;
+            let expected_size = chunk_meta.uncompressed_size.ok_or("chunk missing uncompressed_size")?;
+            let checksum = chunk_meta.checksum.ok_or("chunk missing checksum")?;
+            let depot_key = self.depot_key.clone();
+            let processed = tokio::task::spawn_blocking(move || {
+                chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
+            }).await??;
+
+            // Write to staging for crash safety
+            let mut f = std::fs::OpenOptions::new()
+                .create(true).append(true).open(staging_path)?;
+            f.write_all(&processed)?;
+
+            file_data.extend_from_slice(&processed);
+            self.emit(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
+        }
+        Ok(file_data)
+    }
+}
+
+fn file_matches(path: &Path, expected_size: u64, sha_content: Option<&[u8; 20]>) -> bool {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if meta.len() != expected_size {
+        return false;
+    }
+    if let Some(expected_sha) = sha_content {
+        if let Ok(data) = std::fs::read(path) {
+            let actual = steam::util::checksum::Sha1Hash::compute(&data);
+            return actual.0 == *expected_sha;
+        }
+        return false;
+    }
+    // No SHA to verify — size match is good enough
+    true
 }
 
 #[derive(Default, Debug)]
@@ -307,6 +442,7 @@ pub struct DepotJobBuilder {
     depot_key: Option<DepotKey>,
     install_dir: Option<PathBuf>,
     max_downloads: Option<usize>,
+    verify: bool,
     file_filter: Option<FileFilter>,
     retry: Option<RetryConfig>,
     event_tx: Option<mpsc::UnboundedSender<DownloadEvent>>,
@@ -338,6 +474,11 @@ impl DepotJobBuilder {
         self
     }
 
+    pub fn verify(mut self, v: bool) -> Self {
+        self.verify = v;
+        self
+    }
+
     pub fn retry(mut self, config: RetryConfig) -> Self {
         self.retry = Some(config);
         self
@@ -354,6 +495,7 @@ impl DepotJobBuilder {
             depot_key: self.depot_key.ok_or("depot_key required")?,
             install_dir: self.install_dir.ok_or("install_dir required")?,
             max_downloads: self.max_downloads.unwrap_or(8),
+            verify: self.verify,
             file_filter: self.file_filter.unwrap_or(FileFilter::None),
             retry: self.retry.unwrap_or_default(),
             event_tx: self.event_tx,

@@ -29,9 +29,89 @@ pub struct Cli {
     pub capture: Option<std::path::PathBuf>,
 }
 
+/// Legacy flat-argument CLI compatible with the original DepotDownloader.
+/// Activated with DD_COMPAT=1 environment variable.
 #[derive(Parser, Debug)]
+#[command(name = "steamroom")]
 pub struct CompatCli {
-    // Legacy CLI compatibility fields
+    #[arg(long = "app", short = 'a')]
+    pub app_id: Option<u32>,
+    #[arg(long = "depot", short = 'd')]
+    pub depot_id: Option<u32>,
+    #[arg(long = "manifest", short = 'm')]
+    pub manifest_id: Option<u64>,
+    #[arg(long = "username", short = 'u')]
+    pub username: Option<String>,
+    #[arg(long = "password", short = 'p')]
+    pub password: Option<String>,
+    #[arg(long = "dir")]
+    pub output: Option<std::path::PathBuf>,
+    #[arg(long = "branch", short = 'b')]
+    pub branch: Option<String>,
+    #[arg(long = "betapassword")]
+    pub beta_password: Option<String>,
+    #[arg(long)]
+    pub qr: bool,
+    #[arg(long = "remember-password")]
+    pub remember_password: bool,
+    #[arg(long = "filelist")]
+    pub filelist: Option<std::path::PathBuf>,
+    #[arg(long = "regex")]
+    pub file_regex: Option<String>,
+    #[arg(long)]
+    pub verify: bool,
+    #[arg(long)]
+    pub os: Option<String>,
+    #[arg(long)]
+    pub arch: Option<String>,
+    #[arg(long)]
+    pub language: Option<String>,
+    #[arg(long = "max-downloads")]
+    pub max_downloads: Option<usize>,
+    #[arg(long = "cell-id")]
+    pub cell_id: Option<u32>,
+}
+
+impl CompatCli {
+    pub fn into_cli(self) -> Cli {
+        let app = self.app_id.unwrap_or(0);
+        Cli {
+            command: Command::Download(DownloadArgs {
+                app,
+                depot: self.depot_id,
+                manifest: self.manifest_id,
+                filelist: self.filelist,
+                file_regex: self.file_regex,
+                output: self.output,
+                verify: self.verify,
+                os: self.os,
+                arch: self.arch,
+                language: self.language,
+                login_id: None,
+                all_platforms: false,
+                all_architectures: false,
+                all_languages: false,
+                lancache: false,
+                max_downloads: self.max_downloads,
+                branch: self.branch,
+                branch_password: self.beta_password,
+                capture: None,
+            }),
+            auth: AuthOptions {
+                username: self.username,
+                password: self.password,
+                qr: self.qr,
+                remember_password: self.remember_password,
+                device_name: None,
+            },
+            debug: false,
+            bytes: false,
+            raw_errors: false,
+            cell_id: self.cell_id,
+            max_downloads: self.max_downloads,
+            capture: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -113,6 +193,8 @@ pub struct DownloadArgs {
     pub branch: Option<String>,
     #[arg(long)]
     pub branch_password: Option<String>,
+    #[arg(long)]
+    pub capture: Option<std::path::PathBuf>,
 }
 
 #[derive(Parser, Debug)]

@@ -21,7 +21,11 @@ use steam::transport::websocket::WebSocketTransport;
 use steam::types::key_value::{self, KeyValue, KvValue};
 
 fn main() -> Result<(), CliError> {
-    let cli = Cli::parse();
+    let cli = if std::env::var("DD_COMPAT").as_deref() == Ok("1") {
+        cli::CompatCli::parse().into_cli()
+    } else {
+        Cli::parse()
+    };
     let default_level = if cli.debug {
         "debug"
     } else if cfg!(debug_assertions) {
@@ -440,6 +444,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         .depot_id(depot_id)
         .depot_key(depot_key)
         .install_dir(output_dir.clone())
+        .verify(args.verify)
         .event_sender(event_tx);
 
     if let Some(max) = args.max_downloads {
