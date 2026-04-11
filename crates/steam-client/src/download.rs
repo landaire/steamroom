@@ -215,7 +215,11 @@ impl DepotJob {
                 }
                 let raw = raw?;
 
-                let processed = chunk::process_chunk(&raw, &depot_key, expected_size, checksum)?;
+                // Decrypt + decompress on the blocking pool to avoid stalling IO
+                let processed = tokio::task::spawn_blocking(move || {
+                    chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
+                })
+                .await??;
 
                 if let Some(ref tx) = event_tx {
                     let _ = tx.send(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
@@ -251,12 +255,13 @@ impl DepotJob {
         for chunk_meta in &file.chunks {
             let chunk_id = chunk_meta.id.as_ref().ok_or("chunk missing ID")?;
             let raw = self.fetch_with_retry(fetcher, chunk_id).await?;
-            let processed = chunk::process_chunk(
-                &raw,
-                &self.depot_key,
-                chunk_meta.uncompressed_size.unwrap_or(0),
-                chunk_meta.checksum.unwrap_or(0),
-            )?;
+            let depot_key = self.depot_key.clone();
+            let expected_size = chunk_meta.uncompressed_size.unwrap_or(0);
+            let checksum = chunk_meta.checksum.unwrap_or(0);
+            let processed = tokio::task::spawn_blocking(move || {
+                chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
+            })
+            .await??;
             file_data.extend_from_slice(&processed);
             self.emit(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
         }

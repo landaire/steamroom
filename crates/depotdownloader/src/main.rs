@@ -20,8 +20,7 @@ use steam::messages::EMsg;
 use steam::transport::websocket::WebSocketTransport;
 use steam::types::key_value::{self, KeyValue, KvValue};
 
-#[tokio::main]
-async fn main() -> Result<(), CliError> {
+fn main() -> Result<(), CliError> {
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -36,6 +35,18 @@ async fn main() -> Result<(), CliError> {
         )
         .init();
 
+    // Build runtime with a scaled blocking pool for CPU-bound decrypt/decompress.
+    // Steam client uses 32 threads for this (DepotReconstructionNumIOThreads convar).
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .max_blocking_threads(32)
+        .build()
+        .expect("failed to build tokio runtime");
+
+    rt.block_on(async_main(cli))
+}
+
+async fn async_main(cli: Cli) -> Result<(), CliError> {
     match cli.command {
         Command::Info(args) => run_info(args, &cli.auth).await,
         Command::Manifests(args) => run_manifests(args, &cli.auth).await,
