@@ -17,37 +17,37 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            lib: libsteam_ffi.so
+            lib: libsteamroom_ffi.so
           - os: macos-latest
             target: aarch64-apple-darwin
-            lib: libsteam_ffi.dylib
+            lib: libsteamroom_ffi.dylib
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            lib: steam_ffi.dll
+            lib: steamroom_ffi.dll
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p steam-ffi
+      - run: cargo build --release -p steamroom-ffi
 
       - run: cargo install diplomat-tool@0.15.0
       - run: mkdir -p dist/include/c dist/include/cpp
-      - run: diplomat-tool c dist/include/c --entry crates/steam-ffi/src/lib.rs
-      - run: diplomat-tool cpp dist/include/cpp --entry crates/steam-ffi/src/lib.rs
+      - run: diplomat-tool c dist/include/c --entry crates/steamroom-ffi/src/lib.rs
+      - run: diplomat-tool cpp dist/include/cpp --entry crates/steamroom-ffi/src/lib.rs
 
       - name: Package
         shell: bash
         run: |
           cp target/release/${{ matrix.lib }} dist/
-          if [ -f target/release/steam_ffi.dll.lib ]; then
-            cp target/release/steam_ffi.dll.lib dist/
+          if [ -f target/release/steamroom_ffi.dll.lib ]; then
+            cp target/release/steamroom_ffi.dll.lib dist/
           fi
-          cd dist && tar czf ../steam-ffi-${{ matrix.target }}.tar.gz *
+          cd dist && tar czf ../steamroom-ffi-${{ matrix.target }}.tar.gz *
 
       - uses: actions/upload-artifact@v4
         with:
-          name: steam-ffi-${{ matrix.target }}
-          path: steam-ffi-${{ matrix.target }}.tar.gz
+          name: steamroom-ffi-${{ matrix.target }}
+          path: steamroom-ffi-${{ matrix.target }}.tar.gz
 
   build-cli:
     strategy:
@@ -55,30 +55,30 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            bin: ddl
+            bin: steamroom
           - os: macos-latest
             target: aarch64-apple-darwin
-            bin: ddl
+            bin: steamroom
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: ddl.exe
+            bin: steamroom.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p ddl
+      - run: cargo build --release -p steamroom-cli
 
       - name: Package
         shell: bash
         run: |
           mkdir dist
           cp target/release/${{ matrix.bin }} dist/
-          cd dist && tar czf ../ddl-${{ matrix.target }}.tar.gz *
+          cd dist && tar czf ../steamroom-${{ matrix.target }}.tar.gz *
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ddl-${{ matrix.target }}
-          path: ddl-${{ matrix.target }}.tar.gz
+          name: steamroom-${{ matrix.target }}
+          path: steamroom-${{ matrix.target }}.tar.gz
 
   build-wheels:
     strategy:
@@ -90,17 +90,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v6
 
-      - run: cargo build --release -p steam-ffi
+      - run: cargo build --release -p steamroom-ffi
       - run: cargo install diplomat-tool@0.15.0
-      - run: mkdir -p crates/steam-ffi/bindings/cpp
-      - run: diplomat-tool cpp crates/steam-ffi/bindings/cpp --entry crates/steam-ffi/src/lib.rs
+      - run: mkdir -p crates/steamroom-ffi/bindings/cpp
+      - run: diplomat-tool cpp crates/steamroom-ffi/bindings/cpp --entry crates/steamroom-ffi/src/lib.rs
 
       - name: Build wheel
         shell: bash
         run: |
           cd examples/python
           STEAM_FFI_LIB_DIR="$GITHUB_WORKSPACE/target/release" \
-          STEAM_FFI_BINDINGS_DIR="$GITHUB_WORKSPACE/crates/steam-ffi/bindings/cpp" \
+          STEAM_FFI_BINDINGS_DIR="$GITHUB_WORKSPACE/crates/steamroom-ffi/bindings/cpp" \
           uv build --wheel
         env:
           GITHUB_WORKSPACE: ${{ github.workspace }}

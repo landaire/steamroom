@@ -40,13 +40,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v6
-      - run: cargo build --release -p steam-ffi
+      - run: cargo build --release -p steamroom-ffi
       - run: cargo install diplomat-tool@0.15.0
-      - run: mkdir -p crates/steam-ffi/bindings/cpp && diplomat-tool cpp crates/steam-ffi/bindings/cpp --entry crates/steam-ffi/src/lib.rs
+      - run: mkdir -p crates/steamroom-ffi/bindings/cpp && diplomat-tool cpp crates/steamroom-ffi/bindings/cpp --entry crates/steamroom-ffi/src/lib.rs
       - run: |
           cd examples/python
           STEAM_FFI_LIB_DIR="$GITHUB_WORKSPACE/target/release" \
-          STEAM_FFI_BINDINGS_DIR="$GITHUB_WORKSPACE/crates/steam-ffi/bindings/cpp" \
+          STEAM_FFI_BINDINGS_DIR="$GITHUB_WORKSPACE/crates/steamroom-ffi/bindings/cpp" \
           uv run --group dev pytest tests/ -v
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
