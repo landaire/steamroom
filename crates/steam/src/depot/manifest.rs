@@ -105,6 +105,8 @@ impl DepotManifest {
 
         tracing::debug!("manifest parse: payload={}, metadata={}", payload.is_some(), metadata.is_some());
         let payload = payload.ok_or(ManifestError::MissingSection)?;
+        // V4 manifests may have metadata in a different magic section that we
+        // parse into metadata. If absent, use defaults — the payload is still valid.
         let meta = metadata.unwrap_or_default();
 
         let files = payload
@@ -159,6 +161,7 @@ impl DepotManifest {
             depot_id: meta.depot_id.map(DepotId),
             manifest_id: meta.gid_manifest.map(ManifestId),
             creation_time: meta.creation_time,
+            // proto2 optional bool: absent means not encrypted
             filenames_encrypted: meta.filenames_encrypted.unwrap_or(false),
             total_uncompressed_size: meta.cb_disk_original,
             total_compressed_size: meta.cb_disk_compressed,

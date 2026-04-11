@@ -53,6 +53,9 @@ pub enum ConnectionError {
     #[error("depot access denied: depot {0}")]
     DepotAccessDenied(u32),
 
+    #[error("server response missing required field: {0}")]
+    MissingField(&'static str),
+
     #[error(transparent)]
     Parse(#[from] ParseError),
 

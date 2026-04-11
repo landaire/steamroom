@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use steam::depot::CellId;
 
 #[derive(Parser, Debug)]
-#[command(name = "ddl", about = "Steam depot downloader")]
+#[command(name = "steamroom", about = "Steam depot downloader")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

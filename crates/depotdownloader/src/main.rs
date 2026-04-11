@@ -258,7 +258,7 @@ async fn authenticate_qr(
 ) -> Result<steam::auth::AuthTokens, CliError> {
     info!("generating QR code...");
     let req = steam::generated::CAuthenticationBeginAuthSessionViaQrRequest {
-        device_friendly_name: Some("ddl".to_string()),
+        device_friendly_name: Some("steamroom".to_string()),
         ..Default::default()
     };
     let session = client.begin_auth_session_via_qr(req).await?;

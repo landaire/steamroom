@@ -117,6 +117,7 @@ impl DepotJob {
             }
 
             let file_path = self.install_dir.join(filename);
+            // proto2 optional: absent flags means normal file (no special attributes)
             let flags = DepotFileFlags(file.flags.unwrap_or(0));
 
             if flags.is_directory() {
@@ -183,9 +184,9 @@ impl DepotJob {
         let mut handles = Vec::with_capacity(n);
 
         for (i, chunk_meta) in file.chunks.iter().enumerate() {
-            let chunk_id = chunk_meta.id.clone().ok_or("chunk missing ID")?;
-            let expected_size = chunk_meta.uncompressed_size.unwrap_or(0);
-            let checksum = chunk_meta.checksum.unwrap_or(0);
+            let chunk_id = chunk_meta.id.clone().ok_or("chunk missing chunk ID")?;
+            let expected_size = chunk_meta.uncompressed_size.ok_or("chunk missing uncompressed_size")?;
+            let checksum = chunk_meta.checksum.ok_or("chunk missing checksum")?;
             let depot_key = self.depot_key.clone();
             let depot_id = self.depot_id;
             let retry = self.retry.clone();
@@ -239,6 +240,7 @@ impl DepotJob {
         let slots = std::sync::Arc::try_unwrap(results)
             .map_err(|_| "results arc still shared")?
             .into_inner();
+        // size hint only — Vec grows if absent, no correctness impact
         let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
         for slot in slots {
             file_data.extend_from_slice(&slot.ok_or("chunk slot empty")?);
@@ -251,6 +253,7 @@ impl DepotJob {
         file: &ManifestFile,
         fetcher: &F,
     ) -> Result<Vec<u8>, BoxError> {
+        // size hint only — Vec grows if absent, no correctness impact
         let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
         for chunk_meta in &file.chunks {
             let chunk_id = chunk_meta.id.as_ref().ok_or("chunk missing ID")?;

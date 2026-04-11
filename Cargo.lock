@@ -452,30 +452,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 
 [[package]]
-name = "depotdownloader"
-version = "0.1.0"
-dependencies = [
- "base64",
- "clap",
- "dirs-next",
- "indicatif",
- "jiff",
- "prost",
- "qrcode",
- "regex",
- "reqwest",
- "rpassword",
- "serde_json",
- "steam",
- "steam-client",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zip",
-]
-
-[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2542,6 +2518,30 @@ dependencies = [
  "steam",
  "steam-client",
  "tokio",
+ "zip",
+]
+
+[[package]]
+name = "steamroom"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "clap",
+ "dirs-next",
+ "indicatif",
+ "jiff",
+ "prost",
+ "qrcode",
+ "regex",
+ "reqwest",
+ "rpassword",
+ "serde_json",
+ "steam",
+ "steam-client",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "zip",
 ]
 

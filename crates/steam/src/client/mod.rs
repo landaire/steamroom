@@ -248,7 +248,7 @@ impl SteamClient<Encrypted> {
             match incoming.emsg {
                 EMsg::CLIENT_LOG_ON_RESPONSE => {
                     let resp = generated::CMsgClientLogonResponse::decode(&*incoming.body)?;
-                    crate::enums::eresult(resp.eresult.unwrap_or(0))
+                    crate::enums::eresult(resp.eresult.ok_or(ConnectionError::MissingField("eresult"))?)
                         .map_err(ConnectionError::LogonFailed)?;
 
                     if let Some(sid) = incoming.header.steamid {
@@ -275,7 +275,7 @@ impl SteamClient<Encrypted> {
                         let sub_msg = parse_incoming(&sub)?;
                         if sub_msg.emsg == EMsg::CLIENT_LOG_ON_RESPONSE {
                             let resp = generated::CMsgClientLogonResponse::decode(&*sub_msg.body)?;
-                            crate::enums::eresult(resp.eresult.unwrap_or(0))
+                            crate::enums::eresult(resp.eresult.ok_or(ConnectionError::MissingField("eresult"))?)
                                 .map_err(ConnectionError::LogonFailed)?;
 
                             if let Some(sid) = sub_msg.header.steamid {
@@ -561,8 +561,8 @@ impl SteamClient<LoggedIn> {
                     .app_access_tokens
                     .iter()
                     .map(|t| AccessToken {
-                        app_id: AppId(t.appid.unwrap_or(0)),
-                        token: t.access_token.unwrap_or(0),
+                        app_id: AppId(t.appid.unwrap_or(0)), // appid echoed back from our request
+                        token: t.access_token.unwrap_or(0), // 0 = no token needed (free app)
                     })
                     .collect());
             }
@@ -577,8 +577,8 @@ impl SteamClient<LoggedIn> {
                             .app_access_tokens
                             .iter()
                             .map(|t| AccessToken {
-                                app_id: AppId(t.appid.unwrap_or(0)),
-                                token: t.access_token.unwrap_or(0),
+                                app_id: AppId(t.appid.unwrap_or(0)), // appid echoed back from our request
+                                token: t.access_token.unwrap_or(0), // 0 = no token needed (free app)
                             })
                             .collect());
                     }
@@ -663,9 +663,9 @@ impl SteamClient<LoggedIn> {
                 // k_EMsgClientGetDepotDecryptionKeyResponse
                 let resp =
                     generated::CMsgClientGetDepotDecryptionKeyResponse::decode(&*incoming.body)?;
-                crate::enums::eresult(resp.eresult.unwrap_or(0))
+                crate::enums::eresult(resp.eresult.ok_or(ConnectionError::MissingField("eresult"))?)
                     .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
-                let key_data = resp.depot_encryption_key.unwrap_or_default();
+                let key_data = resp.depot_encryption_key.ok_or(ConnectionError::MissingField("depot_encryption_key"))?;
                 if key_data.len() != 32 {
                     return Err(ConnectionError::EncryptionFailed.into());
                 }
@@ -681,9 +681,9 @@ impl SteamClient<LoggedIn> {
                         let resp = generated::CMsgClientGetDepotDecryptionKeyResponse::decode(
                             &*sub_msg.body,
                         )?;
-                        crate::enums::eresult(resp.eresult.unwrap_or(0))
+                        crate::enums::eresult(resp.eresult.ok_or(ConnectionError::MissingField("eresult"))?)
                             .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
-                        let key_data = resp.depot_encryption_key.unwrap_or_default();
+                        let key_data = resp.depot_encryption_key.ok_or(ConnectionError::MissingField("depot_encryption_key"))?;
                         if key_data.len() != 32 {
                             return Err(ConnectionError::EncryptionFailed.into());
                         }
