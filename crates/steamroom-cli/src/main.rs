@@ -18,6 +18,8 @@ use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::*;
 use steamroom::messages::EMsg;
 use steamroom::transport::websocket::WebSocketTransport;
+use tabled::settings::Style;
+use tabled::builder::Builder as TableBuilder;
 use steamroom::types::key_value;
 use steamroom::types::key_value::KeyValue;
 use steamroom::types::key_value::KvValue;
@@ -690,11 +692,55 @@ fn fmt_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{} B", bytes)
     } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+        format!("{:.2} KiB", bytes as f64 / 1024.0)
     } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.2} MiB", bytes as f64 / (1024.0 * 1024.0))
     } else {
-        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+fn fmt_timestamp(epoch: u64) -> String {
+    jiff::Timestamp::from_second(epoch as i64)
+        .map(|ts| ts.strftime("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|_| epoch.to_string())
+}
+
+fn fmt_relative(epoch: u64) -> String {
+    let Ok(ts) = jiff::Timestamp::from_second(epoch as i64) else {
+        return epoch.to_string();
+    };
+    let now = jiff::Timestamp::now();
+    let dur = now.duration_since(ts);
+    let secs = dur.as_secs();
+    let days = (secs / 86400) as i64;
+    if days == 0 {
+        let hours = (secs / 3600) as i64;
+        if hours == 0 {
+            "just now".to_string()
+        } else if hours == 1 {
+            "1 hour ago".to_string()
+        } else {
+            format!("{hours} hours ago")
+        }
+    } else if days == 1 {
+        "1 day ago".to_string()
+    } else if days < 30 {
+        format!("{days} days ago")
+    } else if days < 365 {
+        let months = days / 30;
+        if months == 1 {
+            "1 month ago".to_string()
+        } else {
+            format!("{months} months ago")
+        }
+    } else {
+        let years = days / 365;
+        if years == 1 {
+            "1 year ago".to_string()
+        } else {
+            format!("{years} years ago")
+        }
     }
 }
 
@@ -742,53 +788,215 @@ async fn run_info(args: InfoArgs, auth: &AuthOptions) -> Result<(), CliError> {
     println!("Name:    {name}");
     println!("Type:    {app_type}");
 
+    let branch_name = "public";
+
     if let Some(depots) = kv.get("depots") {
         if let KvValue::Children(ref map) = depots.value {
-            let depot_ids: Vec<&String> = map.keys().filter(|k| k.parse::<u32>().is_ok()).collect();
-            println!("\nDepots ({}):", depot_ids.len());
-            for id in &depot_ids {
-                let depot = &map[*id];
+            let mut depot_rows: Vec<[String; 4]> = Vec::new();
+            let mut redist_rows: Vec<[String; 4]> = Vec::new();
+            for key in map.keys() {
+                let Ok(_) = key.parse::<u32>() else {
+                    continue;
+                };
+                let depot = &map[key];
                 let dname = depot.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let encrypted = depot.get("encryptedmanifests").is_some();
-                let enc_tag = if encrypted { " [encrypted]" } else { "" };
-                println!("  {id}: {dname}{enc_tag}");
+                let is_redist = depot.get("depotfromapp").is_some()
+                    || depot.get("sharedinstall").is_some();
+
+                let os = depot
+                    .get("config")
+                    .and_then(|c| c.get("oslist"))
+                    .and_then(|o| o.as_str())
+                    .unwrap_or("");
+
+                // Apply --os filter
+                if let Some(ref filter_os) = args.os {
+                    if !os.is_empty() && !os.split(',').any(|o| o.trim().eq_ignore_ascii_case(filter_os)) {
+                        continue;
+                    }
+                }
+
+                let mut config_parts = Vec::new();
+                if !os.is_empty() {
+                    config_parts.push(
+                        os.split(',')
+                            .map(|o| match o.trim() {
+                                "windows" => "Windows",
+                                "macos" => "macOS",
+                                "linux" => "Linux",
+                                other => other,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+                if let Some(arch) = depot
+                    .get("config")
+                    .and_then(|c| c.get("osarch"))
+                    .and_then(|a| a.as_str())
+                {
+                    config_parts.push(format!("{arch}-bit"));
+                }
+                if let Some(lang) = depot
+                    .get("config")
+                    .and_then(|c| c.get("language"))
+                    .and_then(|l| l.as_str())
+                {
+                    let cap = lang
+                        .get(..1)
+                        .map(|c| c.to_uppercase())
+                        .unwrap_or_default()
+                        + lang.get(1..).unwrap_or("");
+                    config_parts.push(cap);
+                }
+                if depot
+                    .get("config")
+                    .and_then(|c| c.get("lowviolence"))
+                    .and_then(|l| l.as_str())
+                    == Some("1")
+                {
+                    config_parts.push("Low Violence".to_string());
+                }
+                if depot.get("sharedinstall").is_some() {
+                    config_parts.push("Shared Install".to_string());
+                }
+                if let Some(from_app) = depot
+                    .get("depotfromapp")
+                    .and_then(|d| d.as_str())
+                {
+                    config_parts.push(format!("from app {from_app}"));
+                }
+                if !dname.is_empty() {
+                    config_parts.push(dname.to_string());
+                }
+                let config_str = config_parts.join(", ");
+
+                let size_str = depot
+                    .get("manifests")
+                    .and_then(|m| m.get(branch_name))
+                    .and_then(|b| b.get("size"))
+                    .and_then(|s| s.as_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(|s| fmt_size(s))
+                    .unwrap_or_default();
+                let dl_str = depot
+                    .get("manifests")
+                    .and_then(|m| m.get(branch_name))
+                    .and_then(|b| b.get("download"))
+                    .and_then(|s| s.as_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(|s| fmt_size(s))
+                    .unwrap_or_default();
+
+                let row = [key.clone(), config_str, size_str, dl_str];
+                if is_redist {
+                    redist_rows.push(row);
+                } else {
+                    depot_rows.push(row);
+                }
             }
 
-            println!("\nBranches:");
+            let print_depot_table = |label: &str, rows: &[[String; 4]]| {
+                if rows.is_empty() {
+                    return;
+                }
+                println!("\n{label}:");
+                let mut builder = TableBuilder::new();
+                builder.push_record(["ID", "CONFIGURATION", "SIZE", "DL."]);
+                for r in rows {
+                    builder.push_record(r);
+                }
+                let table = builder
+                    .build()
+                    .with(Style::blank())
+                    .with(tabled::settings::Padding::new(0, 2, 0, 0))
+                    .with(
+                        tabled::settings::Modify::new(tabled::settings::object::Columns::new(2..4))
+                            .with(tabled::settings::Alignment::right()),
+                    )
+                    .to_string();
+                for line in table.lines() {
+                    println!("  {line}");
+                }
+            };
+
+            print_depot_table("Depots", &depot_rows);
+            if args.show_all {
+                print_depot_table("Redistributables", &redist_rows);
+            }
+
             if let Some(branches) = depots.get("branches") {
                 if let KvValue::Children(ref bmap) = branches.value {
+                    let mut branch_entries: Vec<(u64, [String; 5])> = Vec::new();
                     for (bname, branch) in bmap {
                         let build_id = branch
                             .get("buildid")
                             .and_then(|b| b.as_str())
-                            .unwrap_or("-");
-                        let time_updated = branch
-                            .get("timeupdated")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("");
-                        let pwd = branch.get("pwdrequired").and_then(|p| p.as_str()) == Some("1");
+                            .unwrap_or("-")
+                            .to_string();
                         let desc = branch
                             .get("description")
                             .and_then(|d| d.as_str())
-                            .unwrap_or("");
-                        let mut flags = Vec::new();
+                            .unwrap_or("")
+                            .trim();
+                        let trimmed_desc = if desc.len() > 40 {
+                            format!("{}...", &desc[..37])
+                        } else {
+                            desc.to_string()
+                        };
+                        let time_built_epoch = branch
+                            .get("timebuildupdated")
+                            .or_else(|| branch.get("timeupdated"))
+                            .and_then(|t| t.as_str())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        let time_updated_epoch = branch
+                            .get("timeupdated")
+                            .and_then(|t| t.as_str())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        let time_built = if time_built_epoch > 0 {
+                            fmt_relative(time_built_epoch)
+                        } else {
+                            String::new()
+                        };
+                        let time_updated = if time_updated_epoch > 0 {
+                            fmt_relative(time_updated_epoch)
+                        } else {
+                            String::new()
+                        };
+                        let pwd =
+                            branch.get("pwdrequired").and_then(|p| p.as_str()) == Some("1");
+                        let mut name_str = bname.clone();
                         if pwd {
-                            flags.push("password");
+                            name_str.push_str(" [password]");
                         }
-                        if !desc.is_empty() {
-                            flags.push(desc);
-                        }
-                        let extra = if flags.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" ({})", flags.join(", "))
-                        };
-                        let ts = if time_updated.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" updated {time_updated}")
-                        };
-                        println!("  {bname}: build {build_id}{ts}{extra}");
+                        branch_entries.push((time_updated_epoch, [
+                            name_str,
+                            trimmed_desc,
+                            build_id,
+                            time_built,
+                            time_updated,
+                        ]));
+                    }
+
+                    // Sort by most recently updated first
+                    branch_entries.sort_by(|a, b| b.0.cmp(&a.0));
+                    let branch_rows: Vec<[String; 5]> = branch_entries.into_iter().map(|(_, r)| r).collect();
+
+                    println!("\nBranches:");
+                    let mut builder = TableBuilder::new();
+                    builder.push_record(["NAME", "DESCRIPTION", "BUILD", "TIME BUILT", "TIME UPDATED"]);
+                    for r in &branch_rows {
+                        builder.push_record(r);
+                    }
+                    let branch_table = builder
+                        .build()
+                        .with(Style::blank())
+                        .with(tabled::settings::Padding::new(0, 2, 0, 0))
+                        .to_string();
+                    for line in branch_table.lines() {
+                        println!("  {line}");
                     }
                 }
             }
@@ -804,23 +1012,82 @@ async fn run_manifests(args: ManifestsArgs, auth: &AuthOptions) -> Result<(), Cl
     let branch = args.branch.as_deref().unwrap_or("public");
 
     let depots = kv.get("depots").ok_or(CliError::NoDepots)?;
+
+    if args.format == Some(OutputFormat::Json) {
+        let mut entries = Vec::new();
+        if let KvValue::Children(ref map) = depots.value {
+            for (key, depot) in map {
+                let Ok(depot_id) = key.parse::<u32>() else {
+                    continue;
+                };
+                if let Some(manifests) = depot.get("manifests") {
+                    if let Some(branch_kv) = manifests.get(branch) {
+                        let gid = branch_kv
+                            .get("gid")
+                            .and_then(|g| g.as_str())
+                            .or_else(|| branch_kv.as_str());
+                        if let Some(manifest_id) = gid {
+                            entries.push(serde_json::json!({
+                                "depot": depot_id,
+                                "manifest": manifest_id,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+
+    println!("Manifests for branch '{branch}':\n");
+
     if let KvValue::Children(ref map) = depots.value {
+        let mut rows: Vec<[String; 3]> = Vec::new();
         for (key, depot) in map {
             let Ok(depot_id) = key.parse::<u32>() else {
                 continue;
             };
+            let dname = depot.get("name").and_then(|n| n.as_str()).unwrap_or("");
             if let Some(manifests) = depot.get("manifests") {
                 if let Some(branch_kv) = manifests.get(branch) {
                     let gid = branch_kv
                         .get("gid")
                         .and_then(|g| g.as_str())
-                        .or_else(|| branch_kv.as_str());
-                    if let Some(manifest_id) = gid {
-                        let dname = depot.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                        println!("{depot_id}\t{manifest_id}\t{dname}");
-                    }
+                        .or_else(|| branch_kv.as_str())
+                        .unwrap_or("--");
+                    rows.push([
+                        format!("depot {depot_id}"),
+                        format!("-> {gid}"),
+                        dname.to_string(),
+                    ]);
+                } else {
+                    rows.push([
+                        format!("depot {depot_id}"),
+                        "-> --".to_string(),
+                        dname.to_string(),
+                    ]);
                 }
+            } else {
+                rows.push([
+                    format!("depot {depot_id}"),
+                    "-> --".to_string(),
+                    dname.to_string(),
+                ]);
             }
+        }
+
+        let mut builder = TableBuilder::new();
+        for r in &rows {
+            builder.push_record(r);
+        }
+        let table = builder
+            .build()
+            .with(Style::blank())
+            .with(tabled::settings::Padding::new(0, 2, 0, 0))
+            .to_string();
+        for line in table.lines() {
+            println!("  {line}");
         }
     }
 
@@ -828,6 +1095,7 @@ async fn run_manifests(args: ManifestsArgs, auth: &AuthOptions) -> Result<(), Cl
 }
 
 async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> {
+    let raw_bytes = args.bytes;
     let app_id = AppId(args.app);
     let (client, kv) = fetch_app_kv(auth, app_id).await?;
     let branch = args.branch.as_deref().unwrap_or("public");
@@ -885,16 +1153,59 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
         return Ok(());
     }
 
-    for file in &manifest.files {
-        let name = &file.filename;
-        let is_dir = steamroom::enums::DepotFileFlags(file.flags).is_directory();
-        if args.format == Some(OutputFormat::Plain) {
-            println!("{name}");
-        } else if is_dir {
-            println!("{name}/");
-        } else {
-            println!("{name}\t{}", fmt_size(file.size));
+    if args.format == Some(OutputFormat::Plain) {
+        for file in &manifest.files {
+            println!("{}", file.filename);
         }
+    } else {
+        let total_size: u64 = manifest.files.iter().map(|f| f.size).sum();
+        let file_count = manifest.files.len();
+        let created = manifest
+            .creation_time
+            .map(|t| fmt_timestamp(t as u64))
+            .unwrap_or_else(|| "-".into());
+
+        println!("Depot:    {}", depot_id);
+        println!("Manifest: {}", manifest_id);
+        println!("Created:  {}", created);
+        println!("Size:     {}", fmt_size(total_size));
+        println!("Files:    {}", file_count);
+        println!();
+
+        let file_rows: Vec<[String; 3]> = manifest
+            .files
+            .iter()
+            .map(|f| {
+                let is_dir = steamroom::enums::DepotFileFlags(f.flags).is_directory();
+                let name = if is_dir {
+                    format!("{}/", f.filename)
+                } else {
+                    f.filename.clone()
+                };
+                let size_str = if raw_bytes {
+                    f.size.to_string()
+                } else {
+                    fmt_size(f.size)
+                };
+                [name, size_str, f.chunks.len().to_string()]
+            })
+            .collect();
+
+        let mut builder = TableBuilder::new();
+        builder.push_record(["FILENAME", "SIZE", "CHUNKS"]);
+        for r in &file_rows {
+            builder.push_record(r);
+        }
+        let table = builder
+            .build()
+            .with(Style::blank())
+            .with(tabled::settings::Padding::new(0, 2, 0, 0))
+            .with(
+                tabled::settings::Modify::new(tabled::settings::object::Columns::new(1..))
+                    .with(tabled::settings::Alignment::right()),
+            )
+            .to_string();
+        println!("{table}");
     }
 
     Ok(())

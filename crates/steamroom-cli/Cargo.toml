@@ -38,3 +38,4 @@ reqwest = { workspace = true }
 zip = { workspace = true }
 dirs-next = { workspace = true }
 base64 = { workspace = true }
+tabled = { workspace = true }
