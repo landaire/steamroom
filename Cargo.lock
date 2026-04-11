@@ -2469,6 +2469,7 @@ name = "steam-client"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "dirs-next",
  "insta",
  "prost",
  "regex",
@@ -2479,6 +2480,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "zip",
 ]
 
 [[package]]

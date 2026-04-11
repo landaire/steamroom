@@ -342,18 +342,26 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         .await?
         .unwrap_or(0);
 
-    // Download manifest
-    let cdn = CdnClient::new().map_err(|e| CliError::Steam(e))?;
-    info!("downloading manifest...");
-    let manifest_data = cdn
-        .download_manifest(cdn_server, depot_id, manifest_id, request_code, None)
-        .await?;
+    // Download manifest (with cache)
+    let cdn = CdnClient::new().map_err(CliError::Steam)?;
+    let manifest_cache = steam_client::manifest::ManifestCache::new(
+        steam_client::manifest::ManifestCache::default_path(),
+    );
 
-    // Decompress manifest (it's zipped)
-    debug!("manifest raw: {} bytes, first 8: {:02x?}", manifest_data.len(), &manifest_data[..std::cmp::min(8, manifest_data.len())]);
-    let manifest_bytes = decompress_manifest(&manifest_data)?;
-    debug!("manifest decompressed: {} bytes", manifest_bytes.len());
-    // Dump section magics
+    let manifest_bytes = if let Some(cached) = manifest_cache.load(depot_id, manifest_id) {
+        debug!("using cached manifest for {depot_id}_{manifest_id}");
+        cached
+    } else {
+        info!("downloading manifest...");
+        let manifest_data = cdn
+            .download_manifest(cdn_server, depot_id, manifest_id, request_code, None)
+            .await?;
+        let decompressed = decompress_manifest(&manifest_data)?;
+        let _ = manifest_cache.save(depot_id, manifest_id, &decompressed);
+        decompressed
+    };
+
+    // Debug: dump section magics
     {
         let mut off = 0;
         while off + 8 <= manifest_bytes.len() {
