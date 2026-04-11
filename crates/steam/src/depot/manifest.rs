@@ -172,38 +172,25 @@ impl DepotManifest {
         }
         for file in &mut self.files {
             if let Some(ref encrypted_name) = file.filename {
-                let clean_b64: String = encrypted_name.chars().filter(|c| !c.is_whitespace()).collect();
+                let clean_b64: String =
+                    encrypted_name.chars().filter(|c| !c.is_whitespace()).collect();
                 let decoded = base64::Engine::decode(
                     &base64::engine::general_purpose::STANDARD,
                     &clean_b64,
-                )
-                .map_err(|e| {
-                    tracing::debug!("base64 decode failed: {e}");
-                    ManifestError::InvalidMagic
-                })?;
+                )?;
 
-                // Filenames use same format as chunks: ECB(IV) + CBC(data)
+                // ECB(IV) + CBC(data) — same format as chunk encryption
                 if decoded.len() < 32 {
-                    return Err(ManifestError::InvalidMagic);
+                    return Err(ManifestError::DecryptFailed(
+                        crate::error::CryptoError::DecryptionFailed,
+                    ));
                 }
-                let iv = crate::crypto::symmetric_decrypt_ecb_nopad(&decoded[..16], &key.0)
-                    .map_err(|_| ManifestError::InvalidMagic)?;
-                let decrypted = crate::crypto::symmetric_decrypt_cbc(&decoded[16..], &key.0, &iv)
-                    .map_err(|e| {
-                        tracing::debug!("filename decrypt failed ({} bytes): {e:?}", decoded.len());
-                        ManifestError::InvalidMagic
-                    })?;
+                let iv = crate::crypto::symmetric_decrypt_ecb_nopad(&decoded[..16], &key.0)?;
+                let decrypted = crate::crypto::symmetric_decrypt_cbc(&decoded[16..], &key.0, &iv)?;
 
-                let name = decrypted
-                    .split(|&b| b == 0)
-                    .next()
-                    .unwrap_or(&decrypted);
+                let name = decrypted.split(|&b| b == 0).next().unwrap_or(&decrypted);
                 file.filename = Some(
-                    String::from_utf8(name.to_vec())
-                        .map_err(|e| {
-                            tracing::debug!("UTF-8 decode failed: {e}");
-                            ManifestError::InvalidMagic
-                        })?,
+                    String::from_utf8(name.to_vec()).map_err(|_| ManifestError::InvalidFilename)?,
                 );
             }
         }
@@ -223,6 +210,6 @@ fn match_magic(val: u32) -> Result<ManifestMagic, ManifestError> {
         0x71F6_17D0 => Ok(ManifestMagic::V4),
         0x1F48_12BE => Ok(ManifestMagic::Metadata),
         // V4 signature — treat as signature
-        _ => Err(ManifestError::InvalidMagic),
+        _ => Err(ManifestError::InvalidMagic(val)),
     }
 }

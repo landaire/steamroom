@@ -69,7 +69,7 @@ async fn connect_and_login(
         let ws_server = servers
             .iter()
             .find(|s| s.protocol == connection::Protocol::WebSocket)
-            .ok_or_else(|| CliError::Other("no CM servers".into()))?;
+            .ok_or(CliError::NoCmServers)?;
         info!("connecting via WebSocket to {:?}", ws_server.addr);
         let transport = WebSocketTransport::connect(ws_server).await?;
         let (client, _rx) = SteamClient::connect_ws(transport).await?;
@@ -147,10 +147,10 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     let app_info = infos
         .into_iter()
         .next()
-        .ok_or_else(|| CliError::Other("no product info returned".into()))?;
+        .ok_or_else(|| CliError::NoProductInfo(app_id.0))?;
 
     // Parse KV data
-    let kv_data = app_info.kv_data.ok_or_else(|| CliError::Other("no KV data".into()))?;
+    let kv_data = app_info.kv_data.ok_or_else(|| CliError::NoKvData(app_id.0))?;
     let kv = parse_app_kv(&kv_data)?;
 
     // Find depots
@@ -158,7 +158,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         DepotId(d)
     } else {
         // Find first depot from the KV data
-        let depots_kv = kv.get("depots").ok_or_else(|| CliError::Other("no depots in app info".into()))?;
+        let depots_kv = kv.get("depots").ok_or_else(|| CliError::NoDepots)?;
         find_first_depot(&depots_kv)?
     };
 
@@ -168,7 +168,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     let manifest_id = if let Some(m) = args.manifest {
         ManifestId(m)
     } else {
-        let depots_kv = kv.get("depots").ok_or_else(|| CliError::Other("no depots".into()))?;
+        let depots_kv = kv.get("depots").ok_or_else(|| CliError::NoDepots)?;
         find_manifest_for_depot(&depots_kv, depot_id, branch)?
     };
 
@@ -186,7 +186,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         .await?;
     let cdn_server = cdn_servers
         .first()
-        .ok_or_else(|| CliError::Other("no CDN servers".into()))?;
+        .ok_or_else(|| CliError::NoCdnServers)?;
     info!("using CDN server: {}", cdn_server.host);
 
     // Get manifest request code
@@ -285,7 +285,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
 
         for chunk_meta in &file.chunks {
             let chunk_id = chunk_meta.id.as_ref().ok_or_else(|| {
-                CliError::Other("chunk missing ID".into())
+                CliError::ChunkMissingId
             })?;
 
             let chunk_data = cdn
@@ -327,11 +327,11 @@ fn parse_app_kv(data: &[u8]) -> Result<KeyValue, CliError> {
     // PICS KV data can be binary KV or text
     // Binary KV starts with 0x00 tag
     if data.first() == Some(&0x00) {
-        key_value::parse_binary_kv(data).map_err(|e| CliError::Io(e))
+        key_value::parse_binary_kv(data).map_err(CliError::Io)
     } else {
         // Try text parse, skip any leading null bytes
         let text = String::from_utf8_lossy(data);
-        key_value::parse_text_kv(&text).map_err(|e| CliError::Other(e.to_string()))
+        Ok(key_value::parse_text_kv(&text)?)
     }
 }
 
@@ -345,7 +345,7 @@ fn find_first_depot(depots_kv: &KeyValue) -> Result<DepotId, CliError> {
             }
         }
     }
-    Err(CliError::Other("no depots found".into()))
+    Err(CliError::NoDepots)
 }
 
 fn find_manifest_for_depot(
@@ -356,7 +356,7 @@ fn find_manifest_for_depot(
     let depot_key = depot_id.0.to_string();
     let depot = depots_kv
         .get(&depot_key)
-        .ok_or_else(|| CliError::Other(format!("depot {} not found in app info", depot_id)))?;
+        .ok_or(CliError::DepotNotFound(depot_id.0))?;
 
     // Look in depots -> {depot_id} -> manifests -> {branch} -> gid
     if let Some(manifests) = depot.get("manifests") {
@@ -365,7 +365,7 @@ fn find_manifest_for_depot(
                 if let Some(gid_str) = gid.as_str() {
                     let id: u64 = gid_str
                         .parse()
-                        .map_err(|_| CliError::Other("invalid manifest ID".into()))?;
+                        .map_err(|_| CliError::InvalidManifestId)?;
                     return Ok(ManifestId(id));
                 }
             }
@@ -373,16 +373,16 @@ fn find_manifest_for_depot(
             if let Some(gid_str) = branch_kv.as_str() {
                 let id: u64 = gid_str
                     .parse()
-                    .map_err(|_| CliError::Other("invalid manifest ID".into()))?;
+                    .map_err(|_| CliError::InvalidManifestId)?;
                 return Ok(ManifestId(id));
             }
         }
     }
 
-    Err(CliError::Other(format!(
-        "manifest not found for depot {} branch {}",
-        depot_id, branch
-    )))
+    Err(CliError::ManifestNotFound {
+        depot: depot_id.0,
+        branch: branch.to_string(),
+    })
 }
 
 fn decompress_manifest(data: &[u8]) -> Result<Vec<u8>, CliError> {
@@ -390,12 +390,12 @@ fn decompress_manifest(data: &[u8]) -> Result<Vec<u8>, CliError> {
     if data.len() > 2 && data[0] == 0x50 && data[1] == 0x4B {
         let cursor = std::io::Cursor::new(data);
         let mut archive = zip::ZipArchive::new(cursor)
-            .map_err(|e| CliError::Other(format!("zip: {e}")))?;
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if archive.is_empty() {
-            return Err(CliError::Other("empty manifest archive".into()));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "empty manifest archive").into());
         }
         let mut file = archive.by_index(0)
-            .map_err(|e| CliError::Other(format!("zip: {e}")))?;
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut file, &mut buf)?;
         Ok(buf)

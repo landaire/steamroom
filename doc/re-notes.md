@@ -9,23 +9,32 @@ Source: `netfilter.cpp` in steamclient64.dll
 ### Wire Format
 
 ```
-[IV: 16 bytes] [AES-256-CBC ciphertext]
+[AES-256-ECB encrypted IV: 16 bytes] [AES-256-CBC ciphertext]
 ```
+
+This is the same `ECB(IV) + CBC(data)` format used by `CCrypto::SymmetricEncrypt` /
+`CCrypto::SymmetricDecrypt` throughout the Steam client (including depot chunk encryption).
 
 ### Encrypt (CWorkItemNetFilterEncrypt::ThreadProcess)
 
 1. Compute `hmac = HMAC-SHA1(session_key[0..16], header_3bytes + plaintext)`
 2. Build `IV = hmac[0..13] || header_3bytes` (16 bytes total)
-3. AES-256-CBC encrypt `plaintext` using `IV` and full 32-byte `session_key`, PKCS7 padding
-4. Output: `IV || ciphertext`
+3. AES-256-CBC encrypt `plaintext` using `IV` and full 32-byte `session_key`, PKCS7
+4. AES-256-ECB encrypt `IV` using the full 32-byte key
+5. Output: `ECB(IV) || CBC(plaintext)`
 
-The 3-byte header is stored at IV[13..16]. In practice these are zero bytes.
+The 3-byte header is a sequence counter stored at IV[13..16]. In practice these are
+zero bytes for the initial messages.
 
-### Decrypt (CWorkItemNetFilterDecrypt, sub_138f2bd70)
+The HMAC derivation is deterministic, but the IV is still ECB-encrypted on the wire.
+This was the key insight that was missing — earlier attempts sent the raw HMAC-derived
+IV without ECB encryption, which the server silently dropped.
 
-1. Split input: `IV = data[0..16]`, `ciphertext = data[16..]`
-2. AES-256-CBC decrypt `ciphertext` using `IV` and full 32-byte key
-3. Verify: `HMAC-SHA1(key[0..16], IV[13..16] + plaintext)[0..13] == IV[0..13]`
+### Decrypt (CWorkItemNetFilterDecrypt)
+
+1. AES-256-ECB decrypt first 16 bytes → recover `IV`
+2. AES-256-CBC decrypt remaining bytes using recovered `IV` and full 32-byte key
+3. Optionally verify: `HMAC-SHA1(key[0..16], IV[13..16] + plaintext)[0..13] == IV[0..13]`
 4. Return `plaintext`
 
 ### Key Details
@@ -58,14 +67,33 @@ c0428902
 0111
 ```
 
-## AES-CBC (CCrypto::SymmetricEncrypt)
+## AES Symmetric Crypto (CCrypto::SymmetricEncrypt / SymmetricDecrypt)
 
 Source: `crypto_aescbc_openssl.cpp`
 
-- Standard AES-CBC with PKCS7 padding
-- Supports 128-bit and 256-bit keys
-- Uses AES-NI when available
-- Two wrappers: `sub_138cec7a0` (random IV) and `sub_138cec830` (caller-provided IV)
+All symmetric encryption in the Steam client uses the same format:
+
+```
+[AES-ECB(IV): 16 bytes] [AES-CBC(plaintext, IV, key): N bytes, PKCS7 padded]
+```
+
+**Encrypt** (`CCrypto::SymmetricEncrypt`):
+1. Generate or derive 16-byte IV
+2. AES-CBC encrypt plaintext with PKCS7 padding using IV and key
+3. AES-ECB encrypt the IV itself using the same key
+4. Output: `ECB(IV) || CBC(plaintext)`
+
+**Decrypt** (`CCrypto::SymmetricDecrypt`):
+1. AES-ECB decrypt first 16 bytes → recover IV
+2. AES-CBC decrypt remaining bytes using recovered IV and key, remove PKCS7
+
+This format is used for:
+- CM session cipher (netfilter encryption)
+- Depot chunk encryption/decryption
+- Manifest filename encryption/decryption
+
+Key sizes: 128-bit or 256-bit (depot/session keys are 256-bit).
+Uses AES-NI when available, falls back to software T-table implementation.
 
 ## CM Server Protocol
 

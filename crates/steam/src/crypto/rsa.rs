@@ -1,46 +1,31 @@
 use crate::error::CryptoError;
-use rsa::{Pkcs1v15Encrypt, Oaep, RsaPublicKey, pkcs8::DecodePublicKey};
+use rsa::{Oaep, RsaPublicKey, pkcs8::DecodePublicKey};
 
-// Steam's universe-public RSA key for session encryption (DER hex from steamclient64.dll).
-const STEAM_PUBLIC_KEY_HEX: &str = "30819d300d06092a864886f70d010101050003818b0030818702818100dfec1ad62c10662c17353a14b07c59117f9dd3d82b7ae3e015cd191e46e87b8774a2184631a9031479828ee945a24912a923687389cf69a1b16146bdc1bebfd6011bd881d4dc90fbfe4f527366cb9570d7c58eba1c7a3375a1623446bb60b78068fa13a77a8a374b9ec6f45d5f3a99f99ec43ae963a2bb881928e0e714c042890201 11";
-
-fn decode_hex(hex: &str) -> Vec<u8> {
-    let hex: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-        .collect()
-}
+// Steam Universe Public RSA key (DER-encoded SubjectPublicKeyInfo).
+// Extracted from steamclient64.dll at 0x1394161d0.
+// 1024-bit RSA, exponent 17 (0x11).
+const STEAM_PUBLIC_KEY_DER: [u8; 160] = [
+    0x30, 0x81, 0x9d, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7,
+    0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03, 0x81, 0x8b, 0x00, 0x30, 0x81,
+    0x87, 0x02, 0x81, 0x81, 0x00, 0xdf, 0xec, 0x1a, 0xd6, 0x2c, 0x10, 0x66,
+    0x2c, 0x17, 0x35, 0x3a, 0x14, 0xb0, 0x7c, 0x59, 0x11, 0x7f, 0x9d, 0xd3,
+    0xd8, 0x2b, 0x7a, 0xe3, 0xe0, 0x15, 0xcd, 0x19, 0x1e, 0x46, 0xe8, 0x7b,
+    0x87, 0x74, 0xa2, 0x18, 0x46, 0x31, 0xa9, 0x03, 0x14, 0x79, 0x82, 0x8e,
+    0xe9, 0x45, 0xa2, 0x49, 0x12, 0xa9, 0x23, 0x68, 0x73, 0x89, 0xcf, 0x69,
+    0xa1, 0xb1, 0x61, 0x46, 0xbd, 0xc1, 0xbe, 0xbf, 0xd6, 0x01, 0x1b, 0xd8,
+    0x81, 0xd4, 0xdc, 0x90, 0xfb, 0xfe, 0x4f, 0x52, 0x73, 0x66, 0xcb, 0x95,
+    0x70, 0xd7, 0xc5, 0x8e, 0xba, 0x1c, 0x7a, 0x33, 0x75, 0xa1, 0x62, 0x34,
+    0x46, 0xbb, 0x60, 0xb7, 0x80, 0x68, 0xfa, 0x13, 0xa7, 0x7a, 0x8a, 0x37,
+    0x4b, 0x9e, 0xc6, 0xf4, 0x5d, 0x5f, 0x3a, 0x99, 0xf9, 0x9e, 0xc4, 0x3a,
+    0xe9, 0x63, 0xa2, 0xbb, 0x88, 0x19, 0x28, 0xe0, 0xe7, 0x14, 0xc0, 0x42,
+    0x89, 0x02, 0x01, 0x11,
+];
 
 pub fn encrypt_with_steam_public_key(data: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    let der = decode_hex(STEAM_PUBLIC_KEY_HEX);
-    let public_key = RsaPublicKey::from_public_key_der(&der)
-        .map_err(|e| CryptoError::Rsa(e.to_string()))?;
-
-    let mut rng = rand::thread_rng();
-    let padding = Oaep::new::<sha1::Sha1>();
-    public_key
-        .encrypt(&mut rng, padding, data)
-        .map_err(|e| CryptoError::Rsa(e.to_string()))
-}
-
-pub fn encrypt_with_rsa_public_key(
-    data: &[u8],
-    modulus_hex: &str,
-    exponent_hex: &str,
-) -> Result<Vec<u8>, CryptoError> {
-    use rsa::BigUint;
-
-    let modulus = BigUint::parse_bytes(modulus_hex.as_bytes(), 16)
-        .ok_or_else(|| CryptoError::Rsa("invalid modulus hex".into()))?;
-    let exponent = BigUint::parse_bytes(exponent_hex.as_bytes(), 16)
-        .ok_or_else(|| CryptoError::Rsa("invalid exponent hex".into()))?;
-
-    let public_key = RsaPublicKey::new(modulus, exponent)
-        .map_err(|e| CryptoError::Rsa(e.to_string()))?;
-
+    let public_key = RsaPublicKey::from_public_key_der(&STEAM_PUBLIC_KEY_DER)
+        .map_err(|e| CryptoError::Rsa(rsa::Error::from(rsa::pkcs8::Error::from(e))))?;
     let mut rng = rand::thread_rng();
     public_key
-        .encrypt(&mut rng, Pkcs1v15Encrypt, data)
-        .map_err(|e| CryptoError::Rsa(e.to_string()))
+        .encrypt(&mut rng, Oaep::new::<sha1::Sha1>(), data)
+        .map_err(CryptoError::Rsa)
 }

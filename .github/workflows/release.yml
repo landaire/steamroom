@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-ffi:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            lib: libsteam_ffi.so
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            lib: libsteam_ffi.dylib
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            lib: steam_ffi.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p steam-ffi
+
+      - run: cargo install diplomat-tool@0.15.0
+      - run: mkdir -p dist/include/c dist/include/cpp
+      - run: diplomat-tool c dist/include/c --entry crates/steam-ffi/src/lib.rs
+      - run: diplomat-tool cpp dist/include/cpp --entry crates/steam-ffi/src/lib.rs
+
+      - name: Package
+        shell: bash
+        run: |
+          cp target/release/${{ matrix.lib }} dist/
+          if [ -f target/release/steam_ffi.dll.lib ]; then
+            cp target/release/steam_ffi.dll.lib dist/
+          fi
+          cd dist && tar czf ../steam-ffi-${{ matrix.target }}.tar.gz *
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: steam-ffi-${{ matrix.target }}
+          path: steam-ffi-${{ matrix.target }}.tar.gz
+
+  build-cli:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: ddl
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: ddl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: ddl.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p ddl
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/${{ matrix.bin }} dist/
+          cd dist && tar czf ../ddl-${{ matrix.target }}.tar.gz *
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ddl-${{ matrix.target }}
+          path: ddl-${{ matrix.target }}.tar.gz
+
+  build-wheels:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+
+      - run: cargo build --release -p steam-ffi
+      - run: cargo install diplomat-tool@0.15.0
+      - run: mkdir -p crates/steam-ffi/bindings/cpp
+      - run: diplomat-tool cpp crates/steam-ffi/bindings/cpp --entry crates/steam-ffi/src/lib.rs
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          cd examples/python
+          STEAM_FFI_LIB_DIR="$GITHUB_WORKSPACE/target/release" \
+          STEAM_FFI_BINDINGS_DIR="$GITHUB_WORKSPACE/crates/steam-ffi/bindings/cpp" \
+          uv build --wheel
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: examples/python/dist/*.whl
+
+  publish:
+    needs: [build-ffi, build-cli, build-wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.whl
+          generate_release_notes: true

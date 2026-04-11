@@ -75,19 +75,31 @@ pub enum CryptoError {
     InvalidPadding,
 
     #[error("rsa: {0}")]
-    Rsa(String),
+    Rsa(rsa::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestError {
-    #[error("invalid magic")]
-    InvalidMagic,
+    #[error("invalid section magic: {0:#010x}")]
+    InvalidMagic(u32),
 
-    #[error("missing section")]
+    #[error("missing payload section")]
     MissingSection,
 
     #[error("checksum mismatch: expected {expected:#010x}, got {got:#010x}")]
     ChecksumMismatch { expected: u32, got: u32 },
+
+    #[error("failed to decode protobuf section")]
+    ProtobufDecode(#[from] prost::DecodeError),
+
+    #[error("filename decryption failed")]
+    DecryptFailed(#[from] CryptoError),
+
+    #[error("invalid base64 in encrypted filename")]
+    Base64Decode(#[from] base64::DecodeError),
+
+    #[error("decrypted filename is not valid UTF-8")]
+    InvalidFilename,
 }
 
 #[derive(Debug, thiserror::Error)]
