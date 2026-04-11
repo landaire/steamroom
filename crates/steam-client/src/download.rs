@@ -185,44 +185,55 @@ impl DepotJob {
         Ok(stats)
     }
 
+    /// Pipelined chunk download: network fetch and decrypt/decompress overlap.
+    ///
+    /// Stage 1 (async IO, bounded by semaphore): fetch raw bytes from CDN
+    /// Stage 2 (blocking thread pool): decrypt + decompress + checksum verify
+    ///
+    /// Fetchers push raw bytes into a bounded channel. A processor task drains
+    /// the channel and dispatches each chunk to spawn_blocking. Results land in
+    /// ordered slots. The bounded channel provides backpressure: if the CPU pool
+    /// falls behind, fetchers block on send instead of buffering unbounded memory.
     async fn download_file_chunks<F: ChunkFetcher + 'static>(
         &self,
         file: &ManifestFile,
         fetcher: &std::sync::Arc<F>,
         sem: &std::sync::Arc<tokio::sync::Semaphore>,
     ) -> Result<Vec<u8>, BoxError> {
-        if file.chunks.len() <= 1 {
-            return self.download_file_chunks_serial(file, fetcher.as_ref()).await;
+        let n = file.chunks.len();
+        if n == 0 {
+            return Ok(Vec::new());
         }
 
-        // Download all chunks in parallel, bounded by semaphore.
-        // Each chunk result is placed in its slot to preserve ordering.
-        let n = file.chunks.len();
-        let results: std::sync::Arc<tokio::sync::Mutex<Vec<Option<Vec<u8>>>>> =
-            std::sync::Arc::new(tokio::sync::Mutex::new(vec![None; n]));
-        let mut handles = Vec::with_capacity(n);
+        // Bounded channel: fetch stage → process stage.
+        // Capacity = max_downloads so we buffer at most that many fetched-but-unprocessed chunks.
+        let (fetch_tx, mut fetch_rx) =
+            tokio::sync::mpsc::channel::<(usize, Bytes, u32, u32)>(self.max_downloads);
 
+        let slots: std::sync::Arc<std::sync::Mutex<Vec<Option<Vec<u8>>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(vec![None; n]));
+
+        // Stage 1: spawn fetcher tasks
+        let mut fetch_handles = Vec::with_capacity(n);
         for (i, chunk_meta) in file.chunks.iter().enumerate() {
             let chunk_id = chunk_meta.id.clone().ok_or("chunk missing chunk ID")?;
             let expected_size = chunk_meta.uncompressed_size.ok_or("chunk missing uncompressed_size")?;
             let checksum = chunk_meta.checksum.ok_or("chunk missing checksum")?;
-            let depot_key = self.depot_key.clone();
             let depot_id = self.depot_id;
             let retry = self.retry.clone();
             let event_tx = self.event_tx.clone();
             let sem = sem.clone();
-            let results = results.clone();
             let fetcher = fetcher.clone();
+            let fetch_tx = fetch_tx.clone();
 
-            let handle = tokio::spawn(async move {
+            fetch_handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire().await.map_err(|e| -> BoxError { Box::new(e) })?;
 
-                // Fetch with retry
                 let mut delay = retry.initial_delay;
-                let mut raw = Err::<bytes::Bytes, BoxError>("never attempted".into());
+                let mut result = Err::<Bytes, BoxError>("never attempted".into());
                 for attempt in 0..retry.max_attempts {
                     match fetcher.fetch_chunk(depot_id, &chunk_id).await {
-                        Ok(data) => { raw = Ok(data); break; }
+                        Ok(data) => { result = Ok(data); break; }
                         Err(e) if attempt + 1 < retry.max_attempts => {
                             if let Some(ref tx) = event_tx {
                                 let _ = tx.send(DownloadEvent::ChunkFailed { error: e.to_string() });
@@ -230,62 +241,63 @@ impl DepotJob {
                             tokio::time::sleep(delay).await;
                             delay *= 2;
                         }
-                        Err(e) => { raw = Err(e); break; }
+                        Err(e) => { result = Err(e); break; }
                     }
                 }
-                let raw = raw?;
 
-                // Decrypt + decompress on the blocking pool to avoid stalling IO
-                let processed = tokio::task::spawn_blocking(move || {
-                    chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
-                })
-                .await??;
-
-                if let Some(ref tx) = event_tx {
-                    let _ = tx.send(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
-                }
-
-                results.lock().await[i] = Some(processed);
+                // Backpressure: if process stage is full, this blocks the fetcher
+                // (which releases the semaphore permit, letting other fetchers proceed)
+                fetch_tx.send((i, result?, expected_size, checksum)).await
+                    .map_err(|_| -> BoxError { "process channel closed".into() })?;
                 Ok::<(), BoxError>(())
-            });
-            handles.push(handle);
+            }));
         }
+        drop(fetch_tx); // close so process loop terminates when all fetchers done
 
-        for handle in handles {
-            handle.await??;
+        // Stage 2: drain fetch results → spawn_blocking for decrypt+decompress
+        let slots_ref = slots.clone();
+        let depot_key = self.depot_key.clone();
+        let event_tx = self.event_tx.clone();
+
+        let process_handle = tokio::spawn(async move {
+            let mut block_handles = Vec::new();
+
+            while let Some((i, raw, expected_size, checksum)) = fetch_rx.recv().await {
+                let key = depot_key.clone();
+                let slots = slots_ref.clone();
+                let tx = event_tx.clone();
+
+                block_handles.push(tokio::task::spawn_blocking(move || {
+                    let processed = chunk::process_chunk(&raw, &key, expected_size, checksum)?;
+                    if let Some(ref tx) = tx {
+                        let _ = tx.send(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
+                    }
+                    slots.lock().unwrap()[i] = Some(processed);
+                    Ok::<(), BoxError>(())
+                }));
+            }
+
+            for h in block_handles {
+                h.await??;
+            }
+            Ok::<(), BoxError>(())
+        });
+
+        // Wait for both stages
+        for h in fetch_handles {
+            h.await??;
         }
+        process_handle.await??;
 
         // Assemble in order
-        let slots = std::sync::Arc::try_unwrap(results)
-            .map_err(|_| "results arc still shared")?
-            .into_inner();
+        let slots = std::sync::Arc::try_unwrap(slots)
+            .map_err(|_| "slots arc still shared")?
+            .into_inner()
+            .unwrap();
         // size hint only — Vec grows if absent, no correctness impact
         let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
         for slot in slots {
-            file_data.extend_from_slice(&slot.ok_or("chunk slot empty")?);
-        }
-        Ok(file_data)
-    }
-
-    async fn download_file_chunks_serial<F: ChunkFetcher>(
-        &self,
-        file: &ManifestFile,
-        fetcher: &F,
-    ) -> Result<Vec<u8>, BoxError> {
-        // size hint only — Vec grows if absent, no correctness impact
-        let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
-        for chunk_meta in &file.chunks {
-            let chunk_id = chunk_meta.id.as_ref().ok_or("chunk missing ID")?;
-            let raw = self.fetch_with_retry(fetcher, chunk_id).await?;
-            let depot_key = self.depot_key.clone();
-            let expected_size = chunk_meta.uncompressed_size.unwrap_or(0);
-            let checksum = chunk_meta.checksum.unwrap_or(0);
-            let processed = tokio::task::spawn_blocking(move || {
-                chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
-            })
-            .await??;
-            file_data.extend_from_slice(&processed);
-            self.emit(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
+            file_data.extend_from_slice(&slot.ok_or("chunk slot empty after pipeline")?);
         }
         Ok(file_data)
     }
@@ -319,94 +331,68 @@ impl DepotJob {
         sem: &std::sync::Arc<tokio::sync::Semaphore>,
         staging_path: &Path,
     ) -> Result<Vec<u8>, BoxError> {
-        // Check staging file for partial progress
         let existing_bytes = std::fs::metadata(staging_path)
             .map(|m| m.len())
             .unwrap_or(0);
 
+        // Count complete chunks already staged
+        let mut staged_offset: u64 = 0;
+        let mut skip_count = 0;
         if existing_bytes > 0 {
-            // Count how many complete chunks we already have
-            let mut offset: u64 = 0;
-            let mut skip_count = 0;
             for chunk_meta in &file.chunks {
                 let chunk_size = chunk_meta.uncompressed_size.unwrap_or(0) as u64;
-                if offset + chunk_size <= existing_bytes {
-                    offset += chunk_size;
+                if staged_offset + chunk_size <= existing_bytes {
+                    staged_offset += chunk_size;
                     skip_count += 1;
                 } else {
                     break;
                 }
             }
-
-            if skip_count > 0 && skip_count < file.chunks.len() {
-                tracing::debug!(
-                    "resuming {}: skipping {skip_count}/{} chunks ({} bytes staged)",
-                    file.filename.as_deref().unwrap_or("?"),
-                    file.chunks.len(),
-                    existing_bytes,
-                );
-
-                // Read existing staged data
-                let mut file_data = std::fs::read(staging_path)?;
-                file_data.truncate(offset as usize);
-
-                // Download remaining chunks
-                for chunk_meta in file.chunks.iter().skip(skip_count) {
-                    let chunk_id = chunk_meta.id.as_ref().ok_or("chunk missing chunk ID")?;
-                    let raw = self.fetch_with_retry(fetcher.as_ref(), chunk_id).await?;
-                    let expected_size = chunk_meta.uncompressed_size.ok_or("chunk missing uncompressed_size")?;
-                    let checksum = chunk_meta.checksum.ok_or("chunk missing checksum")?;
-                    let depot_key = self.depot_key.clone();
-                    let processed = tokio::task::spawn_blocking(move || {
-                        chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
-                    }).await??;
-                    file_data.extend_from_slice(&processed);
-
-                    // Append to staging file for crash safety
-                    let mut f = std::fs::OpenOptions::new()
-                        .create(true).append(true).open(staging_path)?;
-                    f.write_all(&processed)?;
-
-                    self.emit(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
-                }
-                return Ok(file_data);
-            }
-
-            if skip_count == file.chunks.len() {
-                // Staging file is complete
-                let data = std::fs::read(staging_path)?;
-                return Ok(data);
-            }
         }
 
-        // No usable staging data — full download, writing chunks as we go
-        let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
-        let _ = std::fs::remove_file(staging_path); // clear stale partial
-
-        if file.chunks.len() <= 1 {
-            // Single chunk: no staging needed
-            return self.download_file_chunks_serial(file, fetcher.as_ref()).await;
+        if skip_count == file.chunks.len() {
+            return Ok(std::fs::read(staging_path)?);
         }
 
-        for chunk_meta in &file.chunks {
-            let chunk_id = chunk_meta.id.as_ref().ok_or("chunk missing chunk ID")?;
-            let raw = self.fetch_with_retry(fetcher.as_ref(), chunk_id).await?;
-            let expected_size = chunk_meta.uncompressed_size.ok_or("chunk missing uncompressed_size")?;
-            let checksum = chunk_meta.checksum.ok_or("chunk missing checksum")?;
-            let depot_key = self.depot_key.clone();
-            let processed = tokio::task::spawn_blocking(move || {
-                chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
-            }).await??;
+        if skip_count > 0 {
+            tracing::debug!(
+                "resuming {}: skipping {skip_count}/{} chunks ({staged_offset} bytes staged)",
+                file.filename.as_deref().unwrap_or("?"),
+                file.chunks.len(),
+            );
+        } else {
+            let _ = std::fs::remove_file(staging_path);
+        }
 
-            // Write to staging for crash safety
+        // Build a trimmed file with only remaining chunks, pipeline-download them
+        let remaining = ManifestFile {
+            filename: file.filename.clone(),
+            size: file.size.map(|s| s - staged_offset),
+            flags: file.flags,
+            sha_content: file.sha_content,
+            chunks: file.chunks[skip_count..].to_vec(),
+            link_target: None,
+        };
+
+        let new_data = self.download_file_chunks(&remaining, fetcher, sem).await?;
+
+        // Append to staging for crash safety
+        {
             let mut f = std::fs::OpenOptions::new()
-                .create(true).append(true).open(staging_path)?;
-            f.write_all(&processed)?;
-
-            file_data.extend_from_slice(&processed);
-            self.emit(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
+                .create(true)
+                .append(true)
+                .open(staging_path)?;
+            f.write_all(&new_data)?;
         }
-        Ok(file_data)
+
+        // Assemble: existing staged data + newly downloaded
+        if skip_count > 0 {
+            let mut full = std::fs::read(staging_path)?;
+            full.truncate((staged_offset as usize) + new_data.len());
+            Ok(full)
+        } else {
+            Ok(new_data)
+        }
     }
 }
 
