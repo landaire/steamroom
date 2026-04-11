@@ -70,8 +70,8 @@ impl KvTag {
 }
 
 impl KeyValue {
-    pub fn from_binary(data: &[u8]) -> Result<Self, std::io::Error> {
-        parse_binary_kv(data)
+    pub fn from_binary(data: &[u8]) -> Result<Self, super::kv_binary::BinaryKvError> {
+        super::kv_binary::parse(data)
     }
 
     pub fn from_text(input: &str) -> Result<Self, TextKvError> {

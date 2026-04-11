@@ -35,9 +35,14 @@ impl<'a> ClientMsg<'a> {
         let raw = RawEMsg::with_proto(self.emsg);
         writer.write_all(&raw.0.to_le_bytes())?;
 
-        let header_bytes = self.header.encode_to_vec();
-        writer.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
-        writer.write_all(&header_bytes)?;
+        let header_len = self.header.encoded_len();
+        writer.write_all(&(header_len as u32).to_le_bytes())?;
+        // Write proto header directly to avoid intermediate allocation
+        let mut header_buf = Vec::with_capacity(header_len);
+        self.header
+            .encode(&mut header_buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        writer.write_all(&header_buf)?;
         writer.write_all(self.body)?;
         Ok(())
     }
