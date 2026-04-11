@@ -160,6 +160,37 @@ steamroom-ffi          — C/C++ FFI bindings via Diplomat
 steamroom-proto-extract — Tool to extract protobuf definitions from Steam binaries
 ```
 
+## Benchmarks
+
+Benchmarks compare steamroom against DepotDownloader (C#) using [hyperfine](https://github.com/sharkdp/hyperfine). Run inside the nix dev shell:
+
+```bash
+# Enter dev shell (provides rust, hyperfine, dotnet for DepotDownloader)
+nix develop
+
+# Build steamroom in release mode
+cargo build --release -p steamroom-cli
+
+# Install DepotDownloader
+dotnet tool install -g DepotDownloader
+
+# Run benchmarks (scratch dir on a drive with space)
+./bench/run.sh /mnt/g/tmp/steamroom-bench
+```
+
+### Test Matrix
+
+| Test | What it measures | Data size |
+|------|-----------------|-----------|
+| `info` | Login + PICS query latency | — |
+| `files` | Manifest fetch + parse + filename decrypt | — |
+| `spacewar` | Full download pipeline (small) | ~1.8 MB |
+| `cs2` | Full download pipeline (large, DLL subset) | ~2 GB |
+
+Each download test cleans the output directory before every run to prevent resume from skewing results. Results are saved as JSON in `$SCRATCH/results/`.
+
+See [FEATURES.md](FEATURES.md) for a full feature comparison.
+
 ## License
 
 Licensed under either of:

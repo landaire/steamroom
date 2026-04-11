@@ -25,3 +25,4 @@ examples/python/steam_ffi.dll
 # Fuzz artifacts (corpus seeds are checked in, but build artifacts aren't)
 fuzz/target/
 fuzz/artifacts/
+bench/results/
