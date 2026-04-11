@@ -15,20 +15,20 @@ prost-types = "0.14"
 prost-build = "0.14"
 reqwest = { version = "0.13", features = ["json"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 zstd = "0.13"
 lzma-rs = "0.3"
-aes = "0.8"
-cbc = { version = "0.1", features = ["alloc"] }
-ecb = "0.1"
-rsa = { version = "0.9", features = ["pkcs5"] }
-hmac = "0.12"
-sha1 = "0.10"
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc"] }
+ecb = "0.2"
+rsa = { version = "0.9", features = ["pkcs5", "sha1"] }
+hmac = "0.13"
+sha1 = "0.11"
 crc32fast = "1"
 adler = "1"
-getrandom = "0.2"
-rand = "0.8"
-winnow = "0.6"
+getrandom = "0.4"
+rand = "0.10"
+winnow = "1.0"
 bytes = "1"
 byteorder = "1"
 serde = { version = "1", features = ["derive"] }
@@ -40,15 +40,15 @@ qrcode = "0.14"
 regex = "1"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive", "env"] }
-indicatif = "0.17"
+indicatif = "0.18"
 base64 = "0.22"
 rpassword = "7"
 jiff = "0.2"
 insta = { version = "1", features = ["toml"] }
-object = "0.36"
+object = "0.39"
 protox = "0.9"
 dirs-next = "2"
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 async-channel = "2"
 

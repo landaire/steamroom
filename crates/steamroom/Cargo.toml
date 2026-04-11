@@ -18,6 +18,7 @@ ecb = { workspace = true }
 rsa = { workspace = true }
 hmac = { workspace = true }
 sha1 = { workspace = true }
+sha1_v10 = { package = "sha1", version = "0.10", features = ["oid"] }
 crc32fast = { workspace = true }
 adler = { workspace = true }
 getrandom = { workspace = true }

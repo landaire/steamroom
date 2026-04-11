@@ -1,4 +1,4 @@
-use aes::cipher::{BlockEncryptMut, KeyInit};
+use aes::cipher::{BlockModeEncrypt, KeyInit};
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use crate::crypto;
@@ -34,7 +34,7 @@ impl SessionCipher {
 
         // Derive IV: HMAC-SHA1(key[0..16], header || plaintext)[0..13] || header
         let mut mac =
-            <HmacSha1 as Mac>::new_from_slice(&self.session_key[..16]).expect("valid HMAC key length");
+            HmacSha1::new_from_slice(&self.session_key[..16]).expect("valid HMAC key length");
         mac.update(&header);
         mac.update(plaintext);
         let hmac_result = mac.finalize().into_bytes();
@@ -49,7 +49,7 @@ impl SessionCipher {
         // ECB encrypt the IV
         let enc = Aes256EcbEnc::new_from_slice(&self.session_key).unwrap();
         let mut encrypted_iv = [0u8; 16];
-        enc.encrypt_padded_b2b_mut::<aes::cipher::block_padding::NoPadding>(
+        enc.encrypt_padded_b2b::<aes::cipher::block_padding::NoPadding>(
             &iv,
             &mut encrypted_iv,
         )

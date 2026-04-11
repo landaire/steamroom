@@ -22,7 +22,7 @@ fn cut() -> winnow::error::ErrMode<ContextError> {
     winnow::error::ErrMode::Cut(ContextError::new())
 }
 
-fn kv_node(input: &mut &[u8]) -> PResult<KeyValue> {
+fn kv_node(input: &mut &[u8]) -> ModalResult<KeyValue> {
     let tag_byte = le_u8.parse_next(input)?;
     let tag = KvTag::from_u8(tag_byte).ok_or_else(cut)?;
     let key = cstring(input)?;
@@ -39,7 +39,7 @@ fn kv_node(input: &mut &[u8]) -> PResult<KeyValue> {
     }
 }
 
-fn kv_children(input: &mut &[u8]) -> PResult<BTreeMap<String, KeyValue>> {
+fn kv_children(input: &mut &[u8]) -> ModalResult<BTreeMap<String, KeyValue>> {
     let mut children = BTreeMap::new();
     loop {
         let tag_byte = le_u8.parse_next(input)?;
@@ -61,7 +61,7 @@ fn kv_children(input: &mut &[u8]) -> PResult<BTreeMap<String, KeyValue>> {
     Ok(children)
 }
 
-fn kv_value(tag: KvTag, input: &mut &[u8]) -> PResult<KvValue> {
+fn kv_value(tag: KvTag, input: &mut &[u8]) -> ModalResult<KvValue> {
     match tag {
         KvTag::String | KvTag::WideString => Ok(KvValue::String(cstring(input)?)),
         KvTag::Int32 => Ok(KvValue::Int32(le_i32.parse_next(input)?)),
@@ -74,7 +74,7 @@ fn kv_value(tag: KvTag, input: &mut &[u8]) -> PResult<KvValue> {
     }
 }
 
-fn cstring(input: &mut &[u8]) -> PResult<String> {
+fn cstring(input: &mut &[u8]) -> ModalResult<String> {
     let bytes = take_till(0.., b'\0').parse_next(input)?;
     let _ = le_u8.parse_next(input)?; // null terminator
     String::from_utf8(bytes.to_vec()).map_err(|_| cut())

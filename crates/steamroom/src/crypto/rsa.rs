@@ -1,5 +1,6 @@
 use crate::error::CryptoError;
 use rsa::{BigUint, Oaep, Pkcs1v15Encrypt, RsaPublicKey, pkcs8::DecodePublicKey};
+use rsa::rand_core::OsRng;
 
 // Steam Universe Public RSA key (DER-encoded SubjectPublicKeyInfo).
 // Extracted from steamclient64.dll at 0x1394161d0.
@@ -24,9 +25,9 @@ const STEAM_PUBLIC_KEY_DER: [u8; 160] = [
 pub fn encrypt_with_steam_public_key(data: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let public_key = RsaPublicKey::from_public_key_der(&STEAM_PUBLIC_KEY_DER)
         .map_err(|e| CryptoError::Rsa(rsa::Error::from(rsa::pkcs8::Error::from(e))))?;
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
     public_key
-        .encrypt(&mut rng, Oaep::new::<sha1::Sha1>(), data)
+        .encrypt(&mut rng, Oaep::new::<sha1_v10::Sha1>(), data)
         .map_err(CryptoError::Rsa)
 }
 
@@ -40,7 +41,7 @@ pub fn encrypt_with_rsa_public_key(
     let exponent = BigUint::parse_bytes(exponent_hex.as_bytes(), 16)
         .ok_or(CryptoError::DecryptionFailed)?;
     let public_key = RsaPublicKey::new(modulus, exponent).map_err(CryptoError::Rsa)?;
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
     public_key
         .encrypt(&mut rng, Pkcs1v15Encrypt, data)
         .map_err(CryptoError::Rsa)

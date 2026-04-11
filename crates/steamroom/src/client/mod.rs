@@ -128,7 +128,7 @@ impl SteamClient<Connected> {
 
         // Generate session key
         let mut session_key = [0u8; 32];
-        getrandom::getrandom(&mut session_key).expect("RNG failed");
+        getrandom::fill(&mut session_key).expect("RNG failed");
 
         // The body contains: protocol version (u32) + universe (u32) + optional nonce (16 bytes)
         // We need to encrypt (session_key + nonce) with Steam's RSA public key
