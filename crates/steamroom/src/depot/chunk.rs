@@ -5,6 +5,7 @@ use crate::util::checksum::SteamAdler32;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ChunkCompression {
     VZstd,
+    VZlzma,
     Lzma,
     Zip,
     None,
@@ -16,9 +17,10 @@ impl ChunkCompression {
             return Self::None;
         }
         match &data[..2] {
-            [0x56, 0x5A] => Self::VZstd, // "VZ"
+            [0x56, 0x53] => Self::VZstd,  // "VS" (VSZa header)
+            [0x56, 0x5A] => Self::VZlzma, // "VZ" (VZa header)
             [0x5D, _] => Self::Lzma,
-            [0x50, 0x4B] => Self::Zip, // "PK"
+            [0x50, 0x4B] => Self::Zip,    // "PK"
             _ => Self::None,
         }
     }
@@ -97,17 +99,33 @@ pub fn process_chunk(
 fn decompress(data: &[u8], expected_size: u32) -> Result<Vec<u8>, ChunkError> {
     match ChunkCompression::detect(data) {
         ChunkCompression::VZstd => {
-            // Valve LZMA: "VZ" + LZMA properties(5) + compressed data
-            // The uncompressed size is NOT in the stream — it comes from the manifest
-            // VZ header: "VZ"(2) + 5 bytes VZ-specific + LZMA props(5) + LZMA data
-            if data.len() < 12 {
+            // Valve zstd: "VSZa"(4) + CRC32(4) + zstd_data(N) + CRC32(4) + orig_size(8) + "zsv"(3)
+            const HEADER: usize = 4 + 4;       // "VSZa" + CRC32
+            const FOOTER: usize = 4 + 8 + 3;   // CRC32 + orig_size(u64) + "zsv"
+            if data.len() < HEADER + FOOTER {
                 return Err(ChunkError::TooShort);
             }
+            let compressed = &data[HEADER..data.len() - FOOTER];
+            let output = zstd::bulk::decompress(compressed, expected_size as usize)
+                .map_err(|e| ChunkError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            Ok(output)
+        }
+        ChunkCompression::VZlzma => {
+            // Valve LZMA: "VZa"(3) + CRC32(4) + LZMA_props(5) + LZMA_data(N) + CRC32(4) + orig_size(4) + "zv"(2)
+            const HEADER: usize = 3 + 4;       // "VZa" + CRC32
+            const PROPS: usize = 5;            // LZMA properties
+            const FOOTER: usize = 4 + 4 + 2;   // CRC32 + orig_size(u32) + "zv"
+            if data.len() < HEADER + PROPS + FOOTER {
+                return Err(ChunkError::TooShort);
+            }
+            let props = &data[HEADER..HEADER + PROPS];
+            let lzma_data = &data[HEADER + PROPS..data.len() - FOOTER];
+
             // Build standard LZMA stream: props(5) + uncompressed_size(8 LE) + data
-            let mut lzma_stream = Vec::with_capacity(13 + data.len() - 7);
-            lzma_stream.extend_from_slice(&data[7..12]); // 5 bytes LZMA properties at offset 7
+            let mut lzma_stream = Vec::with_capacity(13 + lzma_data.len());
+            lzma_stream.extend_from_slice(props);
             lzma_stream.extend_from_slice(&(expected_size as u64).to_le_bytes());
-            lzma_stream.extend_from_slice(&data[12..]); // compressed data at offset 12
+            lzma_stream.extend_from_slice(lzma_data);
 
             let mut output = Vec::with_capacity(expected_size as usize);
             lzma_rs::lzma_decompress(&mut std::io::Cursor::new(&lzma_stream), &mut output)
