@@ -449,7 +449,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         }
     });
 
-    let stats = job.download(&manifest, &fetcher).await.map_err(|e| {
+    let stats = job.download(&manifest, std::sync::Arc::new(fetcher)).await.map_err(|e| {
         CliError::Steam(steam::error::Error::Io(
             std::io::Error::new(std::io::ErrorKind::Other, e),
         ))
@@ -846,7 +846,7 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
         }
     });
 
-    let stats = job.download(&manifest, &fetcher).await.map_err(|e| {
+    let stats = job.download(&manifest, std::sync::Arc::new(fetcher)).await.map_err(|e| {
         CliError::Steam(steam::error::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
     })?;
     drop(job);

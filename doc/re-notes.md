@@ -87,6 +87,37 @@ All symmetric encryption in the Steam client uses the same format:
 1. AES-ECB decrypt first 16 bytes → recover IV
 2. AES-CBC decrypt remaining bytes using recovered IV and key, remove PKCS7
 
+## Download Pipeline (CCSInterface / CDepotReconstruct)
+
+Source: `csinterface.cpp`, `depotreconstruct.cpp`
+
+### Architecture
+
+The Steam client uses a multi-stage pipeline:
+
+1. **CCSInterface** — manages HTTP chunk requests to CDN servers
+2. **CDepotReconstruct** — orchestrates the full download: manifest parsing,
+   chunk scheduling, decrypt, decompress, file assembly
+
+### Concurrency Model
+
+From `CCSInterface::YieldingDownloadChunks` (sub_138661a20):
+
+- **Batching**: chunks are submitted in a tight loop, not one at a time
+- **Hard cap**: 1024 (`0x400`) total outstanding requests
+- **Bandwidth-adaptive throttle**: outstanding bytes limited to `bandwidth * 6.0`
+  (6 seconds of buffered data based on measured download rate)
+- **Minimum concurrency**: 2 requests (normal) or 8 (for certain server types)
+- Tracked via `m_unChunkRequestsOutstanding` (offset 0x298) and
+  `m_cubChunksOutstanding` (offset 0x288)
+
+### Thread Pools
+
+- IO thread pool: configurable via `DepotReconstructionNumIOThreads` convar (default "32")
+- Separate decrypt thread pool for CPU-bound AES/decompress work
+- `CWorkItemReadFromChunkStore` for cached chunk reads
+- `CProcessChunkWorkItem` for decrypt + decompress
+
 This format is used for:
 - CM session cipher (netfilter encryption)
 - Depot chunk encryption/decryption

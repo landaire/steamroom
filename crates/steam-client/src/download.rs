@@ -95,10 +95,10 @@ impl DepotJob {
         }
     }
 
-    pub async fn download<F: ChunkFetcher>(
+    pub async fn download<F: ChunkFetcher + 'static>(
         &self,
         manifest: &DepotManifest,
-        fetcher: &F,
+        fetcher: std::sync::Arc<F>,
     ) -> Result<DownloadStats, BoxError> {
         let total_bytes: u64 = manifest.files.iter().filter_map(|f| f.size).sum();
         let mut stats = DownloadStats::default();
@@ -147,7 +147,7 @@ impl DepotJob {
             });
 
             let file_data =
-                self.download_file_chunks(file, fetcher, &sem).await?;
+                self.download_file_chunks(file, &fetcher, &sem).await?;
 
             std::fs::write(&file_path, &file_data)?;
             stats.bytes_downloaded += file_data.len() as u64;
@@ -165,38 +165,101 @@ impl DepotJob {
         Ok(stats)
     }
 
-    async fn download_file_chunks<F: ChunkFetcher>(
+    async fn download_file_chunks<F: ChunkFetcher + 'static>(
+        &self,
+        file: &ManifestFile,
+        fetcher: &std::sync::Arc<F>,
+        sem: &std::sync::Arc<tokio::sync::Semaphore>,
+    ) -> Result<Vec<u8>, BoxError> {
+        if file.chunks.len() <= 1 {
+            return self.download_file_chunks_serial(file, fetcher.as_ref()).await;
+        }
+
+        // Download all chunks in parallel, bounded by semaphore.
+        // Each chunk result is placed in its slot to preserve ordering.
+        let n = file.chunks.len();
+        let results: std::sync::Arc<tokio::sync::Mutex<Vec<Option<Vec<u8>>>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(vec![None; n]));
+        let mut handles = Vec::with_capacity(n);
+
+        for (i, chunk_meta) in file.chunks.iter().enumerate() {
+            let chunk_id = chunk_meta.id.clone().ok_or("chunk missing ID")?;
+            let expected_size = chunk_meta.uncompressed_size.unwrap_or(0);
+            let checksum = chunk_meta.checksum.unwrap_or(0);
+            let depot_key = self.depot_key.clone();
+            let depot_id = self.depot_id;
+            let retry = self.retry.clone();
+            let event_tx = self.event_tx.clone();
+            let sem = sem.clone();
+            let results = results.clone();
+            let fetcher = fetcher.clone();
+
+            let handle = tokio::spawn(async move {
+                let _permit = sem.acquire().await.map_err(|e| -> BoxError { Box::new(e) })?;
+
+                // Fetch with retry
+                let mut delay = retry.initial_delay;
+                let mut raw = Err::<bytes::Bytes, BoxError>("never attempted".into());
+                for attempt in 0..retry.max_attempts {
+                    match fetcher.fetch_chunk(depot_id, &chunk_id).await {
+                        Ok(data) => { raw = Ok(data); break; }
+                        Err(e) if attempt + 1 < retry.max_attempts => {
+                            if let Some(ref tx) = event_tx {
+                                let _ = tx.send(DownloadEvent::ChunkFailed { error: e.to_string() });
+                            }
+                            tokio::time::sleep(delay).await;
+                            delay *= 2;
+                        }
+                        Err(e) => { raw = Err(e); break; }
+                    }
+                }
+                let raw = raw?;
+
+                let processed = chunk::process_chunk(&raw, &depot_key, expected_size, checksum)?;
+
+                if let Some(ref tx) = event_tx {
+                    let _ = tx.send(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
+                }
+
+                results.lock().await[i] = Some(processed);
+                Ok::<(), BoxError>(())
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.await??;
+        }
+
+        // Assemble in order
+        let slots = std::sync::Arc::try_unwrap(results)
+            .map_err(|_| "results arc still shared")?
+            .into_inner();
+        let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
+        for slot in slots {
+            file_data.extend_from_slice(&slot.ok_or("chunk slot empty")?);
+        }
+        Ok(file_data)
+    }
+
+    async fn download_file_chunks_serial<F: ChunkFetcher>(
         &self,
         file: &ManifestFile,
         fetcher: &F,
-        _sem: &std::sync::Arc<tokio::sync::Semaphore>,
     ) -> Result<Vec<u8>, BoxError> {
         let mut file_data = Vec::with_capacity(file.size.unwrap_or(0) as usize);
-
         for chunk_meta in &file.chunks {
-            let chunk_id = chunk_meta
-                .id
-                .as_ref()
-                .ok_or("chunk missing ID")?;
-
-            let raw = self
-                .fetch_with_retry(fetcher, chunk_id)
-                .await?;
-
+            let chunk_id = chunk_meta.id.as_ref().ok_or("chunk missing ID")?;
+            let raw = self.fetch_with_retry(fetcher, chunk_id).await?;
             let processed = chunk::process_chunk(
                 &raw,
                 &self.depot_key,
                 chunk_meta.uncompressed_size.unwrap_or(0),
                 chunk_meta.checksum.unwrap_or(0),
             )?;
-
             file_data.extend_from_slice(&processed);
-
-            self.emit(DownloadEvent::ChunkCompleted {
-                bytes: processed.len() as u64,
-            });
+            self.emit(DownloadEvent::ChunkCompleted { bytes: processed.len() as u64 });
         }
-
         Ok(file_data)
     }
 
