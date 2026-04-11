@@ -71,7 +71,7 @@ async fn replay_parses_as_incoming_msg() {
     let data = transport.recv().await.unwrap();
 
     // Parse as a packet header
-    let parsed = steam::messages::header::parse_packet_header(&data).unwrap();
+    let parsed = steam::messages::header::PacketHeader::parse(&data).unwrap();
     match parsed {
         steam::messages::header::PacketHeader::Protobuf { header, body } => {
             assert_eq!(header.emsg, steam::messages::EMsg::MULTI);

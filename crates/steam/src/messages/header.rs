@@ -47,21 +47,20 @@ pub enum PacketHeader {
     },
 }
 
-pub fn parse_packet_header(data: &[u8]) -> Result<PacketHeader, ParseError> {
-    if data.len() < 4 {
-        return Err(ParseError::UnexpectedEof);
-    }
+impl PacketHeader {
+    pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
+        if data.len() < 4 {
+            return Err(ParseError::UnexpectedEof);
+        }
 
-    let raw = u32::from_le_bytes(data[..4].try_into().unwrap());
-    let raw_emsg = RawEMsg(raw);
+        let raw = u32::from_le_bytes(data[..4].try_into().unwrap());
+        let raw_emsg = RawEMsg(raw);
 
-    if raw_emsg.is_protobuf() {
-        parse_protobuf_header(data, raw_emsg)
-    } else {
-        // Non-protobuf messages: check if it's extended or simple
-        // Extended headers have header_size at byte 4
-        // For now, parse as simple MsgHdr (20 bytes: emsg + target_job + source_job)
-        parse_simple_header(data, raw_emsg)
+        if raw_emsg.is_protobuf() {
+            parse_protobuf_header(data, raw_emsg)
+        } else {
+            parse_simple_header(data, raw_emsg)
+        }
     }
 }
 
@@ -139,7 +138,7 @@ mod tests {
         packet.extend_from_slice(&header_bytes);
         packet.extend_from_slice(body);
 
-        let parsed = parse_packet_header(&packet).unwrap();
+        let parsed = PacketHeader::parse(&packet).unwrap();
         match parsed {
             PacketHeader::Protobuf { header, body: b } => {
                 assert_eq!(header.emsg, EMsg::CLIENT_LOG_ON_RESPONSE);

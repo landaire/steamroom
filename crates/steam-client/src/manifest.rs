@@ -47,7 +47,7 @@ impl ManifestCache {
     }
 }
 
-pub fn extract_and_parse(data: &[u8]) -> Result<DepotManifest, ManifestError> {
+pub fn parse_cdn_manifest(data: &[u8]) -> Result<DepotManifest, ManifestError> {
     // Manifest data may be zip-compressed
     let bytes = if data.len() > 2 && data[0] == 0x50 && data[1] == 0x4B {
         let cursor = std::io::Cursor::new(data);

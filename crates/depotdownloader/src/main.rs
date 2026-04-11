@@ -74,9 +74,9 @@ async fn connect_and_login(
     auth: &AuthOptions,
 ) -> Result<SteamClient<LoggedIn>, CliError> {
     info!("discovering CM servers...");
-    let servers = connection::fetch_cm_servers().await.unwrap_or_else(|_| {
+    let servers = connection::CmServer::fetch().await.unwrap_or_else(|_| {
         warn!("failed to fetch CM servers, using defaults");
-        connection::default_cm_servers()
+        connection::CmServer::defaults()
     });
 
     // Try TCP first if available, fall back to WebSocket

@@ -23,17 +23,23 @@ pub enum Protocol {
     WebSocket,
 }
 
-pub static DEFAULT_CM_SERVERS: &[&str] = &[
+static DEFAULT_CM_ADDRS: &[&str] = &[
     "162.254.193.102:27017",
     "162.254.195.66:27017",
     "205.196.6.148:27017",
 ];
 
-pub fn default_cm_servers() -> Vec<CmServer> {
-    DEFAULT_CM_SERVERS
-        .iter()
-        .filter_map(|entry| parse_cm_entry(entry, Protocol::Tcp))
-        .collect()
+impl CmServer {
+    pub fn defaults() -> Vec<Self> {
+        DEFAULT_CM_ADDRS
+            .iter()
+            .filter_map(|entry| parse_cm_entry(entry, Protocol::Tcp))
+            .collect()
+    }
+
+    pub async fn fetch() -> Result<Vec<Self>, Error> {
+        fetch_cm_servers().await
+    }
 }
 
 #[derive(Deserialize)]
@@ -79,7 +85,7 @@ pub async fn fetch_cm_servers() -> Result<Vec<CmServer>, Error> {
     });
 
     if servers.is_empty() {
-        return Ok(default_cm_servers());
+        return Ok(CmServer::defaults());
     }
 
     Ok(servers)

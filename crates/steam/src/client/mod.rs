@@ -112,7 +112,7 @@ impl SteamClient<Connected> {
         // Wait for ChannelEncryptRequest
         let data = self.inner.transport.recv().await?;
         debug!("received {} bytes", data.len());
-        let parsed = header::parse_packet_header(&data)?;
+        let parsed = header::PacketHeader::parse(&data)?;
         let (emsg, body) = match parsed {
             PacketHeader::Simple { header, body } => (header.emsg, body),
             _ => return Err(ConnectionError::EncryptionFailed.into()),
@@ -162,7 +162,7 @@ impl SteamClient<Connected> {
 
         // Wait for ChannelEncryptResult
         let data = self.inner.transport.recv().await?;
-        let parsed = header::parse_packet_header(&data)?;
+        let parsed = header::PacketHeader::parse(&data)?;
         let (emsg, body) = match parsed {
             PacketHeader::Simple { header, body } => (header.emsg, body),
             _ => return Err(ConnectionError::EncryptionFailed.into()),
@@ -793,7 +793,7 @@ impl SteamClient<LoggedIn> {
 }
 
 fn parse_incoming(data: &[u8]) -> Result<IncomingMsg, Error> {
-    let parsed = header::parse_packet_header(data)?;
+    let parsed = header::PacketHeader::parse(data)?;
     match parsed {
         PacketHeader::Protobuf { header: h, body } => {
             let proto_header = h.decode_header().unwrap_or_default();

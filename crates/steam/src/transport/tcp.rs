@@ -42,7 +42,7 @@ impl TcpTransport {
 impl Transport for TcpTransport {
     fn send(&self, payload: &[u8]) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>> {
         let payload_len = payload.len();
-        let frame = framing::frame_bytes(payload);
+        let frame = framing::Frame::encode(payload);
         Box::pin(async move {
             tracing::debug!("tcp send: {} bytes payload, {} bytes frame", payload_len, frame.len());
             let mut writer = self.writer.lock().await;

@@ -47,9 +47,9 @@ pub fn list_depot_files(
 
 async fn ws_connect(
 ) -> Result<steam::client::SteamClient<steam::client::Encrypted>, steam::error::Error> {
-    let servers = steam::connection::fetch_cm_servers()
+    let servers = steam::connection::CmServer::fetch()
         .await
-        .unwrap_or_else(|_| steam::connection::default_cm_servers());
+        .unwrap_or_else(|_| steam::connection::CmServer::defaults());
     let ws = servers
         .iter()
         .find(|s| s.protocol == steam::connection::Protocol::WebSocket)

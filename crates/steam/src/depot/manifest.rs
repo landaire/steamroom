@@ -49,7 +49,7 @@ impl DepotManifest {
                 Err(_) => break,
             };
 
-            let magic = match match_magic(magic_val) {
+            let magic = match ManifestMagic::from_u32(magic_val) {
                 Ok(m) => m,
                 Err(_) => {
                     // Unknown section — try to skip, break on EOF
@@ -202,17 +202,16 @@ impl DepotManifest {
     }
 }
 
-fn match_magic(val: u32) -> Result<ManifestMagic, ManifestError> {
-    match val {
-        // V5 format
-        0x1B81_B817 => Ok(ManifestMagic::PayloadV5),
-        0x1F4D_B10B => Ok(ManifestMagic::Metadata),
-        0x1B81_B813 => Ok(ManifestMagic::Signature),
-        0xD64B_F064 => Ok(ManifestMagic::EndOfManifest),
-        // V4 format (different magic values, same section roles)
-        0x71F6_17D0 => Ok(ManifestMagic::V4),
-        0x1F48_12BE => Ok(ManifestMagic::Metadata),
-        // V4 signature — treat as signature
-        _ => Err(ManifestError::InvalidMagic(val)),
+impl ManifestMagic {
+    fn from_u32(val: u32) -> Result<Self, ManifestError> {
+        match val {
+            0x1B81_B817 => Ok(Self::PayloadV5),
+            0x1F4D_B10B => Ok(Self::Metadata),
+            0x1B81_B813 => Ok(Self::Signature),
+            0xD64B_F064 => Ok(Self::EndOfManifest),
+            0x71F6_17D0 => Ok(Self::V4),
+            0x1F48_12BE => Ok(Self::Metadata), // V4 metadata
+            _ => Err(ManifestError::InvalidMagic(val)),
+        }
     }
 }
