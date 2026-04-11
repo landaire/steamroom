@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::pin::Pin;
 use bytes::Bytes;
-use tokio::sync::Mutex;
+use futures_util::lock::Mutex;
 use crate::error::{ConnectionError, Error};
 use super::Transport;
 use super::capture::CaptureFile;

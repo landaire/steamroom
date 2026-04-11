@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tokio::sync::Mutex;
+use futures_util::lock::Mutex;
 use crate::error::Error;
 use super::Transport;
 use super::capture::{CaptureFile, CapturedPacket};

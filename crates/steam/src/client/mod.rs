@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use bytes::Bytes;
 use prost::Message;
-use tokio::sync::{mpsc, Mutex};
+use futures_util::lock::Mutex;
 use tracing::{debug, trace};
 use crate::apps::{AccessToken, AppInfo, BetaBranch};
 use crate::auth::{AuthSession, AuthTokens, GuardType, QrAuthSession};
@@ -63,8 +63,8 @@ impl ServiceResponse {
 impl SteamClient<Disconnected> {
     pub async fn connect<T: Transport>(
         transport: T,
-    ) -> Result<(SteamClient<Connected>, mpsc::UnboundedReceiver<IncomingMsg>), Error> {
-        let (_tx, rx) = mpsc::unbounded_channel();
+    ) -> Result<(SteamClient<Connected>, async_channel::Receiver<IncomingMsg>), Error> {
+        let (_tx, rx) = async_channel::unbounded();
         let inner = Arc::new(ClientInner {
             transport: Box::new(transport),
             cipher: Mutex::new(None),
@@ -86,8 +86,8 @@ impl SteamClient<Disconnected> {
     /// Messages are sent/received as plaintext over the WebSocket.
     pub async fn connect_ws<T: Transport>(
         transport: T,
-    ) -> Result<(SteamClient<Encrypted>, mpsc::UnboundedReceiver<IncomingMsg>), Error> {
-        let (_tx, rx) = mpsc::unbounded_channel();
+    ) -> Result<(SteamClient<Encrypted>, async_channel::Receiver<IncomingMsg>), Error> {
+        let (_tx, rx) = async_channel::unbounded();
         let inner = Arc::new(ClientInner {
             transport: Box::new(transport),
             cipher: Mutex::new(None),
@@ -212,12 +212,7 @@ impl SteamClient<Encrypted> {
     }
 
     async fn recv_raw(&self) -> Result<IncomingMsg, Error> {
-        let raw = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            self.inner.transport.recv(),
-        )
-        .await
-        .map_err(|_| ConnectionError::Disconnected)??;
+        let raw = self.inner.transport.recv().await?;
 
         let cipher_guard = self.inner.cipher.lock().await;
         let data = if let Some(cipher) = cipher_guard.as_ref() {
