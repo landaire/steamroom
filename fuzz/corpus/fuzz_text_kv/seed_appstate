@@ -1,0 +1,17 @@
+"AppState"
+{
+    "appid"     "480"
+    "name"      "Spacewar"
+    "Universe"  "1"
+    "installdir"    "Spacewar"
+    "depots"
+    {
+        "481"
+        {
+            "manifests"
+            {
+                "public"    "3183503801510301321"
+            }
+        }
+    }
+}

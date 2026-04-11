@@ -1,0 +1,47 @@
+[package]
+name = "steamroom-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+steamroom = { path = "../crates/steam", features = ["__private_fuzzing"] }
+
+[[bin]]
+name = "fuzz_binary_kv"
+path = "fuzz_targets/binary_kv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_text_kv"
+path = "fuzz_targets/text_kv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_packet_header"
+path = "fuzz_targets/packet_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
