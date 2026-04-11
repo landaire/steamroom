@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::mpsc;
-use steam::cdn::CdnClient;
-use steam::cdn::server::CdnServer;
-use steam::depot::chunk::{self, ChunkError};
-use steam::depot::manifest::{DepotManifest, ManifestFile};
-use steam::depot::{ChunkId, DepotId, DepotKey};
-use steam::enums::DepotFileFlags;
+use steamroom::cdn::CdnClient;
+use steamroom::cdn::server::CdnServer;
+use steamroom::depot::chunk::{self, ChunkError};
+use steamroom::depot::manifest::{DepotManifest, ManifestFile};
+use steamroom::depot::{ChunkId, DepotId, DepotKey};
+use steamroom::enums::DepotFileFlags;
 use crate::event::DownloadEvent;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -420,7 +420,7 @@ fn file_matches(path: &Path, expected_size: u64, sha_content: Option<&[u8; 20]>)
     }
     if let Some(expected_sha) = sha_content {
         if let Ok(data) = std::fs::read(path) {
-            let actual = steam::util::checksum::Sha1Hash::compute(&data);
+            let actual = steamroom::util::checksum::Sha1Hash::compute(&data);
             return actual.0 == *expected_sha;
         }
         return false;

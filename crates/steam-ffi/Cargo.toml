@@ -1,5 +1,5 @@
 [package]
-name = "steam-ffi"
+name = "steamroom-ffi"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -8,8 +8,8 @@ license = "MIT OR Apache-2.0"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-steam = { workspace = true }
-steam-client = { workspace = true }
+steamroom = { workspace = true }
+steamroom-client = { workspace = true }
 tokio = { workspace = true }
 diplomat = "0.15"
 diplomat-runtime = "0.15"

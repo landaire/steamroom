@@ -8,17 +8,17 @@ use prost::Message;
 use tracing::{debug, info, warn};
 use cli::*;
 use errors::CliError;
-use steam::apps::AccessToken;
-use steam::cdn::CdnClient;
-use steam::client::{SteamClient, LoggedIn, PROTOCOL_VERSION};
-use steam::client::msg::ClientMsg;
-use steam::connection;
-use steam::depot::*;
-use steam::depot::chunk;
-use steam::depot::manifest::DepotManifest;
-use steam::messages::EMsg;
-use steam::transport::websocket::WebSocketTransport;
-use steam::types::key_value::{self, KeyValue, KvValue};
+use steamroom::apps::AccessToken;
+use steamroom::cdn::CdnClient;
+use steamroom::client::{SteamClient, LoggedIn, PROTOCOL_VERSION};
+use steamroom::client::msg::ClientMsg;
+use steamroom::connection;
+use steamroom::depot::*;
+use steamroom::depot::chunk;
+use steamroom::depot::manifest::DepotManifest;
+use steamroom::messages::EMsg;
+use steamroom::transport::websocket::WebSocketTransport;
+use steamroom::types::key_value::{self, KeyValue, KvValue};
 
 fn main() -> Result<(), CliError> {
     let cli = if std::env::var("DD_COMPAT").as_deref() == Ok("1") {
@@ -30,7 +30,7 @@ fn main() -> Result<(), CliError> {
         "debug"
     } else if cfg!(debug_assertions) {
         // Debug builds: show debug for our crates, warn for deps
-        "warn,steamroom=debug,steam=debug,steam_client=debug,steam_ffi=debug"
+        "warn,steamroom=debug,steamroom_client=debug,steamroom_ffi=debug,steamroom_cli=debug"
     } else {
         "warn"
     };
@@ -87,7 +87,7 @@ async fn connect_and_login(
 
     let client = if let Some(server) = tcp_server {
         info!("connecting via TCP to {:?}", server.addr);
-        let transport = steam::transport::tcp::TcpTransport::connect(server).await?;
+        let transport = steamroom::transport::tcp::TcpTransport::connect(server).await?;
         let (client, _rx) = SteamClient::connect(transport).await?;
         info!("encrypting...");
         client.encrypt().await?
@@ -128,10 +128,10 @@ async fn connect_and_login(
                 };
                 match authenticate_credentials(&client, username, &password, auth.device_name.as_deref()).await {
                     Ok(t) => { tokens = Some(t); break; }
-                    Err(CliError::Steam(steam::error::Error::Connection(
-                        steam::error::ConnectionError::LogonFailed(steam::enums::EResultError::InvalidPassword),
-                    ))) => { last_err = Some(CliError::Steam(steam::error::Error::Connection(
-                        steam::error::ConnectionError::LogonFailed(steam::enums::EResultError::InvalidPassword),
+                    Err(CliError::Steam(steamroom::error::Error::Connection(
+                        steamroom::error::ConnectionError::LogonFailed(steamroom::enums::EResultError::InvalidPassword),
+                    ))) => { last_err = Some(CliError::Steam(steamroom::error::Error::Connection(
+                        steamroom::error::ConnectionError::LogonFailed(steamroom::enums::EResultError::InvalidPassword),
                     ))); continue; }
                     Err(e) => return Err(e),
                 }
@@ -184,22 +184,22 @@ fn save_token(username: &str, refresh_token: &str) {
 }
 
 async fn authenticate_credentials(
-    client: &SteamClient<steam::client::Encrypted>,
+    client: &SteamClient<steamroom::client::Encrypted>,
     username: &str,
     password: &str,
     device_name: Option<&str>,
-) -> Result<steam::auth::AuthTokens, CliError> {
+) -> Result<steamroom::auth::AuthTokens, CliError> {
     info!("getting RSA public key for {username}...");
     let rsa = client.get_password_rsa_public_key(username).await?;
     let modulus = rsa.publickey_mod.ok_or(CliError::Steam(
-        steam::error::Error::Connection(steam::error::ConnectionError::EncryptionFailed),
+        steamroom::error::Error::Connection(steamroom::error::ConnectionError::EncryptionFailed),
     ))?;
     let exponent = rsa.publickey_exp.ok_or(CliError::Steam(
-        steam::error::Error::Connection(steam::error::ConnectionError::EncryptionFailed),
+        steamroom::error::Error::Connection(steamroom::error::ConnectionError::EncryptionFailed),
     ))?;
     let timestamp = rsa.timestamp.unwrap_or(0);
 
-    let encrypted_password = steam::crypto::rsa::encrypt_with_rsa_public_key(
+    let encrypted_password = steamroom::crypto::rsa::encrypt_with_rsa_public_key(
         password.as_bytes(),
         &modulus,
         &exponent,
@@ -210,7 +210,7 @@ async fn authenticate_credentials(
     );
 
     info!("beginning auth session...");
-    let req = steam::generated::CAuthenticationBeginAuthSessionViaCredentialsRequest {
+    let req = steamroom::generated::CAuthenticationBeginAuthSessionViaCredentialsRequest {
         account_name: Some(username.to_string()),
         encrypted_password: Some(encoded_password),
         encryption_timestamp: Some(timestamp),
@@ -224,10 +224,10 @@ async fn authenticate_credentials(
     // Handle 2FA if required
     for guard in &session.allowed_confirmations {
         match guard {
-            steam::auth::GuardType::DeviceCode | steam::auth::GuardType::EmailCode => {
+            steamroom::auth::GuardType::DeviceCode | steamroom::auth::GuardType::EmailCode => {
                 let prompt = match guard {
-                    steam::auth::GuardType::DeviceCode => "Steam Guard code (from authenticator app): ",
-                    steam::auth::GuardType::EmailCode => "Steam Guard code (from email): ",
+                    steamroom::auth::GuardType::DeviceCode => "Steam Guard code (from authenticator app): ",
+                    steamroom::auth::GuardType::EmailCode => "Steam Guard code (from email): ",
                     _ => unreachable!(),
                 };
                 let code = rpassword::prompt_password(prompt).unwrap_or_default();
@@ -238,7 +238,7 @@ async fn authenticate_credentials(
                 }
                 break;
             }
-            steam::auth::GuardType::DeviceConfirmation => {
+            steamroom::auth::GuardType::DeviceConfirmation => {
                 info!("confirm login on your Steam mobile app...");
                 break;
             }
@@ -260,10 +260,10 @@ async fn authenticate_credentials(
 }
 
 async fn authenticate_qr(
-    client: &SteamClient<steam::client::Encrypted>,
-) -> Result<steam::auth::AuthTokens, CliError> {
+    client: &SteamClient<steamroom::client::Encrypted>,
+) -> Result<steamroom::auth::AuthTokens, CliError> {
     info!("generating QR code...");
-    let req = steam::generated::CAuthenticationBeginAuthSessionViaQrRequest {
+    let req = steamroom::generated::CAuthenticationBeginAuthSessionViaQrRequest {
         device_friendly_name: Some("steamroom".to_string()),
         ..Default::default()
     };
@@ -272,7 +272,7 @@ async fn authenticate_qr(
     if let Some(ref url) = session.challenge_url {
         // Print QR code to terminal
         let qr = qrcode::QrCode::new(url.as_bytes()).map_err(|e| {
-            CliError::Steam(steam::error::Error::Io(std::io::Error::new(
+            CliError::Steam(steamroom::error::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 e,
             )))
@@ -297,8 +297,8 @@ async fn authenticate_qr(
     }
 }
 
-fn build_token_logon(username: &str, token: &str) -> (steam::generated::CMsgClientLogon, u64) {
-    let logon = steam::generated::CMsgClientLogon {
+fn build_token_logon(username: &str, token: &str) -> (steamroom::generated::CMsgClientLogon, u64) {
+    let logon = steamroom::generated::CMsgClientLogon {
         protocol_version: Some(PROTOCOL_VERSION),
         cell_id: Some(0),
         client_os_type: Some(20),
@@ -306,18 +306,18 @@ fn build_token_logon(username: &str, token: &str) -> (steam::generated::CMsgClie
         access_token: Some(token.to_string()),
         ..Default::default()
     };
-    let steam_id = steam::types::SteamId::from_parts(1, 1, 1, 0);
+    let steam_id = steamroom::types::SteamId::from_parts(1, 1, 1, 0);
     (logon, steam_id.raw())
 }
 
-fn build_anon_logon() -> (steam::generated::CMsgClientLogon, u64) {
-    let logon = steam::generated::CMsgClientLogon {
+fn build_anon_logon() -> (steamroom::generated::CMsgClientLogon, u64) {
+    let logon = steamroom::generated::CMsgClientLogon {
         protocol_version: Some(PROTOCOL_VERSION),
         cell_id: Some(0),
         client_os_type: Some(20),
         ..Default::default()
     };
-    let steam_id = steam::types::SteamId::from_parts(1, 10, 0, 0);
+    let steam_id = steamroom::types::SteamId::from_parts(1, 10, 0, 0);
     (logon, steam_id.raw())
 }
 
@@ -390,8 +390,8 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
 
     // Download manifest (with cache)
     let cdn = CdnClient::new().map_err(CliError::Steam)?;
-    let manifest_cache = steam_client::manifest::ManifestCache::new(
-        steam_client::manifest::ManifestCache::default_path(),
+    let manifest_cache = steamroom_client::manifest::ManifestCache::new(
+        steamroom_client::manifest::ManifestCache::default_path(),
     );
 
     let manifest_bytes = if let Some(cached) = manifest_cache.load(depot_id, manifest_id) {
@@ -435,13 +435,13 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     // Set up download orchestration
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let fetcher = steam_client::download::CdnChunkFetcher {
+    let fetcher = steamroom_client::download::CdnChunkFetcher {
         cdn,
         server: cdn_server.clone(),
         cdn_auth_token: None,
     };
 
-    let mut builder = steam_client::download::DepotJob::builder()
+    let mut builder = steamroom_client::download::DepotJob::builder()
         .depot_id(depot_id)
         .depot_key(depot_key)
         .install_dir(output_dir.clone())
@@ -455,12 +455,12 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     if let Some(ref filelist_path) = args.filelist {
         let content = std::fs::read_to_string(filelist_path)?;
         let files: Vec<String> = content.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
-        builder = builder.file_filter(steam_client::download::FileFilter::FileList(files));
+        builder = builder.file_filter(steamroom_client::download::FileFilter::FileList(files));
     } else if let Some(ref pattern) = args.file_regex {
-        builder = builder.file_filter(steam_client::download::FileFilter::Regex(regex::Regex::new(pattern)?));
+        builder = builder.file_filter(steamroom_client::download::FileFilter::Regex(regex::Regex::new(pattern)?));
     }
 
-    let job = builder.build().map_err(|e| CliError::Steam(steam::error::Error::Io(
+    let job = builder.build().map_err(|e| CliError::Steam(steamroom::error::Error::Io(
         std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
     )))?;
 
@@ -477,7 +477,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
         let mut completed: u64 = 0;
         while let Some(event) = event_rx.recv().await {
             match event {
-                steam_client::event::DownloadEvent::FileCompleted { filename } => {
+                steamroom_client::event::DownloadEvent::FileCompleted { filename } => {
                     let pct = if total_bytes > 0 {
                         completed as f64 / total_bytes as f64 * 100.0
                     } else {
@@ -485,10 +485,10 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
                     };
                     info!("[{pct:.1}%] {filename}");
                 }
-                steam_client::event::DownloadEvent::ChunkCompleted { bytes } => {
+                steamroom_client::event::DownloadEvent::ChunkCompleted { bytes } => {
                     completed += bytes;
                 }
-                steam_client::event::DownloadEvent::ChunkFailed { error } => {
+                steamroom_client::event::DownloadEvent::ChunkFailed { error } => {
                     warn!("chunk failed (retrying): {error}");
                 }
                 _ => {}
@@ -497,7 +497,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     });
 
     let stats = job.download(&manifest, std::sync::Arc::new(fetcher)).await.map_err(|e| {
-        CliError::Steam(steam::error::Error::Io(
+        CliError::Steam(steamroom::error::Error::Io(
             std::io::Error::new(std::io::ErrorKind::Other, e),
         ))
     })?;
@@ -506,7 +506,7 @@ async fn run_download(args: DownloadArgs, auth: &AuthOptions) -> Result<(), CliE
     let _ = progress_handle.await;
 
     // Save installed manifest for future delta downloads
-    let mut depot_config = steam_client::depot_config::DepotConfig::load(&output_dir);
+    let mut depot_config = steamroom_client::depot_config::DepotConfig::load(&output_dir);
     depot_config.set_installed(depot_id, manifest_id);
     let _ = depot_config.save(&output_dir);
 
@@ -780,7 +780,7 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
         let name = file.filename.as_deref().unwrap_or("(encrypted)");
         let size = file.size.unwrap_or(0);
         let flags = file.flags.unwrap_or(0);
-        let is_dir = steam::enums::DepotFileFlags(flags).is_directory();
+        let is_dir = steamroom::enums::DepotFileFlags(flags).is_directory();
         if args.format == Some(OutputFormat::Plain) {
             println!("{name}");
         } else if is_dir {
@@ -819,7 +819,7 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
     let client = connect_and_login(auth).await?;
 
     info!("fetching workshop item {} details...", args.item);
-    let req = steam::generated::CPublishedFileGetDetailsRequest {
+    let req = steamroom::generated::CPublishedFileGetDetailsRequest {
         publishedfileids: vec![args.item],
         includechildren: Some(true),
         ..Default::default()
@@ -827,7 +827,7 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
     let resp = client
         .call_service_method("PublishedFile.GetDetails#1", &prost::Message::encode_to_vec(&req))
         .await?;
-    let details: steam::generated::CPublishedFileGetDetailsResponse = resp.decode()?;
+    let details: steamroom::generated::CPublishedFileGetDetailsResponse = resp.decode()?;
 
     let item = details
         .publishedfiledetails
@@ -879,18 +879,18 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
     std::fs::create_dir_all(&output_dir)?;
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let fetcher = steam_client::download::CdnChunkFetcher {
+    let fetcher = steamroom_client::download::CdnChunkFetcher {
         cdn,
         server: cdn_server.clone(),
         cdn_auth_token: None,
     };
-    let job = steam_client::download::DepotJob::builder()
+    let job = steamroom_client::download::DepotJob::builder()
         .depot_id(depot_id)
         .depot_key(depot_key)
         .install_dir(output_dir.clone())
         .event_sender(event_tx)
         .build()
-        .map_err(|e| CliError::Steam(steam::error::Error::Io(
+        .map_err(|e| CliError::Steam(steamroom::error::Error::Io(
             std::io::Error::new(std::io::ErrorKind::Other, e),
         )))?;
 
@@ -901,18 +901,18 @@ async fn run_workshop(args: WorkshopArgs, auth: &AuthOptions) -> Result<(), CliE
         let mut completed: u64 = 0;
         while let Some(event) = event_rx.recv().await {
             match event {
-                steam_client::event::DownloadEvent::FileCompleted { filename } => {
+                steamroom_client::event::DownloadEvent::FileCompleted { filename } => {
                     let pct = if total_bytes > 0 { completed as f64 / total_bytes as f64 * 100.0 } else { 0.0 };
                     info!("[{pct:.1}%] {filename}");
                 }
-                steam_client::event::DownloadEvent::ChunkCompleted { bytes } => { completed += bytes; }
+                steamroom_client::event::DownloadEvent::ChunkCompleted { bytes } => { completed += bytes; }
                 _ => {}
             }
         }
     });
 
     let stats = job.download(&manifest, std::sync::Arc::new(fetcher)).await.map_err(|e| {
-        CliError::Steam(steam::error::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
+        CliError::Steam(steamroom::error::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
     })?;
     drop(job);
     let _ = progress_handle.await;

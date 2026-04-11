@@ -1758,16 +1758,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proto-extract"
-version = "0.1.0"
-dependencies = [
- "clap",
- "object",
- "prost",
- "prost-types",
-]
-
-[[package]]
 name = "protox"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2452,7 +2442,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "steam"
+name = "steamroom"
 version = "0.1.0"
 dependencies = [
  "adler",
@@ -2491,39 +2481,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "steam-client"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "dirs-next",
- "insta",
- "prost",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "steam",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "zip",
-]
-
-[[package]]
-name = "steam-ffi"
-version = "0.1.0"
-dependencies = [
- "diplomat",
- "diplomat-runtime",
- "prost",
- "steam",
- "steam-client",
- "tokio",
- "zip",
-]
-
-[[package]]
-name = "steamroom"
+name = "steamroom-cli"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -2537,13 +2495,55 @@ dependencies = [
  "reqwest",
  "rpassword",
  "serde_json",
- "steam",
- "steam-client",
+ "steamroom",
+ "steamroom-client",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "zip",
+]
+
+[[package]]
+name = "steamroom-client"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "dirs-next",
+ "insta",
+ "prost",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "steamroom",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zip",
+]
+
+[[package]]
+name = "steamroom-ffi"
+version = "0.1.0"
+dependencies = [
+ "diplomat",
+ "diplomat-runtime",
+ "prost",
+ "steamroom",
+ "steamroom-client",
+ "tokio",
+ "zip",
+]
+
+[[package]]
+name = "steamroom-proto-extract"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "object",
+ "prost",
+ "prost-types",
 ]
 
 [[package]]

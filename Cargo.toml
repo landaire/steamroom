@@ -51,5 +51,5 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 async-channel = "2"
 
-steam = { path = "crates/steam" }
-steam-client = { path = "crates/steam-client" }
+steamroom = { path = "crates/steam" }
+steamroom-client = { path = "crates/steam-client" }

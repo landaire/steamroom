@@ -1,4 +1,4 @@
-use steam_client::event::DownloadEvent;
+use steamroom_client::event::DownloadEvent;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use steam::depot::{DepotId, ManifestId};
+use steamroom::depot::{DepotId, ManifestId};
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct DepotConfig {

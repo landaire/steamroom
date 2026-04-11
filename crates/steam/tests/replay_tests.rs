@@ -1,6 +1,6 @@
-use steam::transport::capture::{CaptureFile, CapturedPacket};
-use steam::transport::replay::ReplayTransport;
-use steam::transport::Transport;
+use steamroom::transport::capture::{CaptureFile, CapturedPacket};
+use steamroom::transport::replay::ReplayTransport;
+use steamroom::transport::Transport;
 
 fn make_echo_capture() -> CaptureFile {
     // Simulated capture: a Multi message containing a service method response
@@ -71,10 +71,10 @@ async fn replay_parses_as_incoming_msg() {
     let data = transport.recv().await.unwrap();
 
     // Parse as a packet header
-    let parsed = steam::messages::header::PacketHeader::parse(&data).unwrap();
+    let parsed = steamroom::messages::header::PacketHeader::parse(&data).unwrap();
     match parsed {
-        steam::messages::header::PacketHeader::Protobuf { header, body } => {
-            assert_eq!(header.emsg, steam::messages::EMsg::MULTI);
+        steamroom::messages::header::PacketHeader::Protobuf { header, body } => {
+            assert_eq!(header.emsg, steamroom::messages::EMsg::MULTI);
             assert!(header.is_protobuf);
             assert!(body.is_empty());
         }

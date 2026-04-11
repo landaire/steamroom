@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use steam::depot::CellId;
+use steamroom::depot::CellId;
 
 #[derive(Parser, Debug)]
 #[command(name = "steamroom", about = "Steam depot downloader")]

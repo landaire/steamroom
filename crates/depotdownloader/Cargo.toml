@@ -1,16 +1,16 @@
 [package]
-name = "steamroom"
+name = "steamroom-cli"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [[bin]]
-name = "steamroom"
+name = "steamroom-cli"
 path = "src/main.rs"
 
 [dependencies]
-steam = { workspace = true }
-steam-client = { workspace = true }
+steamroom = { workspace = true }
+steamroom-client = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }

@@ -1,22 +1,22 @@
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
     #[error(transparent)]
-    Steam(#[from] steam::error::Error),
+    Steam(#[from] steamroom::error::Error),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
-    Crypto(#[from] steam::error::CryptoError),
+    Crypto(#[from] steamroom::error::CryptoError),
 
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
 
     #[error(transparent)]
-    Manifest(#[from] steam::error::ManifestError),
+    Manifest(#[from] steamroom::error::ManifestError),
 
     #[error(transparent)]
-    Chunk(#[from] steam::depot::chunk::ChunkError),
+    Chunk(#[from] steamroom::depot::chunk::ChunkError),
 
     #[error(transparent)]
     Protobuf(#[from] prost::DecodeError),
@@ -31,7 +31,7 @@ pub enum CliError {
     Http(#[from] reqwest::Error),
 
     #[error(transparent)]
-    Kv(#[from] steam::types::key_value::TextKvError),
+    Kv(#[from] steamroom::types::key_value::TextKvError),
 
     #[error("no CM servers available")]
     NoCmServers,
