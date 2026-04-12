@@ -96,6 +96,7 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
         Command::Info(args) => run_info(args, &cli.auth).await,
         Command::Manifests(args) => run_manifests(args, &cli.auth).await,
         Command::Files(args) => run_files(args, &cli.auth).await,
+        Command::Diff(args) => run_diff(args, &cli.auth).await,
         Command::Download(args) => run_download(args, &cli.auth, show_progress).await,
         Command::Workshop(args) => run_workshop(args, &cli.auth, show_progress).await,
     }
@@ -1242,6 +1243,184 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
             .to_string();
         println!("{table}");
     }
+
+    Ok(())
+}
+
+async fn fetch_manifest(
+    client: &SteamClient<LoggedIn>,
+    app_id: AppId,
+    depot_id: DepotId,
+    manifest_id: ManifestId,
+    branch: Option<&str>,
+) -> Result<DepotManifest, CliError> {
+    let depot_key = client.get_depot_decryption_key(depot_id, app_id).await?;
+    let request_code = client
+        .get_manifest_request_code(app_id, depot_id, manifest_id, branch, None)
+        .await?
+        .unwrap_or(0);
+
+    let cdn_servers = client.get_cdn_servers(CellId(0), Some(5)).await?;
+    let cdn_server = cdn_servers.first().ok_or(CliError::NoCdnServers)?;
+    let cdn = CdnClient::new().map_err(CliError::Steam)?;
+    let manifest_data = cdn
+        .download_manifest(cdn_server, depot_id, manifest_id, request_code, None)
+        .await?;
+    let manifest_bytes = decompress_manifest(&manifest_data)?;
+    let mut manifest = DepotManifest::parse(&manifest_bytes)?;
+    if manifest.filenames_encrypted {
+        let _ = manifest.decrypt_filenames(&depot_key);
+    }
+    Ok(manifest)
+}
+
+async fn run_diff(args: DiffArgs, auth: &AuthOptions) -> Result<(), CliError> {
+    let app_id = AppId(args.app);
+    let depot_id = DepotId(args.depot);
+    let from_id = ManifestId(args.from);
+    let to_id = ManifestId(args.to);
+    let branch = args.branch.as_deref();
+
+    let client = connect_and_login(auth).await?;
+
+    info!("fetching old manifest {from_id}...");
+    let old = fetch_manifest(&client, app_id, depot_id, from_id, branch).await?;
+    info!("fetching new manifest {to_id}...");
+    let new = fetch_manifest(&client, app_id, depot_id, to_id, branch).await?;
+
+    // Build lookup maps: filename -> (size, sha)
+    let old_files: std::collections::HashMap<&str, &steamroom::depot::manifest::ManifestFile> =
+        old.files.iter().map(|f| (f.filename.as_str(), f)).collect();
+    let new_files: std::collections::HashMap<&str, &steamroom::depot::manifest::ManifestFile> =
+        new.files.iter().map(|f| (f.filename.as_str(), f)).collect();
+
+    let mut added: Vec<&steamroom::depot::manifest::ManifestFile> = Vec::new();
+    let mut removed: Vec<&steamroom::depot::manifest::ManifestFile> = Vec::new();
+    let mut changed: Vec<(
+        &steamroom::depot::manifest::ManifestFile,
+        &steamroom::depot::manifest::ManifestFile,
+    )> = Vec::new();
+
+    for (name, new_file) in &new_files {
+        match old_files.get(name) {
+            None => added.push(new_file),
+            Some(old_file) => {
+                if old_file.sha_content != new_file.sha_content || old_file.size != new_file.size {
+                    changed.push((old_file, new_file));
+                }
+            }
+        }
+    }
+    for (name, old_file) in &old_files {
+        if !new_files.contains_key(name) {
+            removed.push(old_file);
+        }
+    }
+
+    added.sort_by_key(|f| &f.filename);
+    removed.sort_by_key(|f| &f.filename);
+    changed.sort_by_key(|(_, f)| &f.filename);
+
+    if args.format == Some(OutputFormat::Json) {
+        let json = serde_json::json!({
+            "from": args.from,
+            "to": args.to,
+            "added": added.iter().map(|f| serde_json::json!({"filename": &f.filename, "size": f.size})).collect::<Vec<_>>(),
+            "removed": removed.iter().map(|f| serde_json::json!({"filename": &f.filename, "size": f.size})).collect::<Vec<_>>(),
+            "changed": changed.iter().map(|(old, new)| serde_json::json!({"filename": &new.filename, "old_size": old.size, "new_size": new.size})).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&json)?);
+        return Ok(());
+    }
+
+    let old_epoch = old.creation_time.unwrap_or(0) as u64;
+    let new_epoch = new.creation_time.unwrap_or(0) as u64;
+    let span = if new_epoch > old_epoch {
+        let secs = new_epoch - old_epoch;
+        let dur = jiff::SignedDuration::from_secs(secs as i64);
+        let hours = dur.as_hours();
+        let days = hours / 24;
+        if days >= 365 {
+            let years = days / 365;
+            let months = (days % 365) / 30;
+            if months > 0 {
+                format!("{years}y {months}mo")
+            } else {
+                format!("{years}y")
+            }
+        } else if days >= 30 {
+            let months = days / 30;
+            let rem = days % 30;
+            if rem > 0 {
+                format!("{months}mo {rem}d")
+            } else {
+                format!("{months}mo")
+            }
+        } else if days > 0 {
+            format!("{days}d")
+        } else {
+            format!("{hours}h")
+        }
+    } else {
+        String::new()
+    };
+
+    println!("Depot:  {depot_id}");
+    println!("From:   {from_id} ({})", fmt_timestamp(old_epoch));
+    println!("To:     {to_id} ({})", fmt_timestamp(new_epoch));
+    if !span.is_empty() {
+        println!("Delta:  {span} apart");
+    }
+    println!();
+
+    if added.is_empty() && removed.is_empty() && changed.is_empty() {
+        println!("No differences.");
+        return Ok(());
+    }
+
+    let mut rows: Vec<[String; 3]> = Vec::new();
+
+    for f in &added {
+        rows.push([format!("+ {}", f.filename), fmt_size(f.size), String::new()]);
+    }
+    for f in &removed {
+        rows.push([format!("- {}", f.filename), fmt_size(f.size), String::new()]);
+    }
+    for (old, new) in &changed {
+        let size_diff = new.size as i64 - old.size as i64;
+        let diff_str = if size_diff > 0 {
+            format!("+{}", fmt_size(size_diff as u64))
+        } else if size_diff < 0 {
+            format!("-{}", fmt_size((-size_diff) as u64))
+        } else {
+            "content".to_string()
+        };
+        rows.push([format!("~ {}", new.filename), fmt_size(new.size), diff_str]);
+    }
+
+    let mut builder = TableBuilder::new();
+    builder.push_record(["FILE", "SIZE", "DELTA"]);
+    for r in &rows {
+        builder.push_record(r);
+    }
+    let table = builder
+        .build()
+        .with(Style::blank())
+        .with(tabled::settings::Padding::new(0, 2, 0, 0))
+        .with(
+            tabled::settings::Modify::new(tabled::settings::object::Columns::new(1..))
+                .with(tabled::settings::Alignment::right()),
+        )
+        .to_string();
+    println!("{table}");
+
+    println!();
+    println!(
+        "{} added, {} removed, {} changed",
+        added.len(),
+        removed.len(),
+        changed.len()
+    );
 
     Ok(())
 }

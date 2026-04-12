@@ -166,6 +166,8 @@ pub enum Command {
     Info(InfoArgs),
     /// List depot manifest IDs for a branch
     Manifests(ManifestsArgs),
+    /// Compare two manifests and show added, removed, and changed files
+    Diff(DiffArgs),
     /// Download a Steam Workshop item
     Workshop(WorkshopArgs),
 }
@@ -308,6 +310,28 @@ pub struct WorkshopArgs {
     /// Output directory
     #[arg(long, short)]
     pub output: Option<std::path::PathBuf>,
+}
+
+#[derive(Parser, Debug)]
+pub struct DiffArgs {
+    /// Steam app ID
+    #[arg(long)]
+    pub app: u32,
+    /// Depot ID
+    #[arg(long)]
+    pub depot: u32,
+    /// Old manifest ID
+    #[arg(long)]
+    pub from: u64,
+    /// New manifest ID
+    #[arg(long)]
+    pub to: u64,
+    /// Branch (used for manifest request codes)
+    #[arg(long)]
+    pub branch: Option<String>,
+    /// Output format
+    #[arg(long, value_enum)]
+    pub format: Option<OutputFormat>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
