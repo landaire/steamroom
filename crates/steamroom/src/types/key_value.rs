@@ -155,7 +155,7 @@ fn read_binary_kv_node(cursor: &mut Cursor<&[u8]>) -> Result<KeyValue, std::io::
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("unexpected tag in value position: {tag:?}"),
-                ))
+                ));
             }
         };
         Ok(KeyValue { key, value })

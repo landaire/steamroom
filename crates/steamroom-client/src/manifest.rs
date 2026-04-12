@@ -1,7 +1,7 @@
 use std::path::PathBuf;
-use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::DepotId;
 use steamroom::depot::ManifestId;
+use steamroom::depot::manifest::DepotManifest;
 use steamroom::error::ManifestError;
 
 pub struct ManifestCache {

@@ -139,10 +139,10 @@ impl DepotManifest {
                     }
                 }
                 ManifestMagic::Metadata => {
-                    if metadata.is_none() {
-                        if let Ok(m) = ContentManifestMetadata::decode(section_data) {
-                            metadata = Some(m);
-                        }
+                    if metadata.is_none()
+                        && let Ok(m) = ContentManifestMetadata::decode(section_data)
+                    {
+                        metadata = Some(m);
                     }
                 }
                 ManifestMagic::Signature => {

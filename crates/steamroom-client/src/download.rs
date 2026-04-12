@@ -6,14 +6,14 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
-use steamroom::cdn::pool::CdnServerPool;
 use steamroom::cdn::CdnClient;
-use steamroom::depot::chunk;
-use steamroom::depot::manifest::DepotManifest;
-use steamroom::depot::manifest::ManifestFile;
+use steamroom::cdn::pool::CdnServerPool;
 use steamroom::depot::ChunkId;
 use steamroom::depot::DepotId;
 use steamroom::depot::DepotKey;
+use steamroom::depot::chunk;
+use steamroom::depot::manifest::DepotManifest;
+use steamroom::depot::manifest::ManifestFile;
 use steamroom::enums::DepotFileFlags;
 use steamroom::error::Error as SteamError;
 use tokio::sync::mpsc;
@@ -690,15 +690,13 @@ fn retry_delay_for_error(err: &BoxError, default: Duration) -> Duration {
         status,
         retry_after,
     }) = err.downcast_ref::<SteamError>()
+        && (*status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || *status == reqwest::StatusCode::SERVICE_UNAVAILABLE)
     {
-        if *status == reqwest::StatusCode::TOO_MANY_REQUESTS
-            || *status == reqwest::StatusCode::SERVICE_UNAVAILABLE
-        {
-            if let Some(secs) = retry_after {
-                return Duration::from_secs((*secs).min(60));
-            }
-            return default.max(Duration::from_secs(5));
+        if let Some(secs) = retry_after {
+            return Duration::from_secs((*secs).min(60));
         }
+        return default.max(Duration::from_secs(5));
     }
     default
 }

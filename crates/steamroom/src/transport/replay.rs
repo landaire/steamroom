@@ -1,5 +1,5 @@
-use super::capture::CaptureFile;
 use super::Transport;
+use super::capture::CaptureFile;
 use crate::error::ConnectionError;
 use crate::error::Error;
 use bytes::Bytes;

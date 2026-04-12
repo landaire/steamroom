@@ -1,5 +1,3 @@
-use prost_types::field_descriptor_proto::Label;
-use prost_types::field_descriptor_proto::Type;
 use prost_types::DescriptorProto;
 use prost_types::EnumDescriptorProto;
 use prost_types::FieldDescriptorProto;
@@ -7,6 +5,8 @@ use prost_types::FileDescriptorProto;
 use prost_types::MethodDescriptorProto;
 use prost_types::OneofDescriptorProto;
 use prost_types::ServiceDescriptorProto;
+use prost_types::field_descriptor_proto::Label;
+use prost_types::field_descriptor_proto::Type;
 use std::fmt::Write;
 
 pub fn render_proto(desc: &FileDescriptorProto) -> String {
@@ -122,10 +122,10 @@ fn render_message(out: &mut String, msg: &DescriptorProto, depth: usize) {
     let oneof_fields: Vec<Vec<&FieldDescriptorProto>> = {
         let mut groups: Vec<Vec<&FieldDescriptorProto>> = vec![Vec::new(); msg.oneof_decl.len()];
         for field in &msg.field {
-            if let Some(idx) = field.oneof_index {
-                if let Some(group) = groups.get_mut(idx as usize) {
-                    group.push(field);
-                }
+            if let Some(idx) = field.oneof_index
+                && let Some(group) = groups.get_mut(idx as usize)
+            {
+                group.push(field);
             }
         }
         groups

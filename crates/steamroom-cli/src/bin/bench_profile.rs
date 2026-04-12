@@ -21,8 +21,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use steamroom::crypto;
-use steamroom::depot::chunk;
 use steamroom::depot::DepotKey;
+use steamroom::depot::chunk;
 use steamroom::types::key_value::KeyValue;
 use steamroom::util::checksum::Sha1Hash;
 use steamroom::util::checksum::SteamAdler32;

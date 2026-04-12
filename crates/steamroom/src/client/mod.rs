@@ -29,11 +29,11 @@ use crate::messages::RawEMsg;
 use crate::transport::Transport;
 use bytes::Bytes;
 use prost::Message;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::sync::OnceLock;
 use tracing::debug;
 use tracing::trace;
 
@@ -457,14 +457,14 @@ impl SteamClient<Encrypted> {
             )
             .await?;
         let r: generated::CAuthenticationPollAuthSessionStatusResponse = resp.decode()?;
-        if let (Some(access), Some(refresh)) = (r.access_token.as_ref(), r.refresh_token.as_ref()) {
-            if !access.is_empty() {
-                return Ok(Some(AuthTokens {
-                    access_token: access.clone(),
-                    refresh_token: refresh.clone(),
-                    account_name: r.account_name,
-                }));
-            }
+        if let (Some(access), Some(refresh)) = (r.access_token.as_ref(), r.refresh_token.as_ref())
+            && !access.is_empty()
+        {
+            return Ok(Some(AuthTokens {
+                access_token: access.clone(),
+                refresh_token: refresh.clone(),
+                account_name: r.account_name,
+            }));
         }
         Ok(None)
     }

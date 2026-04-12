@@ -1,7 +1,7 @@
 use super::Transport;
-use crate::connection::framing;
 use crate::connection::CmServer;
 use crate::connection::CmServerAddr;
+use crate::connection::framing;
 use crate::error::ConnectionError;
 use crate::error::Error;
 use bytes::Bytes;

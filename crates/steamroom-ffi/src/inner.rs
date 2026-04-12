@@ -45,8 +45,8 @@ pub fn list_depot_files(
         .map_err(|e| e.to_string())
 }
 
-async fn ws_connect(
-) -> Result<steamroom::client::SteamClient<steamroom::client::Encrypted>, steamroom::error::Error> {
+async fn ws_connect()
+-> Result<steamroom::client::SteamClient<steamroom::client::Encrypted>, steamroom::error::Error> {
     let servers = steamroom::connection::CmServer::fetch()
         .await
         .unwrap_or_else(|_| steamroom::connection::CmServer::defaults());
@@ -90,8 +90,8 @@ async fn do_login(
     Ok(logged_in)
 }
 
-async fn do_connect_anon(
-) -> Result<steamroom::client::SteamClient<steamroom::client::LoggedIn>, steamroom::error::Error> {
+async fn do_connect_anon()
+-> Result<steamroom::client::SteamClient<steamroom::client::LoggedIn>, steamroom::error::Error> {
     let client = ws_connect().await?;
     let logon = steamroom::generated::CMsgClientLogon {
         protocol_version: Some(steamroom::client::PROTOCOL_VERSION),

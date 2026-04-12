@@ -1,7 +1,7 @@
+use steamroom::transport::Transport;
 use steamroom::transport::capture::CaptureFile;
 use steamroom::transport::capture::CapturedPacket;
 use steamroom::transport::replay::ReplayTransport;
-use steamroom::transport::Transport;
 
 fn make_echo_capture() -> CaptureFile {
     // Simulated capture: a Multi message containing a service method response

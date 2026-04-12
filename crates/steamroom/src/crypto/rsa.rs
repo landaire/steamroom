@@ -1,10 +1,10 @@
 use crate::error::CryptoError;
-use rsa::pkcs8::DecodePublicKey;
-use rsa::rand_core::OsRng;
 use rsa::BigUint;
 use rsa::Oaep;
 use rsa::Pkcs1v15Encrypt;
 use rsa::RsaPublicKey;
+use rsa::pkcs8::DecodePublicKey;
+use rsa::rand_core::OsRng;
 
 // Steam Universe Public RSA key (DER-encoded SubjectPublicKeyInfo).
 // Extracted from steamclient64.dll at 0x1394161d0.

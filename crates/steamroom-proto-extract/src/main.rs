@@ -77,9 +77,9 @@ struct SectionInfo {
 fn extract_descriptors(
     pe_data: &[u8],
 ) -> Result<Vec<prost_types::FileDescriptorProto>, Box<dyn std::error::Error>> {
-    use object::read::pe::PeFile64;
     use object::Object;
     use object::ObjectSection;
+    use object::read::pe::PeFile64;
 
     let pe = PeFile64::parse(pe_data)?;
     let _image_base = pe.relative_address_base();
@@ -118,11 +118,11 @@ fn extract_descriptors(
         let sec_data = &sec.data;
         let mut offset = 0;
         while offset < sec_data.len().saturating_sub(4) {
-            if sec_data[offset] == 0x0a {
-                if let Some(name) = check_proto_name(sec_data, offset) {
-                    let va = sec.virtual_address + offset as u64;
-                    candidates.push((va, name));
-                }
+            if sec_data[offset] == 0x0a
+                && let Some(name) = check_proto_name(sec_data, offset)
+            {
+                let va = sec.virtual_address + offset as u64;
+                candidates.push((va, name));
             }
             offset += 1;
         }
@@ -174,23 +174,25 @@ fn extract_descriptors(
         let desc = desc.or_else(|| {
             for try_len in [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] {
                 let end = try_len.min(remaining.len());
-                if let Ok(d) = prost_types::FileDescriptorProto::decode(&remaining[..end]) {
-                    if d.name.as_deref() == Some(name.as_str()) && has_content(&d) {
-                        // Verify: re-encode length should be <= our window
-                        if d.encoded_len() <= end {
-                            return Some(d);
-                        }
+                if let Ok(d) = prost_types::FileDescriptorProto::decode(&remaining[..end])
+                    && d.name.as_deref() == Some(name.as_str())
+                    && has_content(&d)
+                {
+                    // Verify: re-encode length should be <= our window
+                    if d.encoded_len() <= end {
+                        return Some(d);
                     }
                 }
             }
             None
         });
 
-        if let Some(desc) = desc {
-            if desc.name.as_deref() == Some(name.as_str()) && has_content(&desc) {
-                seen_names.insert(name.clone());
-                descriptors.push(desc);
-            }
+        if let Some(desc) = desc
+            && desc.name.as_deref() == Some(name.as_str())
+            && has_content(&desc)
+        {
+            seen_names.insert(name.clone());
+            descriptors.push(desc);
         }
     }
 

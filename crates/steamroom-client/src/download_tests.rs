@@ -6,12 +6,12 @@ use crate::event::DownloadEvent;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
-use steamroom::depot::manifest::DepotManifest;
-use steamroom::depot::manifest::ManifestChunk;
-use steamroom::depot::manifest::ManifestFile;
 use steamroom::depot::ChunkId;
 use steamroom::depot::DepotId;
 use steamroom::depot::DepotKey;
+use steamroom::depot::manifest::DepotManifest;
+use steamroom::depot::manifest::ManifestChunk;
+use steamroom::depot::manifest::ManifestFile;
 use steamroom::util::checksum::SteamAdler32;
 
 // ---------------------------------------------------------------------------
