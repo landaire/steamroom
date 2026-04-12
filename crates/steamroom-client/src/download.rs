@@ -555,6 +555,12 @@ impl DepotJob {
                 &file.filename,
                 file.chunks.len(),
             );
+            // Truncate to the last complete chunk boundary to discard any
+            // partially-written data from the interrupted chunk.
+            if existing_bytes > staged_offset {
+                let f = std::fs::OpenOptions::new().write(true).open(staging_path)?;
+                f.set_len(staged_offset)?;
+            }
         } else {
             let _ = std::fs::remove_file(staging_path);
         }

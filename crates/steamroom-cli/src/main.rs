@@ -451,12 +451,31 @@ async fn run_download(
     let cdn_server = &cdn_servers[0];
     let cdn_pool = steamroom::cdn::CdnServerPool::new(cdn_servers.clone());
 
-    // Get manifest request code
+    // Get manifest request code (optional — old manifests may not have one)
     info!("getting manifest request code...");
-    let request_code = client
+    let request_code = match client
         .get_manifest_request_code(app_id, depot_id, manifest_id, Some(branch), None)
-        .await?
-        .unwrap_or(0);
+        .await
+    {
+        Ok(Some(code)) => code,
+        Ok(None) => 0,
+        Err(e) => {
+            debug!("manifest request code failed ({e}), trying without");
+            0
+        }
+    };
+
+    // Get CDN auth token (needed for authenticated depots / old manifests)
+    let cdn_auth_token = match client
+        .get_cdn_auth_token(app_id, depot_id, &cdn_server.host)
+        .await
+    {
+        Ok(t) => t.token,
+        Err(e) => {
+            debug!("CDN auth token request failed ({e}), continuing without");
+            None
+        }
+    };
 
     // Download manifest (with cache)
     let cdn = CdnClient::new().map_err(CliError::Steam)?;
@@ -471,7 +490,13 @@ async fn run_download(
     } else {
         info!("downloading manifest...");
         let manifest_data = cdn
-            .download_manifest(cdn_server, depot_id, manifest_id, request_code, None)
+            .download_manifest(
+                cdn_server,
+                depot_id,
+                manifest_id,
+                request_code,
+                cdn_auth_token.as_deref(),
+            )
             .await?;
         let decompressed = decompress_manifest(&manifest_data)?;
         let _ = manifest_cache.save(depot_id, manifest_id, &decompressed);
@@ -540,7 +565,7 @@ async fn run_download(
     // Set up download orchestration
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let fetcher = steamroom_client::download::CdnChunkFetcher::new(cdn, cdn_pool, None);
+    let fetcher = steamroom_client::download::CdnChunkFetcher::new(cdn, cdn_pool, cdn_auth_token);
 
     let mut builder = steamroom_client::download::DepotJob::builder()
         .depot_id(depot_id)

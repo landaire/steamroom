@@ -199,14 +199,18 @@ impl DepotManifest {
                     })
                     .collect();
 
-                ManifestFile {
+                let mut file = ManifestFile {
                     filename: m.filename.unwrap_or_default(),
                     size: m.size.unwrap_or(0),
                     flags: m.flags.unwrap_or(0),
                     sha_content,
                     chunks,
                     link_target: m.linktarget,
-                }
+                };
+                // Chunks in the protobuf may not be in offset order.
+                // Sort by offset so the download pipeline can assemble them sequentially.
+                file.chunks.sort_by_key(|c| c.offset.unwrap_or(0));
+                file
             })
             .collect();
 

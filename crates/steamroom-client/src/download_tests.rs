@@ -14,10 +14,6 @@ use steamroom::depot::manifest::ManifestChunk;
 use steamroom::depot::manifest::ManifestFile;
 use steamroom::util::checksum::SteamAdler32;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 struct NullFetcher;
 
 impl ChunkFetcher for NullFetcher {
@@ -70,10 +66,6 @@ fn file_with_chunks(name: &str, chunks: Vec<ManifestChunk>) -> ManifestFile {
     f.chunks = chunks;
     f
 }
-
-// ---------------------------------------------------------------------------
-// FileFilter tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn filter_none_matches_everything() {
@@ -129,10 +121,6 @@ fn filelist_empty_gives_no_matches() {
     let f = FileFilter::from_filelist(&[]).unwrap();
     assert!(!f.matches("anything"));
 }
-
-// ---------------------------------------------------------------------------
-// Download pipeline: actual chunk fetch + decrypt
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn download_single_file_with_one_chunk() {
@@ -303,10 +291,6 @@ async fn download_emits_progress_events() {
     assert!(saw_chunk, "missing ChunkCompleted event");
     assert!(saw_completed, "missing FileCompleted event");
 }
-
-// ---------------------------------------------------------------------------
-// Delta removal tests (from original file)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn delta_removes_files_not_in_new_manifest() {
@@ -495,4 +479,133 @@ async fn delta_handles_nested_paths() {
     assert_eq!(stats.files_removed, 1);
     assert!(!nested.join("old.dll").exists());
     assert!(nested.join("keep.dll").exists());
+}
+
+#[tokio::test]
+async fn resume_truncates_partial_chunk_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+
+    let chunk_a_plain = b"AAAAAAAAAAAAAAAA";
+    let chunk_b_plain = b"BBBBBBBBBBBBBBBB";
+    let combined = [&chunk_a_plain[..], &chunk_b_plain[..]].concat();
+
+    let id_a = ChunkId([0xA0; 20]);
+    let id_b = ChunkId([0xB0; 20]);
+
+    let mut chunks = HashMap::new();
+    chunks.insert(
+        id_a.clone(),
+        Bytes::from(encrypt_chunk(chunk_a_plain, &key)),
+    );
+    chunks.insert(
+        id_b.clone(),
+        Bytes::from(encrypt_chunk(chunk_b_plain, &key)),
+    );
+
+    let chunk_a = ManifestChunk::new(
+        id_a,
+        SteamAdler32::compute(chunk_a_plain).0,
+        chunk_a_plain.len() as u32,
+    );
+    let chunk_b = ManifestChunk::new(
+        id_b,
+        SteamAdler32::compute(chunk_b_plain).0,
+        chunk_b_plain.len() as u32,
+    );
+    let manifest = DepotManifest::new(vec![file_with_chunks("resume.bin", vec![chunk_a, chunk_b])]);
+
+    // Simulate an interrupted download: chunk A fully written + 5 garbage bytes
+    // from a partially-written chunk B
+    let staging_dir = install.join(".depotdownloader").join("staging");
+    std::fs::create_dir_all(&staging_dir).unwrap();
+    let staging_path = staging_dir.join("resume.bin");
+    {
+        let mut f = std::fs::File::create(&staging_path).unwrap();
+        use std::io::Write;
+        f.write_all(chunk_a_plain).unwrap();
+        f.write_all(b"XXXXX").unwrap(); // partial garbage
+    }
+    assert_eq!(
+        std::fs::metadata(&staging_path).unwrap().len(),
+        chunk_a_plain.len() as u64 + 5
+    );
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .build()
+        .unwrap();
+
+    let stats = job
+        .download(&manifest, Arc::new(MockFetcher { chunks }))
+        .await
+        .unwrap();
+
+    assert_eq!(stats.files_completed, 1);
+    let result = std::fs::read(install.join("resume.bin")).unwrap();
+    assert_eq!(
+        result, combined,
+        "file should be chunk_a + chunk_b with no garbage"
+    );
+}
+
+#[tokio::test]
+async fn resume_skips_fully_staged_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+
+    let chunk_a_plain = b"AAAAAAAAAAAAAAAA";
+    let chunk_b_plain = b"BBBBBBBBBBBBBBBB";
+    let combined = [&chunk_a_plain[..], &chunk_b_plain[..]].concat();
+
+    let id_a = ChunkId([0xA0; 20]);
+    let id_b = ChunkId([0xB0; 20]);
+
+    // Only chunk B in the mock — chunk A should be skipped via resume
+    let mut chunks = HashMap::new();
+    chunks.insert(
+        id_b.clone(),
+        Bytes::from(encrypt_chunk(chunk_b_plain, &key)),
+    );
+
+    let chunk_a = ManifestChunk::new(
+        id_a,
+        SteamAdler32::compute(chunk_a_plain).0,
+        chunk_a_plain.len() as u32,
+    );
+    let chunk_b = ManifestChunk::new(
+        id_b,
+        SteamAdler32::compute(chunk_b_plain).0,
+        chunk_b_plain.len() as u32,
+    );
+    let manifest = DepotManifest::new(vec![file_with_chunks(
+        "resume2.bin",
+        vec![chunk_a, chunk_b],
+    )]);
+
+    // Pre-stage chunk A exactly (no partial data)
+    let staging_dir = install.join(".depotdownloader").join("staging");
+    std::fs::create_dir_all(&staging_dir).unwrap();
+    let staging_path = staging_dir.join("resume2.bin");
+    std::fs::write(&staging_path, chunk_a_plain).unwrap();
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .build()
+        .unwrap();
+
+    let stats = job
+        .download(&manifest, Arc::new(MockFetcher { chunks }))
+        .await
+        .unwrap();
+
+    assert_eq!(stats.files_completed, 1);
+    let result = std::fs::read(install.join("resume2.bin")).unwrap();
+    assert_eq!(result, combined);
 }
