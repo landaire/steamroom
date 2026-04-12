@@ -136,7 +136,7 @@ async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, 
             info!("using saved refresh token for {username}");
             build_token_logon(username, &token)
         } else if auth.qr {
-            let tokens = authenticate_qr(&client).await?;
+            let tokens = authenticate_qr(&client, auth.device_name.as_deref()).await?;
             save_token(
                 tokens.account_name.as_deref().unwrap_or(username),
                 &tokens.refresh_token,
@@ -327,10 +327,11 @@ async fn authenticate_credentials(
 
 async fn authenticate_qr(
     client: &SteamClient<steamroom::client::Encrypted>,
+    device_name: Option<&str>,
 ) -> Result<steamroom::auth::AuthTokens, CliError> {
     info!("generating QR code...");
     let req = steamroom::generated::CAuthenticationBeginAuthSessionViaQrRequest {
-        device_friendly_name: Some("steamroom".to_string()),
+        device_friendly_name: Some(device_name.unwrap_or("steamroom").to_string()),
         ..Default::default()
     };
     let session = client.begin_auth_session_via_qr(req).await?;

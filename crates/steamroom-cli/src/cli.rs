@@ -86,6 +86,8 @@ pub struct CompatCli {
     pub cell_id: Option<u32>,
     #[arg(long)]
     pub debug: bool,
+    #[arg(long = "device-name", env = "DD_DEVICE_NAME")]
+    pub device_name: Option<String>,
 }
 
 impl CompatCli {
@@ -119,7 +121,7 @@ impl CompatCli {
                 password: self.password,
                 qr: self.qr,
                 remember_password: self.remember_password,
-                device_name: None,
+                device_name: self.device_name,
             },
             debug: self.debug,
             raw_errors: false,
