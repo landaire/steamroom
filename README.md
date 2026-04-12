@@ -193,10 +193,10 @@ Tokens are saved automatically after successful login and reused on subsequent r
 
 ## Legacy Compatibility
 
-Set `DD_COMPAT=1` to use flat arguments compatible with the original DepotDownloader:
+Set `DD_COMPAT=1` to use single-dash arguments compatible with the original DepotDownloader:
 
 ```bash
-DD_COMPAT=1 steamroom --app 480 --depot 481 --dir output/ --verify
+DD_COMPAT=1 steamroom -app 480 -depot 481 -dir output/ -validate
 ```
 
 ## Features

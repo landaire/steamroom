@@ -42,22 +42,25 @@ pub struct Cli {
 
 /// Legacy flat-argument CLI compatible with the original DepotDownloader.
 /// Activated with DD_COMPAT=1 environment variable.
+///
+/// DepotDownloader uses single-dash flags (`-app`, `-depot`, etc.).
+/// The arg preprocessor in main() converts these to double-dash before parsing.
 #[derive(Parser, Debug)]
-#[command(name = "steamroom")]
+#[command(name = "steamroom", about = "Steam depot downloader (DD_COMPAT mode)")]
 pub struct CompatCli {
-    #[arg(long = "app", short = 'a')]
+    #[arg(long = "app")]
     pub app_id: Option<u32>,
-    #[arg(long = "depot", short = 'd')]
+    #[arg(long = "depot")]
     pub depot_id: Option<u32>,
-    #[arg(long = "manifest", short = 'm')]
+    #[arg(long = "manifest")]
     pub manifest_id: Option<u64>,
-    #[arg(long = "username", short = 'u')]
+    #[arg(long = "username")]
     pub username: Option<String>,
-    #[arg(long = "password", short = 'p')]
+    #[arg(long = "password")]
     pub password: Option<String>,
     #[arg(long = "dir")]
     pub output: Option<std::path::PathBuf>,
-    #[arg(long = "branch", short = 'b')]
+    #[arg(long = "branch")]
     pub branch: Option<String>,
     #[arg(long = "betapassword")]
     pub beta_password: Option<String>,
@@ -69,7 +72,7 @@ pub struct CompatCli {
     pub filelist: Option<std::path::PathBuf>,
     #[arg(long = "regex")]
     pub file_regex: Option<String>,
-    #[arg(long)]
+    #[arg(long = "validate")]
     pub verify: bool,
     #[arg(long)]
     pub os: Option<String>,
@@ -79,8 +82,10 @@ pub struct CompatCli {
     pub language: Option<String>,
     #[arg(long = "max-downloads")]
     pub max_downloads: Option<usize>,
-    #[arg(long = "cell-id")]
+    #[arg(long = "cellid")]
     pub cell_id: Option<u32>,
+    #[arg(long)]
+    pub debug: bool,
 }
 
 impl CompatCli {
@@ -116,7 +121,7 @@ impl CompatCli {
                 remember_password: self.remember_password,
                 device_name: None,
             },
-            debug: false,
+            debug: self.debug,
             raw_errors: false,
             cell_id: self.cell_id,
             capture: None,

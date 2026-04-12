@@ -30,7 +30,25 @@ use tracing::warn;
 
 fn main() {
     let cli = if std::env::var("DD_COMPAT").as_deref() == Ok("1") {
-        cli::CompatCli::parse().into_cli()
+        // DepotDownloader uses single-dash flags (-app, -depot, etc.).
+        // Clap expects double-dash, so convert before parsing.
+        let args: Vec<String> = std::env::args()
+            .map(|a| {
+                if let Some(rest) = a.strip_prefix('-') {
+                    if !rest.starts_with('-')
+                        && rest.contains(|c: char| c.is_ascii_alphabetic())
+                        && rest.len() > 1
+                    {
+                        format!("--{rest}")
+                    } else {
+                        a
+                    }
+                } else {
+                    a
+                }
+            })
+            .collect();
+        cli::CompatCli::parse_from(args).into_cli()
     } else {
         Cli::parse()
     };
