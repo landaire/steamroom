@@ -113,6 +113,7 @@ impl CompatCli {
                 max_downloads: self.max_downloads,
                 branch: self.branch,
                 branch_password: self.beta_password,
+                non_atomic: false,
                 save_manifests: false,
                 capture: None,
                 bytes: false,
@@ -233,6 +234,9 @@ pub struct DownloadArgs {
     /// Password for beta branch access
     #[arg(long)]
     pub branch_password: Option<String>,
+    /// Write chunks directly to target files instead of staging + rename
+    #[arg(long)]
+    pub non_atomic: bool,
     /// Save raw and decompressed manifests alongside downloaded files
     #[arg(long)]
     pub save_manifests: bool,

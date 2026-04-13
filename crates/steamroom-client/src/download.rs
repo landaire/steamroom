@@ -226,6 +226,7 @@ pub struct DepotJob {
     install_dir: PathBuf,
     max_downloads: usize,
     verify: bool,
+    non_atomic: bool,
     file_filter: FileFilter,
     retry: RetryConfig,
     event_tx: Option<mpsc::UnboundedSender<DownloadEvent>>,
@@ -320,31 +321,21 @@ impl DepotJob {
                 filename: filename.to_string(),
             });
 
-            // Download to staging, then move to final path
-            let staging_dir = self.install_dir.join(".depotdownloader").join("staging");
-            std::fs::create_dir_all(&staging_dir)?;
-            let staging_path = staging_dir.join(filename.replace(['/', '\\'], "_"));
+            let file_size = if self.non_atomic {
+                self.download_file_streaming(file, &file_path, &fetcher, &sem)
+                    .await?
+            } else {
+                let staging_dir = self.install_dir.join(".depotdownloader").join("staging");
+                std::fs::create_dir_all(&staging_dir)?;
+                let staging_path = staging_dir.join(filename.replace(['/', '\\'], "_"));
 
-            let file_size = self
-                .download_file_chunks_with_resume(file, &fetcher, &sem, &staging_path)
-                .await?;
+                let size = self
+                    .download_file_streaming(file, &staging_path, &fetcher, &sem)
+                    .await?;
 
-            // Move staging file into place. On Windows, rename fails if the
-            // target exists and is read-only, so remove it first.
-            if file_path.exists() {
-                // Clear read-only attribute on Windows before removing
-                #[cfg(windows)]
-                {
-                    let mut perms = std::fs::metadata(&file_path)?.permissions();
-                    #[allow(clippy::permissions_set_readonly_false)]
-                    if perms.readonly() {
-                        perms.set_readonly(false);
-                        let _ = std::fs::set_permissions(&file_path, perms);
-                    }
-                }
-                std::fs::remove_file(&file_path)?;
-            }
-            std::fs::rename(&staging_path, &file_path)?;
+                replace_file(&staging_path, &file_path)?;
+                size
+            };
             stats.bytes_downloaded += file_size;
             stats.files_completed += 1;
 
@@ -387,37 +378,63 @@ impl DepotJob {
         Ok(stats)
     }
 
-    /// Pipelined chunk download: network fetch and decrypt/decompress overlap.
+    /// Streaming chunk download with delta reuse.
     ///
-    /// Stage 1 (async IO, bounded by semaphore): fetch raw bytes from CDN
-    /// Stage 2 (blocking thread pool): decrypt + decompress + checksum verify
+    /// For each chunk, check if the existing file already has correct data at
+    /// that offset (Adler-32 match). Reusable chunks are copied from the existing
+    /// file; changed chunks are fetched from CDN, decrypted, and decompressed.
+    /// Chunks are written to the output file in order as they complete.
     ///
-    /// Fetchers push raw bytes into a bounded channel. A processor task drains
-    /// the channel and dispatches each chunk to spawn_blocking. Results land in
-    /// ordered slots. The bounded channel provides backpressure: if the CPU pool
-    /// falls behind, fetchers block on send instead of buffering unbounded memory.
-    async fn download_file_chunks<F: ChunkFetcher + 'static>(
+    /// Memory usage is bounded by `max_downloads × chunk_size` (~16 MB typical).
+    async fn download_file_streaming<F: ChunkFetcher + 'static>(
         &self,
         file: &ManifestFile,
+        output_path: &Path,
         fetcher: &std::sync::Arc<F>,
         sem: &std::sync::Arc<tokio::sync::Semaphore>,
-    ) -> Result<Vec<u8>, BoxError> {
+    ) -> Result<u64, BoxError> {
+        use steamroom::util::checksum::SteamAdler32;
+
         let n = file.chunks.len();
         if n == 0 {
-            return Ok(Vec::new());
+            std::fs::write(output_path, [])?;
+            return Ok(0);
         }
 
-        // Bounded channel: fetch stage → process stage.
-        // Capacity = max_downloads so we buffer at most that many fetched-but-unprocessed chunks.
-        let (fetch_tx, mut fetch_rx) =
-            tokio::sync::mpsc::channel::<(usize, Bytes, u32, u32)>(self.max_downloads);
+        // Read existing file to find reusable chunks (delta optimization)
+        let existing = std::fs::read(output_path).unwrap_or_default();
+        let mut reuse: Vec<bool> = Vec::with_capacity(n);
+        let mut offset: usize = 0;
+        for chunk_meta in &file.chunks {
+            let size = chunk_meta.uncompressed_size as usize;
+            let end = offset + size;
+            let ok = end <= existing.len()
+                && SteamAdler32::compute(&existing[offset..end]).0 == chunk_meta.checksum;
+            reuse.push(ok);
+            offset += size;
+        }
 
+        let reused = reuse.iter().filter(|&&r| r).count();
+        let to_fetch = n - reused;
+        if reused > 0 {
+            tracing::debug!(
+                "{}: reusing {reused}/{n} chunks, fetching {to_fetch}",
+                &file.filename,
+            );
+        }
+
+        // Only fetch chunks that differ
         let slots: std::sync::Arc<Vec<OnceLock<Vec<u8>>>> =
             std::sync::Arc::new((0..n).map(|_| OnceLock::new()).collect());
 
-        // Stage 1: spawn fetcher tasks
-        let mut fetch_handles = Vec::with_capacity(n);
+        let (fetch_tx, mut fetch_rx) =
+            tokio::sync::mpsc::channel::<(usize, Bytes, u32, u32)>(self.max_downloads);
+
+        let mut fetch_handles = Vec::with_capacity(to_fetch);
         for (i, chunk_meta) in file.chunks.iter().enumerate() {
+            if reuse[i] {
+                continue;
+            }
             let chunk_id = chunk_meta.id.clone();
             let expected_size = chunk_meta.uncompressed_size;
             let checksum = chunk_meta.checksum;
@@ -459,8 +476,6 @@ impl DepotJob {
                     }
                 }
 
-                // Backpressure: if process stage is full, this blocks the fetcher
-                // (which releases the semaphore permit, letting other fetchers proceed)
                 fetch_tx
                     .send((i, result?, expected_size, checksum))
                     .await
@@ -468,16 +483,15 @@ impl DepotJob {
                 Ok::<(), BoxError>(())
             }));
         }
-        drop(fetch_tx); // close so process loop terminates when all fetchers done
+        drop(fetch_tx);
 
-        // Stage 2: drain fetch results → spawn_blocking for decrypt+decompress
+        // Decrypt + decompress fetched chunks into slots
         let slots_ref = slots.clone();
         let depot_key = self.depot_key.clone();
         let event_tx = self.event_tx.clone();
 
         let process_handle = tokio::spawn(async move {
             let mut block_handles = Vec::new();
-
             while let Some((i, raw, expected_size, checksum)) = fetch_rx.recv().await {
                 let key = depot_key.clone();
                 let slots = slots_ref.clone();
@@ -494,96 +508,36 @@ impl DepotJob {
                     Ok::<(), BoxError>(())
                 }));
             }
-
             for h in block_handles {
                 h.await??;
             }
             Ok::<(), BoxError>(())
         });
 
-        // Wait for both stages
         for h in fetch_handles {
             h.await??;
         }
         process_handle.await??;
 
-        // Assemble in order
+        // Write output: reused chunks from existing data, fetched chunks from slots
         let slots = std::sync::Arc::try_unwrap(slots).map_err(|_| "slots arc still shared")?;
-        // size hint only — Vec grows if absent, no correctness impact
-        let mut file_data = Vec::with_capacity(file.size as usize);
-        for slot in slots {
-            file_data
-                .extend_from_slice(&slot.into_inner().ok_or("chunk slot empty after pipeline")?);
-        }
-        Ok(file_data)
-    }
-
-    /// Downloads remaining chunks to the staging file. Returns total file size in bytes.
-    async fn download_file_chunks_with_resume<F: ChunkFetcher + 'static>(
-        &self,
-        file: &ManifestFile,
-        fetcher: &std::sync::Arc<F>,
-        sem: &std::sync::Arc<tokio::sync::Semaphore>,
-        staging_path: &Path,
-    ) -> Result<u64, BoxError> {
-        let existing_bytes = std::fs::metadata(staging_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
-
-        // Count complete chunks already staged
-        let mut staged_offset: u64 = 0;
-        let mut skip_count = 0;
-        if existing_bytes > 0 {
-            for chunk_meta in &file.chunks {
-                let chunk_size = chunk_meta.uncompressed_size as u64;
-                if staged_offset + chunk_size <= existing_bytes {
-                    staged_offset += chunk_size;
-                    skip_count += 1;
-                } else {
-                    break;
-                }
+        let mut out = std::fs::File::create(output_path)?;
+        let mut written: u64 = 0;
+        let mut read_offset: usize = 0;
+        for (i, chunk_meta) in file.chunks.iter().enumerate() {
+            let size = chunk_meta.uncompressed_size as usize;
+            if reuse[i] {
+                out.write_all(&existing[read_offset..read_offset + size])?;
+                self.emit(DownloadEvent::ChunkCompleted { bytes: size as u64 });
+            } else {
+                let data = slots[i].get().ok_or("chunk slot empty after pipeline")?;
+                out.write_all(data)?;
             }
+            read_offset += size;
+            written += size as u64;
         }
 
-        if skip_count == file.chunks.len() {
-            return Ok(staged_offset);
-        }
-
-        if skip_count > 0 {
-            tracing::debug!(
-                "resuming {}: skipping {skip_count}/{} chunks ({staged_offset} bytes staged)",
-                &file.filename,
-                file.chunks.len(),
-            );
-            // Truncate to the last complete chunk boundary to discard any
-            // partially-written data from the interrupted chunk.
-            if existing_bytes > staged_offset {
-                let f = std::fs::OpenOptions::new().write(true).open(staging_path)?;
-                f.set_len(staged_offset)?;
-            }
-        } else {
-            let _ = std::fs::remove_file(staging_path);
-        }
-
-        // Build a trimmed file with only remaining chunks, pipeline-download them
-        let mut remaining = ManifestFile::new(file.filename.clone(), file.size - staged_offset);
-        remaining.flags = file.flags;
-        remaining.sha_content = file.sha_content;
-        remaining.chunks = file.chunks[skip_count..].to_vec();
-
-        let new_data = self.download_file_chunks(&remaining, fetcher, sem).await?;
-        let new_len = new_data.len() as u64;
-
-        // Append to staging for crash safety
-        {
-            let mut f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(staging_path)?;
-            f.write_all(&new_data)?;
-        }
-
-        Ok(staged_offset + new_len)
+        Ok(written)
     }
 }
 
@@ -606,6 +560,22 @@ fn file_matches(path: &Path, expected_size: u64, sha_content: Option<&[u8; 20]>)
     true
 }
 
+fn replace_file(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
+    if dst.exists() {
+        #[cfg(windows)]
+        {
+            let mut perms = std::fs::metadata(dst)?.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            if perms.readonly() {
+                perms.set_readonly(false);
+                let _ = std::fs::set_permissions(dst, perms);
+            }
+        }
+        std::fs::remove_file(dst)?;
+    }
+    std::fs::rename(src, dst)
+}
+
 #[derive(Default, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -623,6 +593,7 @@ pub struct DepotJobBuilder {
     install_dir: Option<PathBuf>,
     max_downloads: Option<usize>,
     verify: bool,
+    non_atomic: bool,
     file_filter: Option<FileFilter>,
     retry: Option<RetryConfig>,
     event_tx: Option<mpsc::UnboundedSender<DownloadEvent>>,
@@ -660,6 +631,11 @@ impl DepotJobBuilder {
         self
     }
 
+    pub fn non_atomic(mut self, v: bool) -> Self {
+        self.non_atomic = v;
+        self
+    }
+
     pub fn retry(mut self, config: RetryConfig) -> Self {
         self.retry = Some(config);
         self
@@ -682,6 +658,7 @@ impl DepotJobBuilder {
             install_dir: self.install_dir.ok_or("install_dir required")?,
             max_downloads: self.max_downloads.unwrap_or(16),
             verify: self.verify,
+            non_atomic: self.non_atomic,
             file_filter: self.file_filter.unwrap_or(FileFilter::None),
             retry: self.retry.unwrap_or_default(),
             event_tx: self.event_tx,

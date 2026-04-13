@@ -609,3 +609,244 @@ async fn resume_skips_fully_staged_chunks() {
     let result = std::fs::read(install.join("resume2.bin")).unwrap();
     assert_eq!(result, combined);
 }
+
+/// A fetcher that only serves specific chunk IDs and panics on anything else.
+/// Used to verify that reusable chunks are NOT fetched from CDN.
+struct SelectiveFetcher {
+    allowed: HashMap<ChunkId, Bytes>,
+}
+
+impl ChunkFetcher for SelectiveFetcher {
+    async fn fetch_chunk(&self, _depot_id: DepotId, chunk_id: &ChunkId) -> Result<Bytes, BoxError> {
+        match self.allowed.get(chunk_id) {
+            Some(data) => Ok(data.clone()),
+            None => panic!(
+                "SelectiveFetcher: chunk {} should have been reused, not fetched",
+                chunk_id
+            ),
+        }
+    }
+}
+
+#[tokio::test]
+async fn delta_reuses_unchanged_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+
+    let chunk_a = b"AAAAAAAAAAAAAAAA"; // unchanged
+    let chunk_b_old = b"BBBBBBBBBBBBBBBB"; // will change
+    let chunk_c = b"CCCCCCCCCCCCCCCC"; // unchanged
+    let chunk_b_new = b"bbbbbbbbbbbbbbbb"; // new version
+
+    let id_a = ChunkId([0xA0; 20]);
+    let id_b = ChunkId([0xB0; 20]);
+    let id_c = ChunkId([0xC0; 20]);
+
+    // Write the "old" version of the file
+    let old_content = [&chunk_a[..], &chunk_b_old[..], &chunk_c[..]].concat();
+    let file_path = install.join("delta.bin");
+    std::fs::write(&file_path, &old_content).unwrap();
+
+    // New manifest: chunk A and C are the same, chunk B changed
+    let mc_a = ManifestChunk::new(
+        id_a.clone(),
+        SteamAdler32::compute(chunk_a).0,
+        chunk_a.len() as u32,
+    );
+    let mc_b = ManifestChunk::new(
+        id_b.clone(),
+        SteamAdler32::compute(chunk_b_new).0,
+        chunk_b_new.len() as u32,
+    );
+    let mc_c = ManifestChunk::new(
+        id_c.clone(),
+        SteamAdler32::compute(chunk_c).0,
+        chunk_c.len() as u32,
+    );
+
+    let manifest = DepotManifest::new(vec![file_with_chunks("delta.bin", vec![mc_a, mc_b, mc_c])]);
+
+    // Only provide chunk B in the fetcher — A and C must be reused from disk.
+    // If the pipeline tries to fetch A or C, SelectiveFetcher will panic.
+    let mut allowed = HashMap::new();
+    allowed.insert(id_b, Bytes::from(encrypt_chunk(chunk_b_new, &key)));
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .non_atomic(true)
+        .build()
+        .unwrap();
+
+    let stats = job
+        .download(&manifest, Arc::new(SelectiveFetcher { allowed }))
+        .await
+        .unwrap();
+
+    assert_eq!(stats.files_completed, 1);
+    let expected = [&chunk_a[..], &chunk_b_new[..], &chunk_c[..]].concat();
+    assert_eq!(std::fs::read(&file_path).unwrap(), expected);
+}
+
+#[tokio::test]
+async fn delta_all_chunks_match_skips_all_fetches() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+
+    let chunk_a = b"AAAAAAAAAAAAAAAA";
+    let chunk_b = b"BBBBBBBBBBBBBBBB";
+
+    let id_a = ChunkId([0xA0; 20]);
+    let id_b = ChunkId([0xB0; 20]);
+
+    // Write file that already matches the manifest
+    let content = [&chunk_a[..], &chunk_b[..]].concat();
+    std::fs::write(install.join("same.bin"), &content).unwrap();
+
+    let mc_a = ManifestChunk::new(id_a, SteamAdler32::compute(chunk_a).0, chunk_a.len() as u32);
+    let mc_b = ManifestChunk::new(id_b, SteamAdler32::compute(chunk_b).0, chunk_b.len() as u32);
+
+    let manifest = DepotManifest::new(vec![file_with_chunks("same.bin", vec![mc_a, mc_b])]);
+
+    // Empty fetcher — any fetch attempt = panic
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .non_atomic(true)
+        .build()
+        .unwrap();
+
+    let stats = job
+        .download(
+            &manifest,
+            Arc::new(SelectiveFetcher {
+                allowed: HashMap::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(stats.files_completed, 1);
+    assert_eq!(std::fs::read(install.join("same.bin")).unwrap(), content);
+}
+
+#[tokio::test]
+async fn non_atomic_writes_directly_to_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+    let plaintext = b"direct write test!";
+    let checksum = SteamAdler32::compute(plaintext);
+    let chunk_id = ChunkId([0xDD; 20]);
+
+    let mut chunks = HashMap::new();
+    chunks.insert(
+        chunk_id.clone(),
+        Bytes::from(encrypt_chunk(plaintext, &key)),
+    );
+
+    let mc = ManifestChunk::new(chunk_id, checksum.0, plaintext.len() as u32);
+    let manifest = DepotManifest::new(vec![file_with_chunks("direct.bin", vec![mc])]);
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .non_atomic(true)
+        .build()
+        .unwrap();
+
+    job.download(&manifest, Arc::new(MockFetcher { chunks }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read(install.join("direct.bin")).unwrap(),
+        plaintext
+    );
+    // No staging directory should exist in non-atomic mode
+    assert!(!install.join(".depotdownloader").join("staging").exists());
+}
+
+#[tokio::test]
+async fn atomic_mode_uses_staging_then_renames() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+    let plaintext = b"atomic write test!";
+    let checksum = SteamAdler32::compute(plaintext);
+    let chunk_id = ChunkId([0xEE; 20]);
+
+    let mut chunks = HashMap::new();
+    chunks.insert(
+        chunk_id.clone(),
+        Bytes::from(encrypt_chunk(plaintext, &key)),
+    );
+
+    let mc = ManifestChunk::new(chunk_id, checksum.0, plaintext.len() as u32);
+    let manifest = DepotManifest::new(vec![file_with_chunks("atomic.bin", vec![mc])]);
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .build()
+        .unwrap();
+
+    job.download(&manifest, Arc::new(MockFetcher { chunks }))
+        .await
+        .unwrap();
+
+    // File should be at final path
+    assert_eq!(
+        std::fs::read(install.join("atomic.bin")).unwrap(),
+        plaintext
+    );
+    // Staging file should be cleaned up (renamed away)
+    let staging = install.join(".depotdownloader").join("staging");
+    if staging.exists() {
+        assert!(std::fs::read_dir(&staging).unwrap().next().is_none());
+    }
+}
+
+#[tokio::test]
+async fn non_atomic_overwrites_existing_larger_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+
+    // Old file is larger than the new one
+    let old_content = vec![0xFFu8; 1024];
+    std::fs::write(install.join("shrink.bin"), &old_content).unwrap();
+
+    let new_data = b"small new file";
+    let chunk_id = ChunkId([0x11; 20]);
+    let checksum = SteamAdler32::compute(new_data);
+
+    let mut chunks = HashMap::new();
+    chunks.insert(chunk_id.clone(), Bytes::from(encrypt_chunk(new_data, &key)));
+
+    let mc = ManifestChunk::new(chunk_id, checksum.0, new_data.len() as u32);
+    let manifest = DepotManifest::new(vec![file_with_chunks("shrink.bin", vec![mc])]);
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .non_atomic(true)
+        .build()
+        .unwrap();
+
+    job.download(&manifest, Arc::new(MockFetcher { chunks }))
+        .await
+        .unwrap();
+
+    // File should be the new smaller size, not 1024 bytes
+    let result = std::fs::read(install.join("shrink.bin")).unwrap();
+    assert_eq!(result, new_data);
+    assert_eq!(result.len(), new_data.len());
+}

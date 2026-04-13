@@ -576,6 +576,7 @@ async fn run_download(
         .depot_key(depot_key.clone())
         .install_dir(output_dir.clone())
         .verify(args.verify)
+        .non_atomic(args.non_atomic)
         .event_sender(event_tx);
 
     if let Some(old_files) = old_manifest_files {
