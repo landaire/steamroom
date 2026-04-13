@@ -373,6 +373,56 @@ impl DepotJob {
                     }
                 }
             }
+
+            // Collect parent dirs of removed files, then prune empty ones bottom-up
+            let mut candidate_dirs: Vec<PathBuf> = old_files
+                .iter()
+                .filter(|name| !new_files.contains(name.as_str()))
+                .flat_map(|name| {
+                    let mut dirs = vec![];
+                    let mut p = Path::new(name).parent();
+                    while let Some(d) = p {
+                        if d.as_os_str().is_empty() {
+                            break;
+                        }
+                        dirs.push(
+                            self.install_dir
+                                .join(d.to_str().unwrap_or("").replace('\\', "/")),
+                        );
+                        p = d.parent();
+                    }
+                    dirs
+                })
+                .collect();
+            // Sort longest path first so we remove children before parents
+            candidate_dirs.sort_by_key(|d| std::cmp::Reverse(d.as_os_str().len()));
+            candidate_dirs.dedup();
+            let new_parents: std::collections::HashSet<PathBuf> = new_files
+                .iter()
+                .flat_map(|name| {
+                    let mut dirs = vec![];
+                    let mut p = Path::new(name).parent();
+                    while let Some(d) = p {
+                        if d.as_os_str().is_empty() {
+                            break;
+                        }
+                        dirs.push(
+                            self.install_dir
+                                .join(d.to_str().unwrap_or("").replace('\\', "/")),
+                        );
+                        p = d.parent();
+                    }
+                    dirs
+                })
+                .collect();
+            for dir in &candidate_dirs {
+                if std::fs::remove_dir(dir).is_err() && !new_parents.contains(dir) {
+                    tracing::info!(
+                        "kept non-empty directory {} (contains files not in the manifest)",
+                        dir.strip_prefix(&self.install_dir).unwrap_or(dir).display()
+                    );
+                }
+            }
         }
 
         Ok(stats)

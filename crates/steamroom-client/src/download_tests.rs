@@ -850,3 +850,249 @@ async fn non_atomic_overwrites_existing_larger_file() {
     assert_eq!(result, new_data);
     assert_eq!(result.len(), new_data.len());
 }
+
+#[tokio::test]
+async fn version_update_removes_old_files_and_downloads_new() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+
+    // Write version A files on disk (simulating a previous download)
+    std::fs::write(install.join("file_a.bin"), b"file A content!!").unwrap();
+    std::fs::write(install.join("shared.bin"), b"shared version 1").unwrap();
+
+    // Version B: has file_b.bin and shared.bin (updated)
+    let data_b = b"file B content!!";
+    let data_shared_v2 = b"shared version 2";
+    let id_b = ChunkId([0xB0; 20]);
+    let id_shared_v2 = ChunkId([0xD2; 20]);
+
+    let mut chunks = HashMap::new();
+    chunks.insert(id_b.clone(), Bytes::from(encrypt_chunk(data_b, &key)));
+    chunks.insert(
+        id_shared_v2.clone(),
+        Bytes::from(encrypt_chunk(data_shared_v2, &key)),
+    );
+
+    let manifest_b = DepotManifest::new(vec![
+        file_with_chunks(
+            "file_b.bin",
+            vec![ManifestChunk::new(
+                id_b,
+                SteamAdler32::compute(data_b).0,
+                data_b.len() as u32,
+            )],
+        ),
+        file_with_chunks(
+            "shared.bin",
+            vec![ManifestChunk::new(
+                id_shared_v2,
+                SteamAdler32::compute(data_shared_v2).0,
+                data_shared_v2.len() as u32,
+            )],
+        ),
+    ]);
+
+    // Tell the job what files version A had
+    let old_files = vec!["file_a.bin".to_string(), "shared.bin".to_string()];
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .non_atomic(true)
+        .old_manifest_files(old_files)
+        .event_sender(event_tx)
+        .build()
+        .unwrap();
+
+    let stats = job
+        .download(&manifest_b, Arc::new(MockFetcher { chunks }))
+        .await
+        .unwrap();
+
+    assert_eq!(stats.files_completed, 2);
+    assert_eq!(stats.files_removed, 1);
+
+    // file_a.bin should be deleted (was in A, not in B)
+    assert!(!install.join("file_a.bin").exists());
+    // file_b.bin should exist with new content
+    assert_eq!(std::fs::read(install.join("file_b.bin")).unwrap(), data_b);
+    // shared.bin should be updated
+    assert_eq!(
+        std::fs::read(install.join("shared.bin")).unwrap(),
+        data_shared_v2
+    );
+
+    // Verify we got a FileRemoved event for file_a.bin
+    drop(job);
+    let mut removed = vec![];
+    while let Ok(event) = event_rx.try_recv() {
+        if let DownloadEvent::FileRemoved { filename } = event {
+            removed.push(filename);
+        }
+    }
+    assert_eq!(removed, vec!["file_a.bin"]);
+}
+
+#[tokio::test]
+async fn version_update_no_overlap_removes_all_old_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+
+    // Version A files on disk
+    std::fs::write(install.join("old_1.bin"), b"old file 1").unwrap();
+    std::fs::write(install.join("old_2.bin"), b"old file 2").unwrap();
+
+    // Version B: completely different files
+    let data_new = b"new file content";
+    let id_new = ChunkId([0xF0; 20]);
+    let mut chunks = HashMap::new();
+    chunks.insert(id_new.clone(), Bytes::from(encrypt_chunk(data_new, &key)));
+
+    let manifest_b = DepotManifest::new(vec![file_with_chunks(
+        "new.bin",
+        vec![ManifestChunk::new(
+            id_new,
+            SteamAdler32::compute(data_new).0,
+            data_new.len() as u32,
+        )],
+    )]);
+
+    let old_files = vec!["old_1.bin".to_string(), "old_2.bin".to_string()];
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .non_atomic(true)
+        .old_manifest_files(old_files)
+        .build()
+        .unwrap();
+
+    let stats = job
+        .download(&manifest_b, Arc::new(MockFetcher { chunks }))
+        .await
+        .unwrap();
+
+    assert_eq!(stats.files_completed, 1);
+    assert_eq!(stats.files_removed, 2);
+    assert!(!install.join("old_1.bin").exists());
+    assert!(!install.join("old_2.bin").exists());
+    assert_eq!(std::fs::read(install.join("new.bin")).unwrap(), data_new);
+}
+
+#[tokio::test]
+async fn delta_prunes_empty_parent_dirs_of_removed_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+
+    let nested = install.join("bin").join("12345").join("idx");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("old.idx"), b"old").unwrap();
+
+    let old_files = vec!["bin\\12345\\idx\\old.idx".to_string()];
+    let new_manifest = manifest_with(&["other.txt"]);
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(DepotKey([0; 32]))
+        .install_dir(install.to_path_buf())
+        .old_manifest_files(old_files)
+        .build()
+        .unwrap();
+
+    let stats = job
+        .download(&new_manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
+
+    assert_eq!(stats.files_removed, 1);
+    assert!(!nested.join("old.idx").exists());
+    // Empty parent chain should be pruned
+    assert!(!nested.exists(), "idx/ dir should be removed");
+    assert!(
+        !install.join("bin").join("12345").exists(),
+        "12345/ dir should be removed"
+    );
+    assert!(!install.join("bin").exists(), "bin/ dir should be removed");
+}
+
+#[tokio::test]
+async fn delta_prune_does_not_remove_dirs_with_remaining_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+
+    let build_dir = install.join("bin").join("12345").join("idx");
+    std::fs::create_dir_all(&build_dir).unwrap();
+    std::fs::write(build_dir.join("removed.idx"), b"gone").unwrap();
+    std::fs::write(build_dir.join("kept.idx"), b"stay").unwrap();
+
+    // Only removed.idx is gone; kept.idx stays
+    let old_files = vec![
+        "bin\\12345\\idx\\removed.idx".to_string(),
+        "bin\\12345\\idx\\kept.idx".to_string(),
+    ];
+    let new_manifest = manifest_with(&["bin\\12345\\idx\\kept.idx"]);
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(DepotKey([0; 32]))
+        .install_dir(install.to_path_buf())
+        .old_manifest_files(old_files)
+        .build()
+        .unwrap();
+
+    let stats = job
+        .download(&new_manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
+
+    assert_eq!(stats.files_removed, 1);
+    assert!(!build_dir.join("removed.idx").exists());
+    assert!(build_dir.join("kept.idx").exists());
+    // Parent dirs should NOT be removed since kept.idx is still there
+    assert!(build_dir.exists());
+    assert!(install.join("bin").join("12345").exists());
+}
+
+#[tokio::test]
+async fn delta_prune_does_not_touch_user_dirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+
+    // Old manifest file in bin/old/
+    let old_dir = install.join("bin").join("old");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::write(old_dir.join("data.bin"), b"old").unwrap();
+
+    // User's own directory that isn't in any manifest
+    let user_dir = install.join("my_stuff");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("notes.txt"), b"user file").unwrap();
+
+    let old_files = vec!["bin\\old\\data.bin".to_string()];
+    let new_manifest = manifest_with(&["new.txt"]);
+
+    let job = DepotJob::builder()
+        .depot_id(DepotId(481))
+        .depot_key(DepotKey([0; 32]))
+        .install_dir(install.to_path_buf())
+        .old_manifest_files(old_files)
+        .build()
+        .unwrap();
+
+    job.download(&new_manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
+
+    // Old manifest dirs should be cleaned up
+    assert!(!old_dir.exists());
+    assert!(!install.join("bin").exists());
+    // User's dir should be untouched
+    assert!(user_dir.exists());
+    assert!(user_dir.join("notes.txt").exists());
+}
