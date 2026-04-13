@@ -98,6 +98,7 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
         Command::Files(args) => run_files(args, &cli.auth).await,
         Command::Diff(args) => run_diff(args, &cli.auth).await,
         Command::Packages(args) => run_packages(args, &cli.auth).await,
+        Command::SaveManifest(args) => run_save_manifest(args, &cli.auth).await,
         Command::Download(args) => run_download(args, &cli.auth, show_progress).await,
         Command::Workshop(args) => run_workshop(args, &cli.auth, show_progress).await,
     }
@@ -488,10 +489,11 @@ async fn run_download(
     let (manifest_bytes, cdn_raw) = if let Some(cached) = manifest_cache.load(depot_id, manifest_id)
     {
         debug!("using cached manifest for {depot_id}_{manifest_id}");
-        (cached, None)
+        let raw = manifest_cache.load_raw(depot_id, manifest_id);
+        (cached, raw)
     } else {
         info!("downloading manifest...");
-        let manifest_data = cdn
+        let raw = cdn
             .download_manifest(
                 cdn_server,
                 depot_id,
@@ -500,9 +502,9 @@ async fn run_download(
                 cdn_auth_token.as_deref(),
             )
             .await?;
-        let decompressed = decompress_manifest(&manifest_data)?;
-        let _ = manifest_cache.save(depot_id, manifest_id, &decompressed);
-        (decompressed, Some(manifest_data))
+        let decompressed = decompress_manifest(&raw)?;
+        let _ = manifest_cache.save(depot_id, manifest_id, &decompressed, &raw);
+        (decompressed, Some(raw.to_vec()))
     };
 
     // Debug: dump section magics
@@ -620,15 +622,7 @@ async fn run_download(
     drop(job);
     let _ = progress_handle.await;
 
-    // Save manifest and config for future delta downloads / preservation
-    if let Some(raw) = cdn_raw {
-        let _ = steamroom_client::depot_config::DepotConfig::save_manifest_raw(
-            &output_dir,
-            depot_id,
-            manifest_id,
-            &raw,
-        );
-    }
+    // Save config and decompressed manifest for delta patching
     let _ = steamroom_client::depot_config::DepotConfig::save_manifest_decompressed(
         &output_dir,
         depot_id,
@@ -638,6 +632,18 @@ async fn run_download(
     let mut depot_config = steamroom_client::depot_config::DepotConfig::load(&output_dir);
     depot_config.set_installed(depot_id, manifest_id, &depot_key);
     let _ = depot_config.save(&output_dir);
+
+    // Optionally save the raw CDN manifest for preservation
+    if args.save_manifests
+        && let Some(ref raw) = cdn_raw
+    {
+        let _ = steamroom_client::depot_config::DepotConfig::save_manifest_raw(
+            &output_dir,
+            depot_id,
+            manifest_id,
+            raw,
+        );
+    }
 
     let mut summary = format!(
         "download complete: {} files, {}",
@@ -707,6 +713,60 @@ fn find_manifest_for_depot(
         depot: depot_id.0,
         branch: branch.to_string(),
     })
+}
+
+fn resolve_depot_key(args: &FilesArgs) -> Result<DepotKey, CliError> {
+    if let Some(ref hex) = args.depot_key {
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+            .collect::<Result<_, _>>()
+            .map_err(|_| {
+                CliError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid hex in --depot-key",
+                ))
+            })?;
+        if bytes.len() != 32 {
+            return Err(CliError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("depot key must be 32 bytes, got {}", bytes.len()),
+            )));
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        return Ok(DepotKey(key));
+    }
+    // Try auto-detect from depot.json next to the manifest file
+    if let Some(ref manifest_path) = args.manifest_file
+        && let Some(parent) = manifest_path.parent()
+    {
+        // Check sibling depot.json (manifest might be in .depotdownloader/manifests/)
+        for dir in [parent, &parent.join("../.."), &parent.join("..")] {
+            let config = steamroom_client::depot_config::DepotConfig::load(dir);
+            if let Some(depot_id) = args.depot
+                && let Some((_, key)) = config.get_installed(DepotId(depot_id))
+            {
+                return Ok(key);
+            }
+            // Try any depot in the config
+            for info in config.depots.values() {
+                let bytes: Vec<u8> = (0..info.depot_key.len())
+                    .step_by(2)
+                    .filter_map(|i| u8::from_str_radix(&info.depot_key[i..i + 2], 16).ok())
+                    .collect();
+                if bytes.len() == 32 {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&bytes);
+                    return Ok(DepotKey(key));
+                }
+            }
+        }
+    }
+    Err(CliError::Io(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "no depot key available (pass --depot-key <hex> or --raw for encrypted names)",
+    )))
 }
 
 fn decompress_manifest(data: &[u8]) -> Result<Vec<u8>, CliError> {
@@ -1131,47 +1191,155 @@ async fn run_manifests(args: ManifestsArgs, auth: &AuthOptions) -> Result<(), Cl
     Ok(())
 }
 
-async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> {
-    let raw_bytes = args.bytes;
+async fn run_save_manifest(args: SaveManifestArgs, auth: &AuthOptions) -> Result<(), CliError> {
+    let client = connect_and_login(auth).await?;
     let app_id = AppId(args.app);
-    let (client, kv) = fetch_app_kv(auth, app_id).await?;
+    let depot_id = DepotId(args.depot);
     let branch = args.branch.as_deref().unwrap_or("public");
 
-    let depot_id = args
-        .depot
-        .map(DepotId)
-        .or_else(|| kv.get("depots").and_then(|d| find_first_depot(d).ok()))
-        .ok_or(CliError::NoDepots)?;
+    let manifest_id = if let Some(m) = args.manifest {
+        ManifestId(m)
+    } else {
+        let tokens = client.pics_get_access_tokens(&[app_id]).await?;
+        let token = tokens
+            .into_iter()
+            .next()
+            .unwrap_or(AccessToken { app_id, token: 0 });
+        let infos = client.pics_get_product_info(&[token]).await?;
+        let app_info = infos
+            .into_iter()
+            .next()
+            .ok_or(CliError::NoProductInfo(app_id.0))?;
+        let kv_data = app_info.kv_data.ok_or(CliError::NoKvData(app_id.0))?;
+        let kv = parse_app_kv(&kv_data)?;
+        let depots_kv = kv.get("depots").ok_or(CliError::NoDepots)?;
+        find_manifest_for_depot(depots_kv, depot_id, branch)?
+    };
 
-    let manifest_id = args
-        .manifest
-        .map(ManifestId)
-        .or_else(|| {
-            kv.get("depots")
-                .and_then(|d| find_manifest_for_depot(d, depot_id, branch).ok())
-        })
-        .ok_or(CliError::ManifestNotFound {
-            depot: depot_id.0,
-            branch: branch.to_string(),
-        })?;
+    info!("depot={depot_id}, manifest={manifest_id}");
 
     let depot_key = client.get_depot_decryption_key(depot_id, app_id).await?;
-    let request_code = client
-        .get_manifest_request_code(app_id, depot_id, manifest_id, Some(branch), None)
-        .await?
-        .unwrap_or(0);
-
     let cdn_servers = client.get_cdn_servers(CellId(0), Some(5)).await?;
     let cdn_server = cdn_servers.first().ok_or(CliError::NoCdnServers)?;
+
+    let request_code = match client
+        .get_manifest_request_code(app_id, depot_id, manifest_id, Some(branch), None)
+        .await
+    {
+        Ok(Some(code)) => code,
+        Ok(None) => 0,
+        Err(e) => {
+            debug!("manifest request code failed ({e}), trying without");
+            0
+        }
+    };
+
+    let cdn_auth_token = match client
+        .get_cdn_auth_token(app_id, depot_id, &cdn_server.host)
+        .await
+    {
+        Ok(t) => t.token,
+        Err(e) => {
+            debug!("CDN auth token failed ({e}), continuing without");
+            None
+        }
+    };
+
     let cdn = CdnClient::new().map_err(CliError::Steam)?;
-    let manifest_data = cdn
-        .download_manifest(cdn_server, depot_id, manifest_id, request_code, None)
+    info!("downloading manifest...");
+    let raw = cdn
+        .download_manifest(
+            cdn_server,
+            depot_id,
+            manifest_id,
+            request_code,
+            cdn_auth_token.as_deref(),
+        )
         .await?;
-    let manifest_bytes = decompress_manifest(&manifest_data)?;
-    let mut manifest = DepotManifest::parse(&manifest_bytes)?;
-    if manifest.filenames_encrypted && !args.raw {
-        manifest.decrypt_filenames(&depot_key)?;
-    }
+    let decompressed = decompress_manifest(&raw)?;
+
+    std::fs::create_dir_all(&args.output)?;
+    steamroom_client::depot_config::DepotConfig::save_manifest_raw(
+        &args.output,
+        depot_id,
+        manifest_id,
+        &raw,
+    )?;
+    steamroom_client::depot_config::DepotConfig::save_manifest_decompressed(
+        &args.output,
+        depot_id,
+        manifest_id,
+        &decompressed,
+    )?;
+
+    let mut depot_config = steamroom_client::depot_config::DepotConfig::load(&args.output);
+    depot_config.set_installed(depot_id, manifest_id, &depot_key);
+    depot_config.save(&args.output)?;
+
+    info!("saved manifest {manifest_id} to {}", args.output.display());
+    Ok(())
+}
+
+async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> {
+    let raw_bytes = args.bytes;
+
+    let manifest = if let Some(ref path) = args.manifest_file {
+        // Local manifest file
+        let data = std::fs::read(path)?;
+        let manifest_bytes = if data.len() > 2 && data[0] == 0x50 && data[1] == 0x4B {
+            decompress_manifest(&data)?
+        } else {
+            data
+        };
+        let mut m = DepotManifest::parse(&manifest_bytes)?;
+        if m.filenames_encrypted && !args.raw {
+            let key = resolve_depot_key(&args)?;
+            m.decrypt_filenames(&key)?;
+        }
+        m
+    } else {
+        // Fetch from Steam
+        let app_id = AppId(args.app.ok_or(CliError::NoDepots)?);
+        let (client, kv) = fetch_app_kv(auth, app_id).await?;
+        let branch = args.branch.as_deref().unwrap_or("public");
+
+        let depot_id = args
+            .depot
+            .map(DepotId)
+            .or_else(|| kv.get("depots").and_then(|d| find_first_depot(d).ok()))
+            .ok_or(CliError::NoDepots)?;
+
+        let manifest_id = args
+            .manifest
+            .map(ManifestId)
+            .or_else(|| {
+                kv.get("depots")
+                    .and_then(|d| find_manifest_for_depot(d, depot_id, branch).ok())
+            })
+            .ok_or(CliError::ManifestNotFound {
+                depot: depot_id.0,
+                branch: branch.to_string(),
+            })?;
+
+        let depot_key = client.get_depot_decryption_key(depot_id, app_id).await?;
+        let request_code = client
+            .get_manifest_request_code(app_id, depot_id, manifest_id, Some(branch), None)
+            .await?
+            .unwrap_or(0);
+
+        let cdn_servers = client.get_cdn_servers(CellId(0), Some(5)).await?;
+        let cdn_server = cdn_servers.first().ok_or(CliError::NoCdnServers)?;
+        let cdn = CdnClient::new().map_err(CliError::Steam)?;
+        let manifest_data = cdn
+            .download_manifest(cdn_server, depot_id, manifest_id, request_code, None)
+            .await?;
+        let manifest_bytes = decompress_manifest(&manifest_data)?;
+        let mut m = DepotManifest::parse(&manifest_bytes)?;
+        if m.filenames_encrypted && !args.raw {
+            m.decrypt_filenames(&depot_key)?;
+        }
+        m
+    };
 
     if args.format == Some(OutputFormat::Json) {
         let entries: Vec<serde_json::Value> = manifest
@@ -1202,8 +1370,20 @@ async fn run_files(args: FilesArgs, auth: &AuthOptions) -> Result<(), CliError> 
             .map(|t| fmt_timestamp(t as u64))
             .unwrap_or_else(|| "-".into());
 
-        println!("Depot:    {}", depot_id);
-        println!("Manifest: {}", manifest_id);
+        println!(
+            "Depot:    {}",
+            manifest
+                .depot_id
+                .map(|d| d.0.to_string())
+                .unwrap_or("-".into())
+        );
+        println!(
+            "Manifest: {}",
+            manifest
+                .manifest_id
+                .map(|m| m.0.to_string())
+                .unwrap_or("-".into())
+        );
         println!("Created:  {}", created);
         println!("Size:     {}", fmt_size(total_size));
         println!("Files:    {}", file_count);

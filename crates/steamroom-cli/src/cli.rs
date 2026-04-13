@@ -113,6 +113,7 @@ impl CompatCli {
                 max_downloads: self.max_downloads,
                 branch: self.branch,
                 branch_password: self.beta_password,
+                save_manifests: false,
                 capture: None,
                 bytes: false,
             }),
@@ -166,6 +167,8 @@ pub enum Command {
     Info(InfoArgs),
     /// List depot manifest IDs for a branch
     Manifests(ManifestsArgs),
+    /// Download and save a depot manifest without downloading content
+    SaveManifest(SaveManifestArgs),
     /// Compare two manifests and show added, removed, and changed files
     Diff(DiffArgs),
     /// Query Steam package (sub) details by ID
@@ -230,6 +233,9 @@ pub struct DownloadArgs {
     /// Password for beta branch access
     #[arg(long)]
     pub branch_password: Option<String>,
+    /// Save raw and decompressed manifests alongside downloaded files
+    #[arg(long)]
+    pub save_manifests: bool,
     /// Capture network traffic to a file
     #[arg(long)]
     pub capture: Option<std::path::PathBuf>,
@@ -240,15 +246,21 @@ pub struct DownloadArgs {
 
 #[derive(Parser, Debug)]
 pub struct FilesArgs {
-    /// Steam app ID
+    /// Steam app ID (not needed with --manifest-file)
     #[arg(long)]
-    pub app: u32,
+    pub app: Option<u32>,
     /// Depot ID (auto-detected if omitted)
     #[arg(long)]
     pub depot: Option<u32>,
     /// Manifest ID (uses latest for branch if omitted)
     #[arg(long)]
     pub manifest: Option<u64>,
+    /// Read from a local manifest file instead of fetching from CDN
+    #[arg(long, value_name = "PATH")]
+    pub manifest_file: Option<std::path::PathBuf>,
+    /// Depot key for filename decryption (hex). Auto-detected from depot.json if available
+    #[arg(long, value_name = "HEX")]
+    pub depot_key: Option<String>,
     /// Branch to list files for (default: public)
     #[arg(long)]
     pub branch: Option<String>,
@@ -267,6 +279,25 @@ pub struct FilesArgs {
     /// Show file sizes in raw bytes
     #[arg(long)]
     pub bytes: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct SaveManifestArgs {
+    /// Steam app ID
+    #[arg(long)]
+    pub app: u32,
+    /// Depot ID
+    #[arg(long)]
+    pub depot: u32,
+    /// Manifest ID (uses latest for branch if omitted)
+    #[arg(long)]
+    pub manifest: Option<u64>,
+    /// Branch (default: public)
+    #[arg(long)]
+    pub branch: Option<String>,
+    /// Output directory for saved manifests
+    #[arg(long, short)]
+    pub output: std::path::PathBuf,
 }
 
 #[derive(Parser, Debug)]

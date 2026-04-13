@@ -132,6 +132,18 @@ Manifests for branch 'public':
   depot 481      -> 3183503801510301321
 ```
 
+### `save-manifest`
+
+Download and save a depot manifest without downloading content. Saves the raw CDN response (`.zip`), decompressed manifest (`.manifest`), and depot key (`depot.json`).
+
+```bash
+# Save latest manifest
+steamroom save-manifest --app 552990 --depot 552993 -o manifests/
+
+# Save a specific manifest version
+steamroom save-manifest --app 552990 --depot 552993 --manifest 6791242355553147175 -o manifests/
+```
+
 ### `files`
 
 List files in a depot manifest.
@@ -147,6 +159,15 @@ steamroom files --app 480 --depot 481 --bytes
 
 # JSON output
 steamroom files --app 480 --depot 481 --format json
+
+# Read from a local manifest file (key auto-detected from depot.json)
+steamroom files --manifest-file manifests/.depotdownloader/manifests/552993_123.manifest --depot 552993
+
+# Explicit depot key (hex)
+steamroom files --manifest-file path/to/552993_123.manifest --depot-key a4ac589393a2c8679c1f99b2e6fcee10554c030a0a6bf69bd4e22a13da7aab55
+
+# Show raw encrypted filenames (no key needed)
+steamroom files --manifest-file path/to/552993_123.manifest --raw
 ```
 
 Example output:
