@@ -7,6 +7,7 @@ use self::msg::ClientMsg;
 use crate::apps::AccessToken;
 use crate::apps::AppInfo;
 use crate::apps::BetaBranch;
+use crate::apps::PackageInfo;
 use crate::auth::AuthSession;
 use crate::auth::AuthTokens;
 use crate::auth::GuardType;
@@ -18,6 +19,7 @@ use crate::depot::CellId;
 use crate::depot::DepotId;
 use crate::depot::DepotKey;
 use crate::depot::ManifestId;
+use crate::depot::PackageId;
 use crate::error::ConnectionError;
 use crate::error::Error;
 use crate::generated;
@@ -665,6 +667,132 @@ impl SteamClient<LoggedIn> {
                                 app_id: a.appid.map(AppId),
                                 change_number: a.change_number,
                                 kv_data: a.buffer.clone(),
+                            })
+                            .collect());
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn pics_get_package_access_tokens(
+        &self,
+        package_ids: &[PackageId],
+    ) -> Result<Vec<(PackageId, u64)>, Error> {
+        let req = generated::CMsgClientPicsAccessTokenRequest {
+            packageids: package_ids.iter().map(|p| p.0).collect(),
+            ..Default::default()
+        };
+        let body = req.encode_to_vec();
+        let msg = self.make_msg(EMsg::CLIENT_PICS_ACCESS_TOKEN_REQUEST, &body);
+        self.send_raw(&msg).await?;
+
+        loop {
+            let incoming = self.recv_raw().await?;
+            if incoming.emsg == EMsg::CLIENT_PICS_ACCESS_TOKEN_RESPONSE {
+                let resp = generated::CMsgClientPicsAccessTokenResponse::decode(&*incoming.body)?;
+                return Ok(resp
+                    .package_access_tokens
+                    .iter()
+                    .map(|t| {
+                        (
+                            PackageId(t.packageid.unwrap_or(0)),
+                            t.access_token.unwrap_or(0),
+                        )
+                    })
+                    .collect());
+            }
+            if incoming.emsg == EMsg::MULTI {
+                let msgs = multi::unpack_multi(&incoming.body)?;
+                for sub in msgs {
+                    let sub_msg = parse_incoming(&sub)?;
+                    if sub_msg.emsg == EMsg::CLIENT_PICS_ACCESS_TOKEN_RESPONSE {
+                        let resp =
+                            generated::CMsgClientPicsAccessTokenResponse::decode(&*sub_msg.body)?;
+                        return Ok(resp
+                            .package_access_tokens
+                            .iter()
+                            .map(|t| {
+                                (
+                                    PackageId(t.packageid.unwrap_or(0)),
+                                    t.access_token.unwrap_or(0),
+                                )
+                            })
+                            .collect());
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn pics_get_package_info(
+        &self,
+        package_ids: &[PackageId],
+    ) -> Result<Vec<PackageInfo>, Error> {
+        let req = generated::CMsgClientPicsProductInfoRequest {
+            packages: package_ids
+                .iter()
+                .map(
+                    |p| generated::c_msg_client_pics_product_info_request::PackageInfo {
+                        packageid: Some(p.0),
+                        access_token: Some(0),
+                    },
+                )
+                .collect(),
+            meta_data_only: Some(false),
+            ..Default::default()
+        };
+        let body = req.encode_to_vec();
+        let msg = self.make_msg(EMsg::CLIENT_PICS_PRODUCT_INFO_REQUEST, &body);
+        self.send_raw(&msg).await?;
+
+        loop {
+            let incoming = self.recv_raw().await?;
+            if incoming.emsg == EMsg::CLIENT_PICS_PRODUCT_INFO_RESPONSE {
+                let resp = generated::CMsgClientPicsProductInfoResponse::decode(&*incoming.body)?;
+                debug!(
+                    "package response: {} packages, unknown: {:?}",
+                    resp.packages.len(),
+                    resp.unknown_packageids
+                );
+                for p in &resp.packages {
+                    debug!(
+                        "  pkg {}: buffer={} bytes",
+                        p.packageid.unwrap_or(0),
+                        p.buffer.as_ref().map(|b| b.len()).unwrap_or(0)
+                    );
+                }
+                return Ok(resp
+                    .packages
+                    .iter()
+                    .map(|p| PackageInfo {
+                        package_id: p.packageid.map(PackageId),
+                        change_number: p.change_number,
+                        kv_data: p.buffer.clone(),
+                    })
+                    .collect());
+            }
+            debug!("pics_get_package_info: got emsg {:?}", incoming.emsg);
+            if incoming.emsg == EMsg::MULTI {
+                let msgs = multi::unpack_multi(&incoming.body)?;
+                for sub in msgs {
+                    let sub_msg = parse_incoming(&sub)?;
+                    debug!("pics_get_package_info multi sub: {:?}", sub_msg.emsg);
+                    if sub_msg.emsg == EMsg::CLIENT_PICS_PRODUCT_INFO_RESPONSE {
+                        let resp =
+                            generated::CMsgClientPicsProductInfoResponse::decode(&*sub_msg.body)?;
+                        debug!(
+                            "package response (multi): {} packages, unknown: {:?}",
+                            resp.packages.len(),
+                            resp.unknown_packageids
+                        );
+                        return Ok(resp
+                            .packages
+                            .iter()
+                            .map(|p| PackageInfo {
+                                package_id: p.packageid.map(PackageId),
+                                change_number: p.change_number,
+                                kv_data: p.buffer.clone(),
                             })
                             .collect());
                     }

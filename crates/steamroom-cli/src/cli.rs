@@ -168,6 +168,8 @@ pub enum Command {
     Manifests(ManifestsArgs),
     /// Compare two manifests and show added, removed, and changed files
     Diff(DiffArgs),
+    /// Query Steam package (sub) details by ID
+    Packages(PackagesArgs),
     /// Download a Steam Workshop item
     Workshop(WorkshopArgs),
 }
@@ -329,6 +331,16 @@ pub struct DiffArgs {
     /// Branch (used for manifest request codes)
     #[arg(long)]
     pub branch: Option<String>,
+    /// Output format
+    #[arg(long, value_enum)]
+    pub format: Option<OutputFormat>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PackagesArgs {
+    /// Package (sub) IDs to query
+    #[arg(long = "package", required = true, num_args = 1..)]
+    pub packages: Vec<u32>,
     /// Output format
     #[arg(long, value_enum)]
     pub format: Option<OutputFormat>,

@@ -183,3 +183,132 @@ impl DepotFileFlags {
         self.contains(Self::EXECUTABLE)
     }
 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[non_exhaustive]
+pub enum EBillingType {
+    NoCost,
+    Store,
+    BillMonthly,
+    CdKey,
+    GuestPass,
+    HardwarePromo,
+    Gift,
+    FreeWeekend,
+    OemKey,
+    StoreOrCdKey,
+    FreeOnDemand,
+    FreeCommercial,
+    Unknown(i32),
+}
+
+impl EBillingType {
+    pub fn from_i32(v: i32) -> Self {
+        match v {
+            0 => Self::NoCost,
+            1 => Self::Store,
+            2 => Self::BillMonthly,
+            3 => Self::CdKey,
+            4 => Self::GuestPass,
+            5 => Self::HardwarePromo,
+            6 => Self::Gift,
+            7 => Self::FreeWeekend,
+            8 => Self::OemKey,
+            10 => Self::StoreOrCdKey,
+            12 => Self::FreeOnDemand,
+            14 => Self::FreeCommercial,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl std::fmt::Display for EBillingType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoCost => write!(f, "No Cost"),
+            Self::Store => write!(f, "Store"),
+            Self::BillMonthly => write!(f, "Bill Monthly"),
+            Self::CdKey => write!(f, "CD Key"),
+            Self::GuestPass => write!(f, "Guest Pass"),
+            Self::HardwarePromo => write!(f, "Hardware Promo"),
+            Self::Gift => write!(f, "Gift"),
+            Self::FreeWeekend => write!(f, "Free Weekend"),
+            Self::OemKey => write!(f, "OEM Key"),
+            Self::StoreOrCdKey => write!(f, "Store or CD Key"),
+            Self::FreeOnDemand => write!(f, "Free on Demand"),
+            Self::FreeCommercial => write!(f, "Free Commercial"),
+            Self::Unknown(v) => write!(f, "Unknown ({v})"),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[non_exhaustive]
+pub enum ELicenseType {
+    NoLicense,
+    SinglePurchase,
+    SinglePurchaseLimitedUse,
+    RecurringCharge,
+    RecurringLimitedUse,
+    LimitUseDelayedActivation,
+    Unknown(i32),
+}
+
+impl ELicenseType {
+    pub fn from_i32(v: i32) -> Self {
+        match v {
+            0 => Self::NoLicense,
+            1 => Self::SinglePurchase,
+            2 => Self::SinglePurchaseLimitedUse,
+            3 => Self::RecurringCharge,
+            6 => Self::RecurringLimitedUse,
+            7 => Self::LimitUseDelayedActivation,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl std::fmt::Display for ELicenseType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoLicense => write!(f, "No License"),
+            Self::SinglePurchase => write!(f, "Single Purchase"),
+            Self::SinglePurchaseLimitedUse => write!(f, "Single Purchase (Limited Use)"),
+            Self::RecurringCharge => write!(f, "Recurring Charge"),
+            Self::RecurringLimitedUse => write!(f, "Recurring (Limited Use)"),
+            Self::LimitUseDelayedActivation => write!(f, "Limit Use, Delayed Activation"),
+            Self::Unknown(v) => write!(f, "Unknown ({v})"),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[non_exhaustive]
+pub enum EPackageStatus {
+    Available,
+    Preorder,
+    Unavailable,
+    Unknown(i32),
+}
+
+impl EPackageStatus {
+    pub fn from_i32(v: i32) -> Self {
+        match v {
+            0 => Self::Available,
+            1 => Self::Preorder,
+            2 => Self::Unavailable,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl std::fmt::Display for EPackageStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Available => write!(f, "Available"),
+            Self::Preorder => write!(f, "Preorder"),
+            Self::Unavailable => write!(f, "Unavailable"),
+            Self::Unknown(v) => write!(f, "Unknown ({v})"),
+        }
+    }
+}
