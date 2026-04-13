@@ -540,8 +540,15 @@ async fn run_download(
         .unwrap_or_else(|| PathBuf::from("depots").join(depot_id.0.to_string()));
     std::fs::create_dir_all(&output_dir)?;
 
+    // Check for interrupted install
+    let mut depot_config = steamroom_client::depot_config::DepotConfig::load(&output_dir);
+    if let Some(interrupted_id) = depot_config.is_installing(depot_id) {
+        warn!(
+            "previous install of manifest {interrupted_id} was interrupted, resuming with {manifest_id}"
+        );
+    }
+
     // Load old manifest for delta file removal
-    let depot_config = steamroom_client::depot_config::DepotConfig::load(&output_dir);
     let old_manifest_files = match depot_config.get_installed(depot_id) {
         Some((old_id, old_key)) if old_id != manifest_id => {
             debug!("previous manifest: {old_id}, loading for delta");
@@ -613,6 +620,10 @@ async fn run_download(
 
     info!("downloading to {}", output_dir.display());
 
+    // Mark as installing before starting
+    depot_config.set_installing(depot_id, manifest_id, &depot_key);
+    let _ = depot_config.save(&output_dir);
+
     let progress_handle = download::spawn_progress_renderer(event_rx, show_progress);
 
     let stats = job
@@ -623,14 +634,13 @@ async fn run_download(
     drop(job);
     let _ = progress_handle.await;
 
-    // Save config and decompressed manifest for delta patching
+    // Mark as installed (clears installing state)
     let _ = steamroom_client::depot_config::DepotConfig::save_manifest_decompressed(
         &output_dir,
         depot_id,
         manifest_id,
         &manifest_bytes,
     );
-    let mut depot_config = steamroom_client::depot_config::DepotConfig::load(&output_dir);
     depot_config.set_installed(depot_id, manifest_id, &depot_key);
     let _ = depot_config.save(&output_dir);
 

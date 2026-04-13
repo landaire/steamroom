@@ -9,6 +9,8 @@ use steamroom::depot::ManifestId;
 pub struct DepotInfo {
     pub manifest_id: u64,
     pub depot_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installing: Option<u64>,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -44,6 +46,12 @@ impl DepotConfig {
         std::fs::write(Self::config_path(install_dir), json)
     }
 
+    pub fn is_installing(&self, depot_id: DepotId) -> Option<ManifestId> {
+        self.depots
+            .get(&depot_id.0)
+            .and_then(|info| info.installing.map(ManifestId))
+    }
+
     pub fn get_installed(&self, depot_id: DepotId) -> Option<(ManifestId, DepotKey)> {
         let info = self.depots.get(&depot_id.0)?;
         let key_bytes = decode_hex(&info.depot_key)?;
@@ -53,6 +61,21 @@ impl DepotConfig {
         let mut key = [0u8; 32];
         key.copy_from_slice(&key_bytes);
         Some((ManifestId(info.manifest_id), DepotKey(key)))
+    }
+
+    pub fn set_installing(
+        &mut self,
+        depot_id: DepotId,
+        manifest_id: ManifestId,
+        depot_key: &DepotKey,
+    ) {
+        let entry = self.depots.entry(depot_id.0).or_insert_with(|| DepotInfo {
+            manifest_id: 0,
+            depot_key: encode_hex(&depot_key.0),
+            installing: None,
+        });
+        entry.depot_key = encode_hex(&depot_key.0);
+        entry.installing = Some(manifest_id.0);
     }
 
     pub fn set_installed(
@@ -66,6 +89,7 @@ impl DepotConfig {
             DepotInfo {
                 manifest_id: manifest_id.0,
                 depot_key: encode_hex(&depot_key.0),
+                installing: None,
             },
         );
     }
