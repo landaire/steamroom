@@ -222,18 +222,12 @@ steamroom-proto-extract — Tool to extract protobuf definitions from Steam bina
 
 Compared against [DepotDownloader](https://github.com/SteamRE/DepotDownloader) v3.4.0 (C#/.NET) using [hyperfine](https://github.com/sharkdp/hyperfine). Anonymous login, Windows 11, same network.
 
-| Benchmark | steamroom | DepotDownloader | Speedup |
-| --------- | --------- | --------------- | ------- |
-
-\\\\\\\ to: mpptwwzu 280b1323 "perf: better-optimized Adler32 implementation" (rebased revision)
--| App info query (480) | 0.83s ± 0.21s | 2.28s ± 1.17s | **2.7x** |
--| File listing (480/481) | 0.81s ± 0.02s | 1.05s ± 0.18s | **1.3x** |
--| Download Spacewar (1.8 MB) | 1.80s ± 0.12s | 4.03s ± 0.16s | **2.2x** |
--| Download CS2 content (2.5 GB) | 22.0s ± 0.5s | 33.1s ± 2.2s | **1.5x** |
-+| App info query (480) | 0.67s ± 0.06s | 2.85s ± 1.02s | **4.3x** |
-+| File listing (480/481) | 1.67s ± 0.06s | 3.34s ± 1.01s | **2.0x** |
-+| Download Spacewar (1.8 MB) | 1.23s ± 0.14s | 4.04s ± 0.16s | **3.3x** |
-+| Download CS2 content (2.5 GB) | 23.6s | 32.1s | **1.4x** |
+| Benchmark                     | steamroom     | DepotDownloader | Speedup  |
+| ----------------------------- | ------------- | --------------- | -------- |
+| App info query (480)          | 0.67s ± 0.06s | 2.85s ± 1.02s   | **4.3x** |
+| File listing (480/481)        | 1.67s ± 0.06s | 3.34s ± 1.01s   | **2.0x** |
+| Download Spacewar (1.8 MB)    | 1.23s ± 0.14s | 4.04s ± 0.16s   | **3.3x** |
+| Download CS2 content (2.5 GB) | 23.6s         | 32.1s           | **1.4x** |
 
 Both tools are network-bound for large downloads. Results will vary by network and hardware. Run `bench/run.sh` to reproduce on your own setup.
 
