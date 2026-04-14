@@ -190,12 +190,41 @@ controller.vdf                1.53 KiB        1
 D3D9VRDistort.cso                576 B        1
 ```
 
+### `diff`
+
+Compare two manifests and show added, removed, and changed files.
+
+```bash
+steamroom diff --app 480 --depot 481 --from 3183503801510301321 --to 8271816315493618441
+steamroom diff --app 480 --depot 481 --from 3183503801510301321 --to 8271816315493618441 --format json
+```
+
+### `packages`
+
+Query Steam package (sub) details by ID.
+
+```bash
+steamroom packages --package 17906
+steamroom packages --package 17906 --package 29197 --format json
+```
+
 ### `workshop`
 
 Download Steam Workshop items.
 
 ```bash
 steamroom workshop --app 440 --item 123456789 -o workshop/
+```
+
+### `local-info`
+
+Show locally cached depot keys and beta branches from Steam's config.vdf.
+
+```bash
+steamroom local-info
+steamroom local-info --format json
+steamroom local-info --users
+steamroom local-info --user myaccount
 ```
 
 ## Authentication
@@ -209,6 +238,7 @@ steamroom supports multiple authentication methods:
 | Password + 2FA | `--username X`              | Prompts for guard code                           |
 | QR code        | `--username X --qr`         | Scan with Steam mobile app                       |
 | Saved token    | `--username X`              | Auto-loads from `~/.depotdownloader/tokens.json` |
+| Steam token    | `--use-steam-token`         | Reuses cached token from local Steam installation |
 
 Tokens are saved automatically after successful login and reused on subsequent runs.
 
@@ -222,11 +252,16 @@ DD_COMPAT=1 steamroom -app 480 -depot 481 -dir output/ -validate
 
 ## Features
 
-- TCP and WebSocket transports
-- Pipelined chunk downloads with resume support
+- TCP and WebSocket CM transports
+- HTTP/2 multiplexed chunk downloads with CDN server pool rotation
+- Chunk-level delta downloads (only fetches changed chunks via Adler-32 comparison)
+- Local Steam credential reuse (`--use-steam-token`) on Windows, Linux, and macOS
+- Local depot key and beta hash reuse from Steam's config.vdf (`--local-keys`)
+- Manifest diff, package queries, manifest-only download, local manifest reading
+- Non-atomic write mode for direct chunk-to-file writes
 - Serde deserializer for Valve KeyValue format
 - C/C++ FFI bindings via Diplomat, Python bindings via nanobind
-- Proto extraction tool for `steamclient64.dll`
+- Proto extraction tool for steamclient64.dll
 - Fuzz targets for binary parsers
 
 ## Architecture
