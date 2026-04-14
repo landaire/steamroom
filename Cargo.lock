@@ -2717,6 +2717,7 @@ dependencies = [
  "rootcause",
  "serde",
  "serde_json",
+ "sha2",
  "steamroom",
  "tempfile",
  "thiserror 2.0.18",

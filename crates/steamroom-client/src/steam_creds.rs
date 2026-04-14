@@ -68,6 +68,25 @@ pub fn detect_username(steam_dir: &std::path::Path) -> Option<String> {
     None
 }
 
+/// Read the hex-encoded encrypted token blob from a `local.vdf` file.
+/// Traverses `MachineUserConfigStore/Software/valve/Steam/ConnectCache`.
+fn read_connect_cache_blob(path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let kv = steamroom::types::key_value::parse_text_kv(&content).ok()?;
+    let software = kv.get("Software")?;
+    let valve = software.get("valve").or_else(|| software.get("Valve"))?;
+    let steam = valve.get("Steam")?;
+    let cache = steam.get("ConnectCache")?;
+    if let steamroom::types::key_value::KvValue::Children(ref entries) = cache.value {
+        for entry in entries.values() {
+            if let Some(hex) = entry.as_str() {
+                return Some(hex.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Extract the cached refresh token for the given account name.
 ///
 /// Returns `None` if Steam is not installed, no token is cached, or
@@ -77,12 +96,61 @@ pub fn extract_token(account_name: &str) -> Option<CachedToken> {
     {
         windows::extract_token(account_name)
     }
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        unix::extract_token(account_name)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = account_name;
-        // Token extraction not yet implemented for this platform.
-        // Steam on Linux/macOS uses different storage mechanisms.
         None
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix {
+    use super::*;
+    use std::path::Path;
+
+    pub fn extract_token(account_name: &str) -> Option<CachedToken> {
+        let steam_dir = super::steam_dir()?;
+        let local_vdf = find_local_vdf(&steam_dir)?;
+        let encrypted_hex = super::read_connect_cache_blob(&local_vdf)?;
+        let encrypted = steamroom::util::hex::decode(&encrypted_hex)?;
+        let decrypted = decrypt_token_blob(&encrypted, account_name)?;
+        let token = String::from_utf8(decrypted).ok()?;
+        if !token.starts_with("eyA") {
+            return None;
+        }
+        Some(CachedToken {
+            account_name: account_name.to_string(),
+            refresh_token: token,
+        })
+    }
+
+    fn find_local_vdf(steam_dir: &Path) -> Option<PathBuf> {
+        let path = steam_dir.join("local.vdf");
+        if path.exists() {
+            return Some(path);
+        }
+        let path = steam_dir.join("config").join("local.vdf");
+        if path.exists() {
+            return Some(path);
+        }
+        None
+    }
+
+    /// Decrypt token blob: key = SHA256(account_name), format = ECB(IV) || CBC(data).
+    fn decrypt_token_blob(data: &[u8], account_name: &str) -> Option<Vec<u8>> {
+        use sha2::Digest;
+
+        if data.len() < 32 {
+            return None;
+        }
+
+        let key = sha2::Sha256::digest(account_name.as_bytes());
+        let iv = steamroom::crypto::symmetric_decrypt_ecb_nopad(&data[..16], &key).ok()?;
+        steamroom::crypto::symmetric_decrypt_cbc(&data[16..], &key, &iv).ok()
     }
 }
 
@@ -174,7 +242,7 @@ mod windows {
 
     pub fn extract_token(account_name: &str) -> Option<CachedToken> {
         let local_vdf_path = local_vdf_path()?;
-        let encrypted_hex = read_connect_cache_blob(&local_vdf_path)?;
+        let encrypted_hex = super::read_connect_cache_blob(&local_vdf_path)?;
         let encrypted = steamroom::util::hex::decode(&encrypted_hex)?;
         let decrypted = dpapi_decrypt(&encrypted, account_name.as_bytes())?;
         let token = String::from_utf8(decrypted).ok()?;
@@ -191,24 +259,6 @@ mod windows {
         let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
         let path = Path::new(&local_app_data).join("Steam").join("local.vdf");
         if path.exists() { Some(path) } else { None }
-    }
-
-    fn read_connect_cache_blob(path: &Path) -> Option<String> {
-        let content = std::fs::read_to_string(path).ok()?;
-        let kv = steamroom::types::key_value::parse_text_kv(&content).ok()?;
-        let software = kv.get("Software")?;
-        let valve = software.get("valve")?;
-        let steam = valve.get("Steam")?;
-        let cache = steam.get("ConnectCache")?;
-        if let steamroom::types::key_value::KvValue::Children(ref entries) = cache.value {
-            // Return the first (and typically only) entry's value
-            for entry in entries.values() {
-                if let Some(hex) = entry.as_str() {
-                    return Some(hex.to_string());
-                }
-            }
-        }
-        None
     }
 
     fn dpapi_decrypt(encrypted: &[u8], entropy: &[u8]) -> Option<Vec<u8>> {

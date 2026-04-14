@@ -27,6 +27,7 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 regex = { workspace = true }
 dirs-next = { workspace = true }
+sha2 = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
