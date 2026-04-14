@@ -816,50 +816,31 @@ impl SteamClient<LoggedIn> {
         loop {
             let incoming = self.recv_raw().await?;
             if incoming.emsg == EMsg::CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE {
-                // k_EMsgClientGetDepotDecryptionKeyResponse
-                let resp =
-                    generated::CMsgClientGetDepotDecryptionKeyResponse::decode(&*incoming.body)?;
-                crate::enums::eresult(
-                    resp.eresult
-                        .ok_or(ConnectionError::MissingField("eresult"))?,
-                )
-                .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
-                let key_data = resp
-                    .depot_encryption_key
-                    .ok_or(ConnectionError::MissingField("depot_encryption_key"))?;
-                if key_data.len() != 32 {
-                    return Err(ConnectionError::EncryptionFailed.into());
-                }
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&key_data);
-                return Ok(DepotKey(key));
+                return Self::parse_depot_key_response(&incoming.body);
             }
             if incoming.emsg == EMsg::MULTI {
                 let msgs = multi::unpack_multi(&incoming.body)?;
                 for sub in msgs {
                     let sub_msg = parse_incoming(&sub)?;
                     if sub_msg.emsg == EMsg::CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE {
-                        let resp = generated::CMsgClientGetDepotDecryptionKeyResponse::decode(
-                            &*sub_msg.body,
-                        )?;
-                        crate::enums::eresult(
-                            resp.eresult
-                                .ok_or(ConnectionError::MissingField("eresult"))?,
-                        )
-                        .map_err(|_| ConnectionError::DepotAccessDenied(depot_id.0))?;
-                        let key_data = resp
-                            .depot_encryption_key
-                            .ok_or(ConnectionError::MissingField("depot_encryption_key"))?;
-                        if key_data.len() != 32 {
-                            return Err(ConnectionError::EncryptionFailed.into());
-                        }
-                        let mut key = [0u8; 32];
-                        key.copy_from_slice(&key_data);
-                        return Ok(DepotKey(key));
+                        return Self::parse_depot_key_response(&sub_msg.body);
                     }
                 }
             }
         }
+    }
+
+    fn parse_depot_key_response(body: &[u8]) -> Result<DepotKey, Error> {
+        let resp = generated::CMsgClientGetDepotDecryptionKeyResponse::decode_checked(body)?;
+        let key_data = resp
+            .depot_encryption_key
+            .ok_or(ConnectionError::MissingField("depot_encryption_key"))?;
+        if key_data.len() != 32 {
+            return Err(ConnectionError::EncryptionFailed.into());
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&key_data);
+        Ok(DepotKey(key))
     }
 
     /// Request access to a private beta branch using a cached password hash.
@@ -899,11 +880,7 @@ impl SteamClient<LoggedIn> {
     }
 
     fn parse_private_beta_response(body: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        let resp = generated::CMsgClientPicsPrivateBetaResponse::decode(body)?;
-        let code = resp
-            .eresult
-            .ok_or(ConnectionError::MissingField("eresult"))?;
-        crate::enums::eresult(code).map_err(ConnectionError::ServiceMethodFailed)?;
+        let resp = generated::CMsgClientPicsPrivateBetaResponse::decode_checked(body)?;
         Ok(resp.depot_section)
     }
 
@@ -1034,6 +1011,68 @@ fn check_service_eresult(msg: &IncomingMsg) -> Result<(), Error> {
         crate::enums::eresult(code).map_err(ConnectionError::ServiceMethodFailed)?;
     }
     Ok(())
+}
+
+/// Trait for protobuf response messages that contain an `eresult` field.
+/// Implement this for any response proto where the eresult must be checked.
+///
+/// The default [`decode_checked`](HasEResult::decode_checked) maps non-OK
+/// eresults to [`ConnectionError::ServiceMethodFailed`]. Override it for
+/// messages that need a more specific error (e.g. `DepotAccessDenied`).
+pub trait HasEResult: prost::Message + Default {
+    fn get_eresult(&self) -> Option<i32>;
+
+    fn decode_checked(buf: &[u8]) -> Result<Self, Error> {
+        let msg = Self::decode(buf)?;
+        let code = msg
+            .get_eresult()
+            .ok_or(ConnectionError::MissingField("eresult"))?;
+        crate::enums::eresult(code).map_err(ConnectionError::ServiceMethodFailed)?;
+        Ok(msg)
+    }
+}
+
+impl HasEResult for generated::CMsgClientLogonResponse {
+    fn get_eresult(&self) -> Option<i32> {
+        self.eresult
+    }
+
+    fn decode_checked(buf: &[u8]) -> Result<Self, Error> {
+        let msg = Self::decode(buf)?;
+        let code = msg
+            .get_eresult()
+            .ok_or(ConnectionError::MissingField("eresult"))?;
+        crate::enums::eresult(code).map_err(ConnectionError::LogonFailed)?;
+        Ok(msg)
+    }
+}
+
+impl HasEResult for generated::CMsgClientGetDepotDecryptionKeyResponse {
+    fn get_eresult(&self) -> Option<i32> {
+        self.eresult
+    }
+
+    fn decode_checked(buf: &[u8]) -> Result<Self, Error> {
+        let msg = Self::decode(buf)?;
+        let code = msg
+            .get_eresult()
+            .ok_or(ConnectionError::MissingField("eresult"))?;
+        let depot_id = msg.depot_id.unwrap_or(0);
+        crate::enums::eresult(code).map_err(|_| ConnectionError::DepotAccessDenied(depot_id))?;
+        Ok(msg)
+    }
+}
+
+impl HasEResult for generated::CMsgClientCheckAppBetaPasswordResponse {
+    fn get_eresult(&self) -> Option<i32> {
+        self.eresult
+    }
+}
+
+impl HasEResult for generated::CMsgClientPicsPrivateBetaResponse {
+    fn get_eresult(&self) -> Option<i32> {
+        self.eresult
+    }
 }
 
 fn guard_type_from_proto(confirmation_type: Option<i32>) -> Option<GuardType> {
