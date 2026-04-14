@@ -59,8 +59,9 @@ pub mod depot_config;
 pub mod download;
 /// Download progress events for UI integration.
 pub mod event;
-/// Manifest cache to avoid redundant CDN fetches.
 pub mod manifest;
+/// Extract cached credentials from a local Steam installation.
+pub mod steam_creds;
 
 #[cfg(test)]
 mod depot_config_tests;

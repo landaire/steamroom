@@ -134,7 +134,30 @@ async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, 
     };
 
     // Determine auth mode and get token if needed
-    let (logon, steam_id) = if let Some(ref username) = auth.username {
+    let (logon, steam_id) = if auth.use_steam_token {
+        let username = auth.username.clone().or_else(|| {
+            let dir = steamroom_client::steam_creds::steam_dir()?;
+            steamroom_client::steam_creds::detect_username(&dir)
+        });
+        let cached = username.as_deref().and_then(|u| {
+            info!("extracting cached Steam token for {u}...");
+            steamroom_client::steam_creds::extract_token(u)
+        });
+        if let Some(cred) = cached {
+            info!("using cached Steam token for {}", cred.account_name);
+            build_token_logon(&cred.account_name, &cred.refresh_token)
+        } else {
+            warn!("failed to extract Steam token, falling back to normal auth");
+            username
+                .as_deref()
+                .and_then(|u| {
+                    let token = load_saved_token(u)?;
+                    info!("using saved refresh token for {u}");
+                    Some(build_token_logon(u, &token))
+                })
+                .unwrap_or_else(build_anon_logon)
+        }
+    } else if let Some(ref username) = auth.username {
         if let Some(token) = load_saved_token(username) {
             info!("using saved refresh token for {username}");
             build_token_logon(username, &token)
@@ -199,6 +222,9 @@ async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, 
                 &tokens.access_token,
             )
         }
+    } else if let Some((username, token)) = detect_steam_user() {
+        info!("auto-detected Steam user: {username}");
+        build_token_logon(&username, &token)
     } else {
         build_anon_logon()
     };
@@ -221,6 +247,14 @@ fn tokens_path() -> Option<std::path::PathBuf> {
             .join(".depotdownloader")
             .join("tokens.json"),
     )
+}
+
+/// Try to detect the active Steam user and find a saved refresh token.
+fn detect_steam_user() -> Option<(String, String)> {
+    let dir = steamroom_client::steam_creds::steam_dir()?;
+    let username = steamroom_client::steam_creds::detect_username(&dir)?;
+    let token = load_saved_token(&username)?;
+    Some((username, token))
 }
 
 fn load_saved_token(username: &str) -> Option<String> {

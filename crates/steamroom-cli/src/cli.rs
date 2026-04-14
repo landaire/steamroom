@@ -122,6 +122,7 @@ impl CompatCli {
                 username: self.username,
                 password: self.password,
                 qr: self.qr,
+                use_steam_token: false,
                 remember_password: self.remember_password,
                 device_name: self.device_name,
             },
@@ -148,6 +149,10 @@ pub struct AuthOptions {
     /// Login via QR code (scan with Steam mobile app)
     #[arg(long)]
     pub qr: bool,
+
+    /// Use cached token from local Steam installation
+    #[arg(long)]
+    pub use_steam_token: bool,
 
     /// Save login token for future use
     #[arg(long)]

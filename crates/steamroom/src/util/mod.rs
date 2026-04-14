@@ -2,3 +2,5 @@
 pub mod checksum;
 /// Compression helpers.
 pub mod compression;
+#[doc(hidden)]
+pub mod hex;

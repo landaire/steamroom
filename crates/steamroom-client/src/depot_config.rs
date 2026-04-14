@@ -54,7 +54,7 @@ impl DepotConfig {
 
     pub fn get_installed(&self, depot_id: DepotId) -> Option<(ManifestId, DepotKey)> {
         let info = self.depots.get(&depot_id.0)?;
-        let key_bytes = decode_hex(&info.depot_key)?;
+        let key_bytes = steamroom::util::hex::decode(&info.depot_key)?;
         if key_bytes.len() != 32 {
             return None;
         }
@@ -71,10 +71,10 @@ impl DepotConfig {
     ) {
         let entry = self.depots.entry(depot_id.0).or_insert_with(|| DepotInfo {
             manifest_id: 0,
-            depot_key: encode_hex(&depot_key.0),
+            depot_key: steamroom::util::hex::encode(&depot_key.0),
             installing: None,
         });
-        entry.depot_key = encode_hex(&depot_key.0);
+        entry.depot_key = steamroom::util::hex::encode(&depot_key.0);
         entry.installing = Some(manifest_id.0);
     }
 
@@ -88,7 +88,7 @@ impl DepotConfig {
             depot_id.0,
             DepotInfo {
                 manifest_id: manifest_id.0,
-                depot_key: encode_hex(&depot_key.0),
+                depot_key: steamroom::util::hex::encode(&depot_key.0),
                 installing: None,
             },
         );
@@ -134,23 +134,4 @@ impl DepotConfig {
             .join(format!("{}_{}.manifest", depot_id.0, manifest_id.0));
         std::fs::read(&path).ok()
     }
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
-
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
 }
