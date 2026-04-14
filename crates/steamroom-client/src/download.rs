@@ -188,10 +188,13 @@ impl FileFilter {
             Self::None => true,
             Self::Combined(entries) => entries.iter().any(|entry| match entry {
                 FileFilterEntry::Literal(lit) => {
-                    filename.eq_ignore_ascii_case(lit)
-                        || filename.replace('\\', "/").eq_ignore_ascii_case(lit)
+                    let norm_file = filename.replace('\\', "/");
+                    let norm_lit = lit.replace('\\', "/");
+                    norm_file.eq_ignore_ascii_case(&norm_lit)
                 }
-                FileFilterEntry::Regex(re) => re.is_match(filename),
+                FileFilterEntry::Regex(re) => {
+                    re.is_match(filename) || re.is_match(&filename.replace('\\', "/"))
+                }
             }),
             Self::Regex(re) => re.is_match(filename),
         }
@@ -280,7 +283,7 @@ impl DepotJob {
                 continue;
             }
 
-            let file_path = self.install_dir.join(filename);
+            let file_path = self.install_dir.join(file.normalized_path());
             let flags = DepotFileFlags(file.flags);
 
             if flags.is_directory() {
@@ -350,14 +353,14 @@ impl DepotJob {
 
         // Remove files from the old manifest that are absent in the new one
         if let Some(ref old_files) = self.old_manifest_files {
-            let new_files: std::collections::HashSet<&str> =
-                manifest.files.iter().map(|f| f.filename.as_str()).collect();
+            let new_files: std::collections::HashSet<String> =
+                manifest.files.iter().map(|f| f.normalized_path()).collect();
 
             for old_name in old_files {
-                if new_files.contains(old_name.as_str()) {
+                if new_files.contains(old_name) {
                     continue;
                 }
-                let old_path = self.install_dir.join(old_name.replace('\\', "/"));
+                let old_path = self.install_dir.join(old_name);
                 if old_path.exists() {
                     let is_dir = old_path.is_dir();
                     let removed = if is_dir {
@@ -378,42 +381,13 @@ impl DepotJob {
             let mut candidate_dirs: Vec<PathBuf> = old_files
                 .iter()
                 .filter(|name| !new_files.contains(name.as_str()))
-                .flat_map(|name| {
-                    let mut dirs = vec![];
-                    let mut p = Path::new(name).parent();
-                    while let Some(d) = p {
-                        if d.as_os_str().is_empty() {
-                            break;
-                        }
-                        dirs.push(
-                            self.install_dir
-                                .join(d.to_str().unwrap_or("").replace('\\', "/")),
-                        );
-                        p = d.parent();
-                    }
-                    dirs
-                })
+                .flat_map(|name| parent_dirs(&self.install_dir, name))
                 .collect();
-            // Sort longest path first so we remove children before parents
             candidate_dirs.sort_by_key(|d| std::cmp::Reverse(d.as_os_str().len()));
             candidate_dirs.dedup();
             let new_parents: std::collections::HashSet<PathBuf> = new_files
                 .iter()
-                .flat_map(|name| {
-                    let mut dirs = vec![];
-                    let mut p = Path::new(name).parent();
-                    while let Some(d) = p {
-                        if d.as_os_str().is_empty() {
-                            break;
-                        }
-                        dirs.push(
-                            self.install_dir
-                                .join(d.to_str().unwrap_or("").replace('\\', "/")),
-                        );
-                        p = d.parent();
-                    }
-                    dirs
-                })
+                .flat_map(|name| parent_dirs(&self.install_dir, name))
                 .collect();
             for dir in &candidate_dirs {
                 if std::fs::remove_dir(dir).is_err() && !new_parents.contains(dir) {
@@ -589,6 +563,20 @@ impl DepotJob {
 
         Ok(written)
     }
+}
+
+/// Collect all parent directories of a normalized path, joined to install_dir.
+fn parent_dirs(install_dir: &Path, name: &str) -> Vec<PathBuf> {
+    let mut dirs = vec![];
+    let mut p = Path::new(name).parent();
+    while let Some(d) = p {
+        if d.as_os_str().is_empty() {
+            break;
+        }
+        dirs.push(install_dir.join(d));
+        p = d.parent();
+    }
+    dirs
 }
 
 fn file_matches(path: &Path, expected_size: u64, sha_content: Option<&[u8; 20]>) -> bool {

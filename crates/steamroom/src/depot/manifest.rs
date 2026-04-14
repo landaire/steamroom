@@ -28,6 +28,9 @@ pub struct DepotManifest {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct ManifestFile {
+    /// Original filename from the depot manifest. Uses Windows-style backslash
+    /// separators as stored in the protobuf. For filesystem operations, use
+    /// [`normalized_path`](Self::normalized_path) instead.
     pub filename: String,
     pub size: u64,
     pub flags: u32,
@@ -46,6 +49,12 @@ impl ManifestFile {
             chunks: vec![],
             link_target: None,
         }
+    }
+
+    /// Returns the filename with path separators normalized to forward slashes.
+    /// Use this for filesystem operations instead of [`filename`](Self::filename) directly.
+    pub fn normalized_path(&self) -> String {
+        self.filename.replace('\\', "/")
     }
 }
 

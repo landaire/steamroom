@@ -565,7 +565,7 @@ async fn run_download(
                 Some(
                     old.files
                         .iter()
-                        .map(|f| f.filename.clone())
+                        .map(|f| f.normalized_path())
                         .collect::<Vec<_>>(),
                 )
             })

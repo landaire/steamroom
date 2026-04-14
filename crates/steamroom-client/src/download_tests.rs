@@ -458,8 +458,8 @@ async fn delta_handles_nested_paths() {
     std::fs::write(nested.join("keep.dll"), b"keep").unwrap();
 
     let old_files = vec![
-        "game\\bin\\old.dll".to_string(),
-        "game\\bin\\keep.dll".to_string(),
+        "game/bin/old.dll".to_string(),
+        "game/bin/keep.dll".to_string(),
     ];
     let new_manifest = manifest_with(&["game\\bin\\keep.dll"]);
 
@@ -994,7 +994,7 @@ async fn delta_prunes_empty_parent_dirs_of_removed_files() {
     std::fs::create_dir_all(&nested).unwrap();
     std::fs::write(nested.join("old.idx"), b"old").unwrap();
 
-    let old_files = vec!["bin\\12345\\idx\\old.idx".to_string()];
+    let old_files = vec!["bin/12345/idx/old.idx".to_string()];
     let new_manifest = manifest_with(&["other.txt"]);
 
     let job = DepotJob::builder()
@@ -1033,8 +1033,8 @@ async fn delta_prune_does_not_remove_dirs_with_remaining_files() {
 
     // Only removed.idx is gone; kept.idx stays
     let old_files = vec![
-        "bin\\12345\\idx\\removed.idx".to_string(),
-        "bin\\12345\\idx\\kept.idx".to_string(),
+        "bin/12345/idx/removed.idx".to_string(),
+        "bin/12345/idx/kept.idx".to_string(),
     ];
     let new_manifest = manifest_with(&["bin\\12345\\idx\\kept.idx"]);
 
@@ -1074,7 +1074,7 @@ async fn delta_prune_does_not_touch_user_dirs() {
     std::fs::create_dir_all(&user_dir).unwrap();
     std::fs::write(user_dir.join("notes.txt"), b"user file").unwrap();
 
-    let old_files = vec!["bin\\old\\data.bin".to_string()];
+    let old_files = vec!["bin/old/data.bin".to_string()];
     let new_manifest = manifest_with(&["new.txt"]);
 
     let job = DepotJob::builder()
