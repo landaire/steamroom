@@ -6,7 +6,6 @@ pub mod multi;
 use self::msg::ClientMsg;
 use crate::apps::AccessToken;
 use crate::apps::AppInfo;
-use crate::apps::BetaBranch;
 use crate::apps::PackageInfo;
 use crate::auth::AuthSession;
 use crate::auth::AuthTokens;
@@ -863,12 +862,49 @@ impl SteamClient<LoggedIn> {
         }
     }
 
-    pub async fn check_beta_password(
+    /// Request access to a private beta branch using a cached password hash.
+    /// Returns the depot section KV data on success.
+    pub async fn request_private_beta(
         &self,
-        _app_id: AppId,
-        _password: &str,
-    ) -> Result<Vec<BetaBranch>, Error> {
-        todo!()
+        app_id: AppId,
+        access_token: u64,
+        beta_name: &str,
+        password_hash: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let req = generated::CMsgClientPicsPrivateBetaRequest {
+            appid: Some(app_id.0),
+            access_token: Some(access_token),
+            beta_name: Some(beta_name.to_string()),
+            password_hash: Some(password_hash.to_vec()),
+        };
+        let body = req.encode_to_vec();
+        let msg = self.make_msg(EMsg::CLIENT_PICS_PRIVATE_BETA_REQUEST, &body);
+        self.send_raw(&msg).await?;
+
+        loop {
+            let incoming = self.recv_raw().await?;
+            if incoming.emsg == EMsg::CLIENT_PICS_PRIVATE_BETA_RESPONSE {
+                return Self::parse_private_beta_response(&incoming.body);
+            }
+            if incoming.emsg == EMsg::MULTI {
+                let msgs = multi::unpack_multi(&incoming.body)?;
+                for sub in msgs {
+                    let sub_msg = parse_incoming(&sub)?;
+                    if sub_msg.emsg == EMsg::CLIENT_PICS_PRIVATE_BETA_RESPONSE {
+                        return Self::parse_private_beta_response(&sub_msg.body);
+                    }
+                }
+            }
+        }
+    }
+
+    fn parse_private_beta_response(body: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        let resp = generated::CMsgClientPicsPrivateBetaResponse::decode(body)?;
+        let code = resp
+            .eresult
+            .ok_or(ConnectionError::MissingField("eresult"))?;
+        crate::enums::eresult(code).map_err(ConnectionError::ServiceMethodFailed)?;
+        Ok(resp.depot_section)
     }
 
     pub async fn get_cdn_servers(

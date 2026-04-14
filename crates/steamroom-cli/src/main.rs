@@ -101,6 +101,7 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
         Command::SaveManifest(args) => run_save_manifest(args, &cli.auth).await,
         Command::Download(args) => run_download(args, &cli.auth, show_progress).await,
         Command::Workshop(args) => run_workshop(args, &cli.auth, show_progress).await,
+        Command::LocalInfo(args) => run_local_info(args).await,
     }
 }
 
@@ -460,6 +461,45 @@ async fn run_download(
 
     let branch = args.branch.as_deref().unwrap_or("public");
 
+    // For non-public branches with --local-keys, try using cached beta hash
+    if args.local_keys && branch != "public" {
+        let steam_dir =
+            steamroom_client::steam_creds::steam_dir().ok_or(CliError::SteamNotFound)?;
+        let config = steamroom_client::steam_creds::read_config(&steam_dir)
+            .ok_or(CliError::SteamNotFound)?;
+        if let Some(hash) = steamroom_client::steam_creds::find_beta_hash(&config, app_id.0, branch)
+        {
+            info!("using cached beta hash for branch \"{branch}\"");
+            let token = kv
+                .get("depots")
+                .and_then(|d| d.get(&depot_id.0.to_string()))
+                .and_then(|d| d.get("manifests"))
+                .and_then(|d| d.get(branch))
+                .and_then(|d| d.get("gid"))
+                .and_then(|v| v.as_str());
+            // If we can't find the manifest in PICS, try requesting private beta access
+            if token.is_none() {
+                let access_tokens = client.pics_get_access_tokens(&[app_id]).await?;
+                let access_token = access_tokens.first().map(|t| t.token).unwrap_or(0);
+                match client
+                    .request_private_beta(app_id, access_token, branch, &hash)
+                    .await
+                {
+                    Ok(Some(depot_section)) => {
+                        info!("private beta access granted for branch \"{branch}\"");
+                        debug!("depot_section: {} bytes", depot_section.len());
+                    }
+                    Ok(None) => {
+                        warn!("private beta access denied for branch \"{branch}\"");
+                    }
+                    Err(e) => {
+                        warn!("private beta request failed: {e}");
+                    }
+                }
+            }
+        }
+    }
+
     // Find manifest ID
     let manifest_id = if let Some(m) = args.manifest {
         ManifestId(m)
@@ -474,8 +514,17 @@ async fn run_download(
     );
 
     // Get depot decryption key
-    info!("getting depot key for depot {depot_id} app {app_id}...");
-    let depot_key = client.get_depot_decryption_key(depot_id, app_id).await?;
+    let depot_key = if args.local_keys {
+        let steam_dir =
+            steamroom_client::steam_creds::steam_dir().ok_or(CliError::SteamNotFound)?;
+        let config = steamroom_client::steam_creds::read_config(&steam_dir)
+            .ok_or(CliError::SteamNotFound)?;
+        steamroom_client::steam_creds::find_depot_key(&config, depot_id)
+            .ok_or(CliError::NoLocalKey(depot_id.0))?
+    } else {
+        info!("getting depot key for depot {depot_id} app {app_id}...");
+        client.get_depot_decryption_key(depot_id, app_id).await?
+    };
     debug!("depot key: {:02x?}", &depot_key.0);
 
     // Get CDN servers
@@ -1322,6 +1371,174 @@ async fn run_save_manifest(args: SaveManifestArgs, auth: &AuthOptions) -> Result
     depot_config.save(&args.output)?;
 
     info!("saved manifest {manifest_id} to {}", args.output.display());
+    Ok(())
+}
+
+async fn run_local_info(args: LocalInfoArgs) -> Result<(), CliError> {
+    let steam_dir = steamroom_client::steam_creds::steam_dir().ok_or(CliError::SteamNotFound)?;
+
+    if args.users {
+        let users = steamroom_client::steam_creds::list_users(&steam_dir);
+        if args.format == Some(OutputFormat::Json) {
+            let json: Vec<serde_json::Value> = users
+                .iter()
+                .map(|u| {
+                    serde_json::json!({
+                        "steam_id": u.steam_id,
+                        "account_name": u.account_name,
+                        "persona_name": u.persona_name,
+                        "most_recent": u.most_recent,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        } else {
+            for u in &users {
+                let active = if u.most_recent { " (active)" } else { "" };
+                println!("{}{active}", u.account_name);
+            }
+        }
+        return Ok(());
+    }
+
+    info!("reading {}", steam_dir.join("config/config.vdf").display());
+
+    let config =
+        steamroom_client::steam_creds::read_config(&steam_dir).ok_or(CliError::SteamNotFound)?;
+
+    let apps = steamroom_client::steam_creds::scan_installed_apps(&steam_dir);
+    let mut depot_to_app: std::collections::HashMap<u32, (u32, &str)> =
+        std::collections::HashMap::new();
+    let mut app_names: std::collections::HashMap<u32, &str> = std::collections::HashMap::new();
+    for app in &apps {
+        app_names.insert(app.app_id, &app.name);
+        for &did in &app.depot_ids {
+            depot_to_app.insert(did, (app.app_id, &app.name));
+        }
+    }
+
+    if args.format == Some(OutputFormat::Json) {
+        let depot_keys: Vec<serde_json::Value> = config
+            .depot_keys
+            .iter()
+            .map(|dk| {
+                let (app_id, app_name) =
+                    depot_to_app.get(&dk.depot_id.0).copied().unwrap_or((0, ""));
+                serde_json::json!({
+                    "depot_id": dk.depot_id.0,
+                    "app_id": app_id,
+                    "app_name": app_name,
+                    "key": steamroom::util::hex::encode(&dk.key.0),
+                })
+            })
+            .collect();
+        let beta_hashes: Vec<serde_json::Value> = config
+            .beta_hashes
+            .iter()
+            .map(|bh| {
+                serde_json::json!({
+                    "app_id": bh.app_id,
+                    "app_name": app_names.get(&bh.app_id).copied().unwrap_or(""),
+                    "branch": bh.branch,
+                })
+            })
+            .collect();
+        let username = args
+            .user
+            .clone()
+            .or_else(|| steamroom_client::steam_creds::detect_username(&steam_dir));
+        let has_token = username
+            .as_deref()
+            .and_then(steamroom_client::steam_creds::extract_token)
+            .is_some();
+        let output = serde_json::json!({
+            "steam_dir": steam_dir.to_string_lossy(),
+            "user": username,
+            "has_cached_token": has_token,
+            "depot_keys": depot_keys,
+            "beta_hashes": beta_hashes,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    let display_user = args
+        .user
+        .clone()
+        .or_else(|| steamroom_client::steam_creds::detect_username(&steam_dir));
+
+    println!("Steam directory: {}", steam_dir.display());
+    if let Some(ref username) = display_user {
+        let has_token = steamroom_client::steam_creds::extract_token(username).is_some();
+        println!("User:            {username}");
+        println!("Cached token:    {}", if has_token { "yes" } else { "no" });
+    }
+    println!();
+
+    if !config.depot_keys.is_empty() {
+        println!(
+            "Cached depot decryption keys ({}):",
+            config.depot_keys.len()
+        );
+        println!();
+        let mut sorted_keys: Vec<_> = config
+            .depot_keys
+            .iter()
+            .map(|dk| {
+                let (app_id, app_name) =
+                    depot_to_app.get(&dk.depot_id.0).copied().unwrap_or((0, ""));
+                (app_name, app_id, dk)
+            })
+            .collect();
+        sorted_keys.sort_by(|a, b| {
+            a.0.cmp(b.0)
+                .then(a.1.cmp(&b.1))
+                .then(a.2.depot_id.0.cmp(&b.2.depot_id.0))
+        });
+
+        let mut table = TableBuilder::default();
+        table.push_record(["DEPOT", "APP", "NAME", "KEY"]);
+        for (app_name, app_id, dk) in &sorted_keys {
+            table.push_record([
+                dk.depot_id.0.to_string(),
+                if *app_id > 0 {
+                    app_id.to_string()
+                } else {
+                    String::new()
+                },
+                app_name.to_string(),
+                steamroom::util::hex::encode(&dk.key.0),
+            ]);
+        }
+        println!(
+            "{}",
+            table
+                .build()
+                .with(Style::blank())
+                .with(tabled::settings::Padding::new(0, 2, 0, 0))
+        );
+        println!();
+    }
+
+    if !config.beta_hashes.is_empty() {
+        println!("Cached beta branch passwords:");
+        println!();
+        let mut table = TableBuilder::default();
+        table.push_record(["APP", "NAME", "BRANCH"]);
+        for bh in &config.beta_hashes {
+            let name = app_names.get(&bh.app_id).copied().unwrap_or("");
+            table.push_record([bh.app_id.to_string(), name.to_string(), bh.branch.clone()]);
+        }
+        println!(
+            "{}",
+            table
+                .build()
+                .with(Style::blank())
+                .with(tabled::settings::Padding::new(0, 2, 0, 0))
+        );
+        println!();
+    }
+
     Ok(())
 }
 

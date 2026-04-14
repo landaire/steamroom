@@ -113,6 +113,7 @@ impl CompatCli {
                 max_downloads: self.max_downloads,
                 branch: self.branch,
                 branch_password: self.beta_password,
+                local_keys: false,
                 non_atomic: false,
                 save_manifests: false,
                 capture: None,
@@ -181,6 +182,8 @@ pub enum Command {
     Packages(PackagesArgs),
     /// Download a Steam Workshop item
     Workshop(WorkshopArgs),
+    /// Show locally cached depot keys and beta branches from Steam's config.vdf
+    LocalInfo(LocalInfoArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -239,6 +242,9 @@ pub struct DownloadArgs {
     /// Password for beta branch access
     #[arg(long)]
     pub branch_password: Option<String>,
+    /// Use depot decryption keys from Steam's local config.vdf instead of requesting from server
+    #[arg(long)]
+    pub local_keys: bool,
     /// Write chunks directly to target files instead of staging + rename
     #[arg(long)]
     pub non_atomic: bool,
@@ -288,6 +294,19 @@ pub struct FilesArgs {
     /// Show file sizes in raw bytes
     #[arg(long)]
     pub bytes: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct LocalInfoArgs {
+    /// Output format
+    #[arg(long, value_enum)]
+    pub format: Option<OutputFormat>,
+    /// Show info for a specific Steam user
+    #[arg(long)]
+    pub user: Option<String>,
+    /// List all local Steam users
+    #[arg(long)]
+    pub users: bool,
 }
 
 #[derive(Parser, Debug)]

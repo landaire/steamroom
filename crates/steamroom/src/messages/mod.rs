@@ -35,6 +35,8 @@ impl EMsg {
     pub const CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE: Self = Self(5439);
     pub const CLIENT_PICS_ACCESS_TOKEN_REQUEST: Self = Self(8905);
     pub const CLIENT_PICS_ACCESS_TOKEN_RESPONSE: Self = Self(8906);
+    pub const CLIENT_PICS_PRIVATE_BETA_REQUEST: Self = Self(8907);
+    pub const CLIENT_PICS_PRIVATE_BETA_RESPONSE: Self = Self(8908);
     pub const CLIENT_PICS_PRODUCT_INFO_REQUEST: Self = Self(8903);
     pub const CLIENT_PICS_PRODUCT_INFO_RESPONSE: Self = Self(8904);
     pub const CLIENT_HELLO: Self = Self(9805);

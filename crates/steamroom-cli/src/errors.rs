@@ -54,6 +54,12 @@ pub enum CliError {
     #[error("the manifest ID is not a valid number")]
     InvalidManifestId,
 
+    #[error("no cached decryption key for depot {0} in config.vdf")]
+    NoLocalKey(u32),
+
+    #[error("Steam installation not found")]
+    SteamNotFound,
+
     #[error("Steam returned no CDN servers")]
     NoCdnServers,
 }

@@ -46,6 +46,49 @@ pub fn steam_dir() -> Option<PathBuf> {
     }
 }
 
+/// A locally known Steam user from `loginusers.vdf`.
+#[derive(Clone, Debug)]
+pub struct LocalUser {
+    pub steam_id: String,
+    pub account_name: String,
+    pub persona_name: String,
+    pub most_recent: bool,
+}
+
+/// List all Steam users from `loginusers.vdf`.
+pub fn list_users(steam_dir: &std::path::Path) -> Vec<LocalUser> {
+    let Ok(content) = std::fs::read_to_string(steam_dir.join("config").join("loginusers.vdf"))
+    else {
+        return vec![];
+    };
+    let Ok(kv) = steamroom::types::key_value::parse_text_kv(&content) else {
+        return vec![];
+    };
+    let mut users = Vec::new();
+    if let steamroom::types::key_value::KvValue::Children(ref map) = kv.value {
+        for (steam_id, user_kv) in map {
+            let account_name = user_kv
+                .get("AccountName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let persona_name = user_kv
+                .get("PersonaName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let most_recent = user_kv.get("mostrecent").and_then(|v| v.as_str()) == Some("1");
+            users.push(LocalUser {
+                steam_id: steam_id.clone(),
+                account_name,
+                persona_name,
+                most_recent,
+            });
+        }
+    }
+    users
+}
+
 /// Detect the most recently logged-in Steam username from `loginusers.vdf`.
 pub fn detect_username(steam_dir: &std::path::Path) -> Option<String> {
     let login_users =
@@ -85,6 +128,199 @@ fn read_connect_cache_blob(path: &std::path::Path) -> Option<String> {
         }
     }
     None
+}
+
+/// A depot decryption key cached in Steam's `config.vdf`.
+#[derive(Clone, Debug)]
+pub struct LocalDepotKey {
+    pub depot_id: steamroom::depot::DepotId,
+    pub key: steamroom::depot::DepotKey,
+}
+
+/// Locally installed app metadata from appmanifest ACF files.
+#[derive(Clone, Debug)]
+pub struct LocalApp {
+    pub app_id: u32,
+    pub name: String,
+    pub depot_ids: Vec<u32>,
+}
+
+/// A beta branch password hash stored in Steam's `config.vdf`.
+/// The hash is a 32-byte server-issued token. The first 4 bytes are a version
+/// marker. Only the first 32 bytes of the hex-decoded configstore value are used.
+#[derive(Clone, Debug)]
+pub struct LocalBetaHash {
+    pub app_id: u32,
+    pub branch: String,
+    pub hash: [u8; 32],
+}
+
+/// Information extracted from Steam's local `config.vdf`.
+#[derive(Clone, Debug, Default)]
+pub struct LocalConfig {
+    pub depot_keys: Vec<LocalDepotKey>,
+    pub beta_hashes: Vec<LocalBetaHash>,
+}
+
+/// Parse Steam's `config.vdf` and extract cached depot keys and beta hashes.
+pub fn read_config(steam_dir: &std::path::Path) -> Option<LocalConfig> {
+    let path = steam_dir.join("config").join("config.vdf");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let kv = steamroom::types::key_value::parse_text_kv(&content).ok()?;
+    let software = kv.get("Software").or_else(|| kv.get("software"))?;
+    let valve = software.get("valve").or_else(|| software.get("Valve"))?;
+    let steam = valve.get("Steam").or_else(|| valve.get("steam"))?;
+
+    let mut config = LocalConfig::default();
+
+    if let Some(depots) = steam.get("depots")
+        && let steamroom::types::key_value::KvValue::Children(ref map) = depots.value
+    {
+        for (id_str, depot_kv) in map {
+            let Ok(id) = id_str.parse::<u32>() else {
+                continue;
+            };
+            if let Some(hex) = depot_kv.get("DecryptionKey").and_then(|v| v.as_str())
+                && let Some(bytes) = steamroom::util::hex::decode(hex)
+                && bytes.len() == 32
+            {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                config.depot_keys.push(LocalDepotKey {
+                    depot_id: steamroom::depot::DepotId(id),
+                    key: steamroom::depot::DepotKey(key),
+                });
+            }
+        }
+    }
+
+    if let Some(apps) = steam.get("apps")
+        && let steamroom::types::key_value::KvValue::Children(ref map) = apps.value
+    {
+        for (id_str, app_kv) in map {
+            let Ok(app_id) = id_str.parse::<u32>() else {
+                continue;
+            };
+            if let steamroom::types::key_value::KvValue::Children(ref fields) = app_kv.value {
+                for (key, val) in fields {
+                    if let Some(branch) = key.strip_prefix("betahash_")
+                        && let Some(hex_str) = val.as_str()
+                    {
+                        // First 64 hex chars = 32 bytes of hash
+                        let decode_str = &hex_str[..hex_str.len().min(64)];
+                        if let Some(bytes) = steamroom::util::hex::decode(decode_str)
+                            && bytes.len() == 32
+                        {
+                            let mut hash = [0u8; 32];
+                            hash.copy_from_slice(&bytes);
+                            config.beta_hashes.push(LocalBetaHash {
+                                app_id,
+                                branch: branch.to_string(),
+                                hash,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Some(config)
+}
+
+/// Look up a depot decryption key from a parsed local config.
+pub fn find_depot_key(
+    config: &LocalConfig,
+    depot_id: steamroom::depot::DepotId,
+) -> Option<steamroom::depot::DepotKey> {
+    config
+        .depot_keys
+        .iter()
+        .find(|k| k.depot_id == depot_id)
+        .map(|k| k.key.clone())
+}
+
+/// Scan all Steam library folders for installed app manifests.
+/// Returns app metadata including name and installed depot IDs.
+pub fn scan_installed_apps(steam_dir: &std::path::Path) -> Vec<LocalApp> {
+    let mut apps = Vec::new();
+    let library_folders = list_library_folders(steam_dir);
+    for folder in &library_folders {
+        let steamapps = folder.join("steamapps");
+        let Ok(entries) = std::fs::read_dir(&steamapps) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.starts_with("appmanifest_") || !name_str.ends_with(".acf") {
+                continue;
+            }
+            if let Some(app) = parse_app_manifest(&entry.path()) {
+                apps.push(app);
+            }
+        }
+    }
+    apps
+}
+
+fn list_library_folders(steam_dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut folders = vec![steam_dir.to_path_buf()];
+    let vdf_path = steam_dir.join("steamapps").join("libraryfolders.vdf");
+    let Ok(content) = std::fs::read_to_string(&vdf_path) else {
+        return folders;
+    };
+    let Ok(kv) = steamroom::types::key_value::parse_text_kv(&content) else {
+        return folders;
+    };
+    if let steamroom::types::key_value::KvValue::Children(ref map) = kv.value {
+        for entry in map.values() {
+            if let Some(path) = entry.get("path").and_then(|v| v.as_str()) {
+                let p = PathBuf::from(path);
+                if p != steam_dir {
+                    folders.push(p);
+                }
+            }
+        }
+    }
+    folders
+}
+
+fn parse_app_manifest(path: &std::path::Path) -> Option<LocalApp> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let kv = steamroom::types::key_value::parse_text_kv(&content).ok()?;
+    let app_id: u32 = kv.get("appid")?.as_str()?.parse().ok()?;
+    let name = kv
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)")
+        .to_string();
+
+    let mut depot_ids = Vec::new();
+    if let Some(depots) = kv.get("InstalledDepots")
+        && let steamroom::types::key_value::KvValue::Children(ref map) = depots.value
+    {
+        for id_str in map.keys() {
+            if let Ok(id) = id_str.parse::<u32>() {
+                depot_ids.push(id);
+            }
+        }
+    }
+
+    Some(LocalApp {
+        app_id,
+        name,
+        depot_ids,
+    })
+}
+
+/// Look up a cached beta branch hash for a given app and branch.
+pub fn find_beta_hash(config: &LocalConfig, app_id: u32, branch: &str) -> Option<[u8; 32]> {
+    config
+        .beta_hashes
+        .iter()
+        .find(|bh| bh.app_id == app_id && bh.branch == branch)
+        .map(|bh| bh.hash)
 }
 
 /// Extract the cached refresh token for the given account name.
