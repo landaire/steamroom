@@ -11,7 +11,7 @@ mod error;
 mod qr;
 mod terminal;
 
-// `pub use error::LoginError;` — restored once error.rs defines it in task 2.
+pub use error::LoginError;
 
 // Re-exports from steamroom::auth so callers don't need both imports.
 // `pub use steamroom::auth::{AuthTokens, GuardType};` — restored once available
