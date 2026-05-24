@@ -59,6 +59,8 @@ pub mod depot_config;
 pub mod download;
 /// Download progress events for UI integration.
 pub mod event;
+/// High-level login orchestration with typestate-driven 2FA handling.
+pub mod login;
 pub mod manifest;
 /// Extract cached credentials from a local Steam installation.
 pub mod steam_creds;
