@@ -98,10 +98,7 @@ impl CredentialsLogin {
 
         // Classify the next step.
         if session.allowed_confirmations.is_empty()
-            || session
-                .allowed_confirmations
-                .iter()
-                .any(|g| *g == GuardType::None)
+            || session.allowed_confirmations.contains(&GuardType::None)
         {
             // No 2FA needed — poll once for tokens (Steam may have them ready)
             // and produce ApprovedAuth directly.

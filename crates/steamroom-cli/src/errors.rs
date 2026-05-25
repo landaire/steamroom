@@ -33,9 +33,6 @@ pub enum CliError {
     #[error("failed to parse KeyValue data: {0}")]
     Kv(#[from] steamroom::types::key_value::TextKvError),
 
-    #[error("could not find any Steam CM servers to connect to")]
-    NoCmServers,
-
     #[error("Steam returned no product info for app {0} (does the app exist?)")]
     NoProductInfo(u32),
 

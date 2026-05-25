@@ -69,23 +69,12 @@ use steamroom::connection::Protocol;
 
 /// Configuration shared by `LoginBuilder` and `PreparedLoginBuilder`.
 /// Private — the public API exposes setters individually.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct BuilderConfig {
     pub(crate) device_name: Option<String>,
     pub(crate) cell_id: u32,
     pub(crate) login_id: Option<u32>,
     pub(crate) client_os: ClientOs,
-}
-
-impl Default for BuilderConfig {
-    fn default() -> Self {
-        Self {
-            device_name: None,
-            cell_id: 0,
-            login_id: None,
-            client_os: ClientOs::default(),
-        }
-    }
 }
 
 /// How the builder obtains the underlying encrypted client.

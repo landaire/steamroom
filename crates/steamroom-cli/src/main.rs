@@ -5,22 +5,19 @@ mod errors;
 use clap::Parser;
 use cli::*;
 use errors::CliError;
-use prost::Message;
 use std::path::PathBuf;
 use steamroom::apps::AccessToken;
 use steamroom::cdn::CdnClient;
 use steamroom::client::LoggedIn;
-use steamroom::client::PROTOCOL_VERSION;
 use steamroom::client::SteamClient;
-use steamroom::client::msg::ClientMsg;
-use steamroom::connection;
 use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::*;
-use steamroom::messages::EMsg;
-use steamroom::transport::websocket::WebSocketTransport;
 use steamroom::types::key_value;
 use steamroom::types::key_value::KeyValue;
 use steamroom::types::key_value::KvValue;
+use steamroom_client::login::{
+    CredentialsLoginFlow, GuardType, LoginBuilder, LoginError,
+};
 use tabled::builder::Builder as TableBuilder;
 use tabled::settings::Style;
 
@@ -106,36 +103,11 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
 }
 
 async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, CliError> {
-    info!("discovering CM servers...");
-    let servers = connection::CmServer::fetch().await.unwrap_or_else(|_| {
-        warn!("failed to fetch CM servers, using defaults");
-        connection::CmServer::defaults()
-    });
+    let builder = LoginBuilder::new()
+        .device_name(auth.device_name.as_deref().unwrap_or("steamroom"));
 
-    // Try TCP first if available, fall back to WebSocket
-    let tcp_server = servers
-        .iter()
-        .find(|s| s.protocol == connection::Protocol::Tcp);
-
-    let client = if let Some(server) = tcp_server {
-        info!("connecting via TCP to {:?}", server.addr);
-        let transport = steamroom::transport::tcp::TcpTransport::connect(server).await?;
-        let (client, _rx) = SteamClient::connect(transport).await?;
-        info!("encrypting...");
-        client.encrypt().await?
-    } else {
-        let ws_server = servers
-            .iter()
-            .find(|s| s.protocol == connection::Protocol::WebSocket)
-            .ok_or(CliError::NoCmServers)?;
-        info!("connecting via WebSocket to {:?}", ws_server.addr);
-        let transport = WebSocketTransport::connect(ws_server).await?;
-        let (client, _rx) = SteamClient::connect_ws(transport).await?;
-        client
-    };
-
-    // Determine auth mode and get token if needed
-    let (logon, steam_id) = if auth.use_steam_token {
+    // --use-steam-token: prefer local Steam install's cached token.
+    if auth.use_steam_token {
         let username = auth.username.clone().or_else(|| {
             let dir = steamroom_client::steam_creds::steam_dir()?;
             steamroom_client::steam_creds::detect_username(&dir)
@@ -146,100 +118,41 @@ async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, 
         });
         if let Some(cred) = cached {
             info!("using cached Steam token for {}", cred.account_name);
-            build_token_logon(&cred.account_name, &cred.refresh_token)
-        } else {
-            warn!("failed to extract Steam token, falling back to normal auth");
-            username
-                .as_deref()
-                .and_then(|u| {
-                    let token = load_saved_token(u)?;
-                    info!("using saved refresh token for {u}");
-                    Some(build_token_logon(u, &token))
-                })
-                .unwrap_or_else(build_anon_logon)
+            return Ok(builder
+                .with_refresh_token(cred.account_name, cred.refresh_token)
+                .login()
+                .await?);
         }
-    } else if let Some(ref username) = auth.username {
+        warn!("failed to extract Steam token, falling back to normal auth");
+        if let Some(u) = username
+            && let Some(token) = load_saved_token(&u)
+        {
+            info!("using saved refresh token for {u}");
+            return Ok(builder.with_refresh_token(u, token).login().await?);
+        }
+        return Ok(builder.anonymous().login().await?);
+    }
+
+    // -u/--username given: try saved token, then QR, then password.
+    if let Some(ref username) = auth.username {
         if let Some(token) = load_saved_token(username) {
             info!("using saved refresh token for {username}");
-            build_token_logon(username, &token)
-        } else if auth.qr {
-            let tokens = authenticate_qr(&client, auth.device_name.as_deref()).await?;
-            save_token(
-                tokens.account_name.as_deref().unwrap_or(username),
-                &tokens.refresh_token,
-            );
-            build_token_logon(
-                tokens.account_name.as_deref().unwrap_or(username),
-                &tokens.access_token,
-            )
-        } else {
-            let mut last_err = None;
-            let mut tokens = None;
-            for attempt in 0..3 {
-                let password = if attempt == 0 {
-                    auth.password.clone().unwrap_or_else(|| {
-                        rpassword::prompt_password(format!("Password for {username}: "))
-                            .unwrap_or_default()
-                    })
-                } else {
-                    eprintln!("Invalid password, try again ({}/3)", attempt + 1);
-                    rpassword::prompt_password(format!("Password for {username}: "))
-                        .unwrap_or_default()
-                };
-                match authenticate_credentials(
-                    &client,
-                    username,
-                    &password,
-                    auth.device_name.as_deref(),
-                )
-                .await
-                {
-                    Ok(t) => {
-                        tokens = Some(t);
-                        break;
-                    }
-                    Err(CliError::Steam(steamroom::error::Error::Connection(
-                        steamroom::error::ConnectionError::LogonFailed(
-                            steamroom::enums::EResultError::InvalidPassword,
-                        ),
-                    ))) => {
-                        last_err = Some(CliError::Steam(steamroom::error::Error::Connection(
-                            steamroom::error::ConnectionError::LogonFailed(
-                                steamroom::enums::EResultError::InvalidPassword,
-                            ),
-                        )));
-                        continue;
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            let tokens = tokens.ok_or_else(|| last_err.unwrap())?;
-            save_token(
-                tokens.account_name.as_deref().unwrap_or(username),
-                &tokens.refresh_token,
-            );
-            build_token_logon(
-                tokens.account_name.as_deref().unwrap_or(username),
-                &tokens.access_token,
-            )
+            return Ok(builder.with_refresh_token(username, token).login().await?);
         }
-    } else if let Some((username, token)) = detect_steam_user() {
+        if auth.qr {
+            return drive_qr_flow(builder, username).await;
+        }
+        return drive_credentials_flow(builder, username, auth).await;
+    }
+
+    // Auto-detect Steam user with a saved token.
+    if let Some((username, token)) = detect_steam_user() {
         info!("auto-detected Steam user: {username}");
-        build_token_logon(&username, &token)
-    } else {
-        build_anon_logon()
-    };
+        return Ok(builder.with_refresh_token(username, token).login().await?);
+    }
 
-    let logon_bytes = logon.encode_to_vec();
-    let mut msg = ClientMsg::with_body(EMsg::CLIENT_LOGON, &logon_bytes);
-    msg.header.steamid = Some(steam_id);
-    msg.header.client_sessionid = Some(0);
-
-    info!("logging in...");
-    let (client, _resp) = client.login(msg).await?;
-
-    info!("logged in successfully");
-    Ok(client)
+    // Last resort: anonymous.
+    Ok(builder.anonymous().login().await?)
 }
 
 fn tokens_path() -> Option<std::path::PathBuf> {
@@ -281,143 +194,108 @@ fn save_token(username: &str, refresh_token: &str) {
     info!("saved refresh token for {username}");
 }
 
-async fn authenticate_credentials(
-    client: &SteamClient<steamroom::client::Encrypted>,
+async fn drive_credentials_flow(
+    builder: LoginBuilder,
     username: &str,
-    password: &str,
-    device_name: Option<&str>,
-) -> Result<steamroom::auth::AuthTokens, CliError> {
-    info!("getting RSA public key for {username}...");
-    let rsa = client.get_password_rsa_public_key(username).await?;
-    let modulus = rsa
-        .publickey_mod
-        .ok_or(CliError::Steam(steamroom::error::Error::Connection(
-            steamroom::error::ConnectionError::EncryptionFailed,
-        )))?;
-    let exponent =
-        rsa.publickey_exp
-            .ok_or(CliError::Steam(steamroom::error::Error::Connection(
-                steamroom::error::ConnectionError::EncryptionFailed,
-            )))?;
-    let timestamp = rsa.timestamp.unwrap_or(0);
+    auth: &AuthOptions,
+) -> Result<SteamClient<LoggedIn>, CliError> {
+    let _ = builder; // builder is shadowed inside the loop with a fresh instance per attempt
+    for attempt in 0..3u32 {
+        let password = if attempt == 0 {
+            auth.password.clone().unwrap_or_else(|| {
+                rpassword::prompt_password(format!("Password for {username}: "))
+                    .unwrap_or_default()
+            })
+        } else {
+            eprintln!("Invalid password, try again ({}/3)", attempt + 1);
+            rpassword::prompt_password(format!("Password for {username}: "))
+                .unwrap_or_default()
+        };
 
-    let encrypted_password = steamroom::crypto::rsa::encrypt_with_rsa_public_key(
-        password.as_bytes(),
-        &modulus,
-        &exponent,
-    )?;
-    let encoded_password = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        &encrypted_password,
-    );
+        let credentials = LoginBuilder::new()
+            .device_name(auth.device_name.as_deref().unwrap_or("steamroom"))
+            .with_credentials(username, password);
+        let flow = match credentials.begin().await {
+            Ok(f) => f,
+            Err(LoginError::InvalidPassword) => continue,
+            Err(e) => return Err(e.into()),
+        };
 
-    info!("beginning auth session...");
-    let req = steamroom::generated::CAuthenticationBeginAuthSessionViaCredentialsRequest {
-        account_name: Some(username.to_string()),
-        encrypted_password: Some(encoded_password),
-        encryption_timestamp: Some(timestamp),
-        remember_login: Some(true),
-        persistence: Some(1),
-        device_friendly_name: device_name.map(|s| s.to_string()),
-        ..Default::default()
-    };
-    let session = client.begin_auth_session_via_credentials(req).await?;
-
-    // Handle 2FA if required
-    for guard in &session.allowed_confirmations {
-        match guard {
-            steamroom::auth::GuardType::DeviceCode | steamroom::auth::GuardType::EmailCode => {
-                let prompt = match guard {
-                    steamroom::auth::GuardType::DeviceCode => {
-                        "Steam Guard code (from authenticator app): "
-                    }
-                    steamroom::auth::GuardType::EmailCode => "Steam Guard code (from email): ",
-                    _ => unreachable!(),
-                };
+        let approved = match flow {
+            CredentialsLoginFlow::Approved(a) => a,
+            CredentialsLoginFlow::NeedsGuardCode(mut challenge) => loop {
+                let prompt = guard_prompt(challenge.allowed_kinds());
+                let kind = preferred_kind(challenge.allowed_kinds());
                 let code = rpassword::prompt_password(prompt).unwrap_or_default();
-                if let (Some(client_id), Some(steam_id)) = (session.client_id, session.steam_id) {
-                    client
-                        .submit_steam_guard_code(client_id, steam_id, &code, *guard)
-                        .await?;
+                match challenge.submit_code(&code, kind).await {
+                    Ok(a) => break a,
+                    Err((c, LoginError::InvalidGuardCode)) => {
+                        eprintln!("Invalid Steam Guard code, try again.");
+                        challenge = c;
+                    }
+                    Err((_, e)) => return Err(e.into()),
                 }
-                break;
-            }
-            steamroom::auth::GuardType::DeviceConfirmation => {
+            },
+            CredentialsLoginFlow::NeedsMobileConfirm(mobile) => {
                 info!("confirm login on your Steam mobile app...");
-                break;
+                mobile.wait_for_confirmation().await?
             }
-            _ => {}
-        }
+            _ => return Err(CliError::Login(LoginError::InvalidPassword)),
+        };
+
+        let tokens = approved.tokens();
+        save_token(
+            tokens.account_name.as_deref().unwrap_or(username),
+            &tokens.refresh_token,
+        );
+        return Ok(approved.finish().await?);
     }
+    // Three attempts exhausted.
+    Err(CliError::Login(LoginError::InvalidPassword))
+}
 
-    // Poll for tokens
-    let client_id = session.client_id.unwrap_or(0);
-    let request_id = session.request_id.unwrap_or_default();
-    let interval = session.poll_interval.unwrap_or(5.0);
-
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs_f32(interval)).await;
-        if let Some(tokens) = client.poll_auth_session(client_id, &request_id).await? {
-            return Ok(tokens);
-        }
+fn guard_prompt(kinds: &[GuardType]) -> &'static str {
+    if kinds.contains(&GuardType::DeviceCode) {
+        "Steam Guard code (from authenticator app): "
+    } else if kinds.contains(&GuardType::EmailCode) {
+        "Steam Guard code (from email): "
+    } else {
+        "Steam Guard code: "
     }
 }
 
-async fn authenticate_qr(
-    client: &SteamClient<steamroom::client::Encrypted>,
-    device_name: Option<&str>,
-) -> Result<steamroom::auth::AuthTokens, CliError> {
+fn preferred_kind(kinds: &[GuardType]) -> GuardType {
+    if kinds.contains(&GuardType::DeviceCode) {
+        GuardType::DeviceCode
+    } else if kinds.contains(&GuardType::EmailCode) {
+        GuardType::EmailCode
+    } else {
+        kinds.first().copied().unwrap_or(GuardType::DeviceCode)
+    }
+}
+
+async fn drive_qr_flow(
+    builder: LoginBuilder,
+    username: &str,
+) -> Result<SteamClient<LoggedIn>, CliError> {
     info!("generating QR code...");
-    let req = steamroom::generated::CAuthenticationBeginAuthSessionViaQrRequest {
-        device_friendly_name: Some(device_name.unwrap_or("steamroom").to_string()),
-        ..Default::default()
-    };
-    let session = client.begin_auth_session_via_qr(req).await?;
+    let flow = builder.with_qr().begin().await?;
 
-    if let Some(ref url) = session.challenge_url {
-        // Print QR code to terminal
-        let qr = qrcode::QrCode::new(url.as_bytes())
-            .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
-        let rendered = qr.render::<qrcode::render::unicode::Dense1x2>().build();
-        eprintln!("{rendered}");
-        eprintln!("Scan this QR code with the Steam mobile app");
-        eprintln!("Or open: {url}");
-    }
+    let url = flow.challenge_url();
+    let qr = qrcode::QrCode::new(url.as_bytes())
+        .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+    let rendered = qr.render::<qrcode::render::unicode::Dense1x2>().build();
+    eprintln!("{rendered}");
+    eprintln!("Scan this QR code with the Steam mobile app");
+    eprintln!("Or open: {url}");
 
-    let client_id = session.client_id.unwrap_or(0);
-    let request_id = session.request_id.unwrap_or_default();
-    let interval = session.poll_interval.unwrap_or(5.0);
-
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs_f32(interval)).await;
-        if let Some(tokens) = client.poll_auth_session(client_id, &request_id).await? {
-            return Ok(tokens);
-        }
-    }
-}
-
-fn build_token_logon(username: &str, token: &str) -> (steamroom::generated::CMsgClientLogon, u64) {
-    let logon = steamroom::generated::CMsgClientLogon {
-        protocol_version: Some(PROTOCOL_VERSION),
-        cell_id: Some(0),
-        client_os_type: Some(20),
-        account_name: Some(username.to_string()),
-        access_token: Some(token.to_string()),
-        ..Default::default()
-    };
-    let steam_id = steamroom::types::SteamId::from_parts(1, 1, 1, 0);
-    (logon, steam_id.raw())
-}
-
-fn build_anon_logon() -> (steamroom::generated::CMsgClientLogon, u64) {
-    let logon = steamroom::generated::CMsgClientLogon {
-        protocol_version: Some(PROTOCOL_VERSION),
-        cell_id: Some(0),
-        client_os_type: Some(20),
-        ..Default::default()
-    };
-    let steam_id = steamroom::types::SteamId::from_parts(1, 10, 0, 0);
-    (logon, steam_id.raw())
+    let approved = flow.wait_for_scan().await?;
+    let tokens = approved.tokens();
+    save_token(
+        tokens.account_name.as_deref().unwrap_or(username),
+        &tokens.refresh_token,
+    );
+    Ok(approved.finish().await?)
 }
 
 async fn run_download(
