@@ -97,6 +97,65 @@ impl Default for TransportConfig {
     }
 }
 
+use steamroom::connection::CmServer;
+use steamroom::transport::tcp::TcpTransport;
+use steamroom::transport::websocket::WebSocketTransport;
+
+/// Establish an encrypted Steam client according to `transport`.
+/// Consumes the `TransportConfig`. For `Provided`, returns the client as-is.
+pub(crate) async fn establish_encrypted_client(
+    transport: TransportConfig,
+) -> Result<SteamClient<Encrypted>, LoginError> {
+    match transport {
+        TransportConfig::Provided(client) => Ok(client),
+        TransportConfig::Auto { prefer, allow_fallback } => {
+            connect_auto(prefer, allow_fallback).await
+        }
+    }
+}
+
+async fn connect_auto(
+    prefer: Protocol,
+    allow_fallback: bool,
+) -> Result<SteamClient<Encrypted>, LoginError> {
+    let servers = CmServer::fetch()
+        .await
+        .unwrap_or_else(|_| CmServer::defaults());
+
+    if let Some(server) = servers.iter().find(|s| s.protocol == prefer) {
+        match try_connect(server).await {
+            Ok(client) => return Ok(client),
+            Err(e) if !allow_fallback => return Err(e),
+            Err(_) => { /* fall through to other protocol */ }
+        }
+    }
+
+    let other = match prefer {
+        Protocol::Tcp => Protocol::WebSocket,
+        Protocol::WebSocket => Protocol::Tcp,
+    };
+    if let Some(server) = servers.iter().find(|s| s.protocol == other) {
+        return try_connect(server).await;
+    }
+
+    Err(LoginError::NoCmServers)
+}
+
+async fn try_connect(server: &CmServer) -> Result<SteamClient<Encrypted>, LoginError> {
+    match server.protocol {
+        Protocol::Tcp => {
+            let transport = TcpTransport::connect(server).await?;
+            let (client, _rx) = SteamClient::connect(transport).await?;
+            Ok(client.encrypt().await?)
+        }
+        Protocol::WebSocket => {
+            let transport = WebSocketTransport::connect(server).await?;
+            let (client, _rx) = SteamClient::connect_ws(transport).await?;
+            Ok(client)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
