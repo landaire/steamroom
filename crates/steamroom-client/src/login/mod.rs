@@ -7,6 +7,7 @@
 //! `docs/superpowers/specs/2026-05-24-login-builder-design.md`.
 
 mod credentials;
+pub use credentials::{CredentialsLogin, CredentialsLoginFlow, GuardChallenge, MobileChallenge};
 mod error;
 mod qr;
 mod terminal;
