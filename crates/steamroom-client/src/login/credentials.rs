@@ -147,6 +147,73 @@ impl CredentialsLogin {
     }
 }
 
+impl GuardChallenge {
+    /// Which kinds of Steam Guard code Steam is willing to accept.
+    pub fn allowed_kinds(&self) -> &[GuardType] {
+        &self.allowed_kinds
+    }
+
+    /// Submit a Steam Guard code, then poll for tokens.
+    ///
+    /// On `LoginError::InvalidGuardCode`, the challenge is returned unchanged
+    /// so the caller can prompt for a new code without restarting the RSA
+    /// exchange. On any other error, the session is dead.
+    pub async fn submit_code(
+        self,
+        code: &str,
+        kind: GuardType,
+    ) -> Result<ApprovedAuth, (GuardChallenge, LoginError)> {
+        match self
+            .client
+            .submit_steam_guard_code(self.client_id, self.steam_id, code, kind)
+            .await
+        {
+            Ok(()) => {}
+            Err(steamroom::Error::Connection(
+                steamroom::error::ConnectionError::ServiceMethodFailed(
+                    steamroom::enums::EResultError::TwoFactorCodeMismatch,
+                ),
+            )) => return Err((self, LoginError::InvalidGuardCode)),
+            Err(e) => return Err((self, LoginError::Transport(e))),
+        }
+
+        match poll_until_tokens(
+            &self.client,
+            self.client_id,
+            &self.request_id,
+            self.poll_interval,
+        )
+        .await
+        {
+            Ok(tokens) => Ok(ApprovedAuth {
+                client: self.client,
+                config: self.config,
+                tokens,
+            }),
+            Err(e) => Err((self, e)),
+        }
+    }
+}
+
+impl MobileChallenge {
+    /// Poll `PollAuthSessionStatus` until the user approves on their mobile
+    /// app and tokens are returned.
+    pub async fn wait_for_confirmation(self) -> Result<ApprovedAuth, LoginError> {
+        let tokens = poll_until_tokens(
+            &self.client,
+            self.client_id,
+            &self.request_id,
+            self.poll_interval,
+        )
+        .await?;
+        Ok(ApprovedAuth {
+            client: self.client,
+            config: self.config,
+            tokens,
+        })
+    }
+}
+
 /// Poll `PollAuthSessionStatus` until tokens are returned. Used by the
 /// guard-code and mobile-confirmation completion paths, and by the no-2FA
 /// path in `begin()`.
