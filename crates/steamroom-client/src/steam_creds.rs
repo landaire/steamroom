@@ -3,8 +3,8 @@
 //! On Windows, refresh tokens are stored in `%LOCALAPPDATA%\Steam\local.vdf`
 //! as DPAPI-encrypted blobs keyed by a hash, with the account name as entropy.
 //!
-//! This module provides a platform-agnostic [`SteamCredentials`] trait and
-//! a platform-specific implementation via [`detect()`].
+//! The public entry points are `steam_dir`, `detect_username`, and
+//! `extract_token`.
 
 use std::path::PathBuf;
 

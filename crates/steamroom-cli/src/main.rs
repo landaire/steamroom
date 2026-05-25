@@ -199,7 +199,7 @@ async fn drive_credentials_flow(
     username: &str,
     auth: &AuthOptions,
 ) -> Result<SteamClient<LoggedIn>, CliError> {
-    let _ = builder; // builder is shadowed inside the loop with a fresh instance per attempt
+    let _ = builder; // Dropped here — the loop creates a fresh LoginBuilder per attempt (each attempt reconnects).
     for attempt in 0..3u32 {
         let password = if attempt == 0 {
             auth.password.clone().unwrap_or_else(|| {
@@ -240,7 +240,7 @@ async fn drive_credentials_flow(
                 info!("confirm login on your Steam mobile app...");
                 mobile.wait_for_confirmation().await?
             }
-            _ => return Err(CliError::Login(LoginError::InvalidPassword)),
+            _ => unreachable!("unexpected CredentialsLoginFlow variant"),
         };
 
         let tokens = approved.tokens();
