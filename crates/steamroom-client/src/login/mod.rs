@@ -10,6 +10,7 @@ mod credentials;
 pub use credentials::{CredentialsLogin, CredentialsLoginFlow, GuardChallenge, MobileChallenge};
 mod error;
 mod qr;
+pub use qr::{QrLogin, QrLoginFlow};
 mod terminal;
 pub use terminal::{AnonymousLogin, ApprovedAuth, TokenLogin};
 
