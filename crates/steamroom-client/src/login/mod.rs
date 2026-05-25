@@ -10,6 +10,7 @@ mod credentials;
 mod error;
 mod qr;
 mod terminal;
+pub use terminal::{AnonymousLogin, TokenLogin};
 
 pub use error::LoginError;
 
@@ -164,6 +165,89 @@ async fn try_connect(server: &CmServer) -> Result<SteamClient<Encrypted>, LoginE
     }
 }
 
+/// Top-level builder for the auto-discovery login path: builder discovers
+/// CM servers, connects, runs the encryption handshake, then drives the
+/// chosen auth method. For a pre-built `SteamClient<Encrypted>`, use
+/// `PreparedLoginBuilder` instead.
+pub struct LoginBuilder {
+    config: BuilderConfig,
+    transport_prefer: Protocol,
+    transport_allow_fallback: bool,
+}
+
+impl LoginBuilder {
+    pub fn new() -> Self {
+        Self {
+            config: BuilderConfig::default(),
+            transport_prefer: Protocol::Tcp,
+            transport_allow_fallback: true,
+        }
+    }
+
+    pub fn device_name(mut self, name: impl Into<String>) -> Self {
+        self.config.device_name = Some(name.into());
+        self
+    }
+
+    pub fn cell_id(mut self, id: u32) -> Self {
+        self.config.cell_id = id;
+        self
+    }
+
+    pub fn login_id(mut self, id: u32) -> Self {
+        self.config.login_id = Some(id);
+        self
+    }
+
+    pub fn client_os(mut self, os: ClientOs) -> Self {
+        self.config.client_os = os;
+        self
+    }
+
+    pub fn prefer_protocol(mut self, p: Protocol) -> Self {
+        self.transport_prefer = p;
+        self
+    }
+
+    pub fn allow_protocol_fallback(mut self, allow: bool) -> Self {
+        self.transport_allow_fallback = allow;
+        self
+    }
+
+    fn transport(&self) -> TransportConfig {
+        TransportConfig::Auto {
+            prefer: self.transport_prefer,
+            allow_fallback: self.transport_allow_fallback,
+        }
+    }
+
+    pub fn anonymous(self) -> AnonymousLogin {
+        AnonymousLogin {
+            transport: self.transport(),
+            config: self.config,
+        }
+    }
+
+    pub fn with_refresh_token(
+        self,
+        account: impl Into<String>,
+        refresh_token: impl Into<String>,
+    ) -> TokenLogin {
+        TokenLogin {
+            transport: self.transport(),
+            config: self.config,
+            account_name: account.into(),
+            refresh_token: refresh_token.into(),
+        }
+    }
+}
+
+impl Default for LoginBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +262,22 @@ mod tests {
     fn new_round_trips() {
         assert_eq!(ClientOs::new(42).value(), 42);
         assert_eq!(ClientOs::new(-1).value(), -1);
+    }
+
+    #[test]
+    fn builder_accumulates_config() {
+        let b = LoginBuilder::new()
+            .device_name("test-device")
+            .cell_id(42)
+            .login_id(7)
+            .client_os(ClientOs::new(99))
+            .prefer_protocol(Protocol::WebSocket)
+            .allow_protocol_fallback(false);
+        assert_eq!(b.config.device_name.as_deref(), Some("test-device"));
+        assert_eq!(b.config.cell_id, 42);
+        assert_eq!(b.config.login_id, Some(7));
+        assert_eq!(b.config.client_os.value(), 99);
+        assert_eq!(b.transport_prefer, Protocol::WebSocket);
+        assert!(!b.transport_allow_fallback);
     }
 }
