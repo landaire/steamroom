@@ -242,6 +242,26 @@ impl LoginBuilder {
             refresh_token: refresh_token.into(),
         }
     }
+
+    pub fn with_credentials(
+        self,
+        account: impl Into<String>,
+        password: impl Into<String>,
+    ) -> CredentialsLogin {
+        CredentialsLogin {
+            transport: self.transport(),
+            config: self.config,
+            account_name: account.into(),
+            password: password.into(),
+        }
+    }
+
+    pub fn with_qr(self) -> QrLogin {
+        QrLogin {
+            transport: self.transport(),
+            config: self.config,
+        }
+    }
 }
 
 impl Default for LoginBuilder {
@@ -281,5 +301,14 @@ mod tests {
         assert_eq!(b.config.client_os.value(), 99);
         assert_eq!(b.transport_prefer, Protocol::WebSocket);
         assert!(!b.transport_allow_fallback);
+    }
+
+    #[test]
+    fn all_terminal_methods_compile() {
+        // Just exercising the API surface — no I/O.
+        let _ = LoginBuilder::new().anonymous();
+        let _ = LoginBuilder::new().with_refresh_token("u", "t");
+        let _ = LoginBuilder::new().with_credentials("u", "p");
+        let _ = LoginBuilder::new().with_qr();
     }
 }
