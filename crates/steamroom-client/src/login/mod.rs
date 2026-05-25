@@ -270,6 +270,93 @@ impl Default for LoginBuilder {
     }
 }
 
+/// Top-level builder for the BYO-encrypted-client path. Use this when you
+/// have already constructed a `SteamClient<Encrypted>` yourself (e.g. via the
+/// capture/replay transport in tests, or a custom transport). Transport
+/// configuration methods are intentionally absent — the transport is already
+/// chosen by the caller.
+pub struct PreparedLoginBuilder {
+    config: BuilderConfig,
+    client: Option<SteamClient<Encrypted>>,
+}
+
+impl PreparedLoginBuilder {
+    pub fn new(client: SteamClient<Encrypted>) -> Self {
+        Self {
+            config: BuilderConfig::default(),
+            client: Some(client),
+        }
+    }
+
+    pub fn device_name(mut self, name: impl Into<String>) -> Self {
+        self.config.device_name = Some(name.into());
+        self
+    }
+
+    pub fn cell_id(mut self, id: u32) -> Self {
+        self.config.cell_id = id;
+        self
+    }
+
+    pub fn login_id(mut self, id: u32) -> Self {
+        self.config.login_id = Some(id);
+        self
+    }
+
+    pub fn client_os(mut self, os: ClientOs) -> Self {
+        self.config.client_os = os;
+        self
+    }
+
+    fn transport(&mut self) -> TransportConfig {
+        TransportConfig::Provided(
+            self.client
+                .take()
+                .expect("client consumed twice; PreparedLoginBuilder methods consume self"),
+        )
+    }
+
+    pub fn anonymous(mut self) -> AnonymousLogin {
+        AnonymousLogin {
+            transport: self.transport(),
+            config: self.config,
+        }
+    }
+
+    pub fn with_refresh_token(
+        mut self,
+        account: impl Into<String>,
+        refresh_token: impl Into<String>,
+    ) -> TokenLogin {
+        TokenLogin {
+            transport: self.transport(),
+            config: self.config,
+            account_name: account.into(),
+            refresh_token: refresh_token.into(),
+        }
+    }
+
+    pub fn with_credentials(
+        mut self,
+        account: impl Into<String>,
+        password: impl Into<String>,
+    ) -> CredentialsLogin {
+        CredentialsLogin {
+            transport: self.transport(),
+            config: self.config,
+            account_name: account.into(),
+            password: password.into(),
+        }
+    }
+
+    pub fn with_qr(mut self) -> QrLogin {
+        QrLogin {
+            transport: self.transport(),
+            config: self.config,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
