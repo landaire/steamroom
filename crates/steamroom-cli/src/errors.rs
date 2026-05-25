@@ -60,6 +60,9 @@ pub enum CliError {
     #[error("Steam installation not found")]
     SteamNotFound,
 
+    #[error("{}", display_login_error(.0))]
+    Login(#[from] steamroom_client::login::LoginError),
+
     #[error("Steam returned no CDN servers")]
     NoCdnServers,
 }
@@ -67,6 +70,19 @@ pub enum CliError {
 impl From<steamroom::error::ConnectionError> for CliError {
     fn from(e: steamroom::error::ConnectionError) -> Self {
         Self::Steam(steamroom::error::Error::Connection(e))
+    }
+}
+
+fn display_login_error(e: &steamroom_client::login::LoginError) -> String {
+    use steamroom_client::login::LoginError;
+    match e {
+        LoginError::InvalidPassword => "invalid password".into(),
+        LoginError::InvalidGuardCode => "two-factor code rejected".into(),
+        LoginError::LogonFailed(r) => format!("login failed: {}", eresult_message(r)),
+        LoginError::Transport(inner) => display_steam_error(inner),
+        LoginError::MissingField(f) => format!("Steam response missing field: {f}"),
+        LoginError::NoCmServers => "could not find any Steam CM servers to connect to".into(),
+        _ => e.to_string(),
     }
 }
 
