@@ -10,7 +10,7 @@ mod credentials;
 mod error;
 mod qr;
 mod terminal;
-pub use terminal::{AnonymousLogin, TokenLogin};
+pub use terminal::{AnonymousLogin, ApprovedAuth, TokenLogin};
 
 pub use error::LoginError;
 

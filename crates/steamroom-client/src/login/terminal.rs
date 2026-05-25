@@ -1,6 +1,8 @@
 use crate::login::error::LoginError;
 use crate::login::{BuilderConfig, TransportConfig, establish_encrypted_client};
 
+use steamroom::auth::AuthTokens;
+
 use prost::Message;
 use steamroom::client::msg::ClientMsg;
 use steamroom::client::{Encrypted, LoggedIn, PROTOCOL_VERSION, SteamClient};
@@ -57,6 +59,42 @@ impl TokenLogin {
         };
         let steam_id = SteamId::from_parts(1, 1, 1, 0).raw();
         finish_logon(client, logon, steam_id).await
+    }
+}
+
+/// Auth flow has completed; tokens are available. Inspect via [`tokens()`]
+/// (e.g. to persist the refresh token) and then call [`finish()`] to send the
+/// `CMsgClientLogon` and reach the `LoggedIn` state.
+///
+/// [`tokens()`]: ApprovedAuth::tokens
+/// [`finish()`]: ApprovedAuth::finish
+pub struct ApprovedAuth {
+    pub(crate) client: SteamClient<Encrypted>,
+    pub(crate) config: BuilderConfig,
+    pub(crate) tokens: AuthTokens,
+}
+
+impl ApprovedAuth {
+    pub fn tokens(&self) -> &AuthTokens {
+        &self.tokens
+    }
+
+    pub async fn finish(self) -> Result<SteamClient<LoggedIn>, LoginError> {
+        let account_name = self
+            .tokens
+            .account_name
+            .clone()
+            .ok_or(LoginError::MissingField("account_name"))?;
+        let logon = CMsgClientLogon {
+            protocol_version: Some(PROTOCOL_VERSION),
+            cell_id: Some(self.config.cell_id),
+            client_os_type: Some(self.config.client_os.proto_value()),
+            account_name: Some(account_name),
+            access_token: Some(self.tokens.access_token),
+            ..Default::default()
+        };
+        let steam_id = SteamId::from_parts(1, 1, 1, 0).raw();
+        finish_logon(self.client, logon, steam_id).await
     }
 }
 
