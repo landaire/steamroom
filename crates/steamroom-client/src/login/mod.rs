@@ -43,6 +43,14 @@ impl ClientOs {
         self.0
     }
 
+    /// Convert to the `uint32` representation used by proto fields
+    /// (`client_os_type` in `CMsgClientLogon` is `optional uint32`).
+    /// Steam's wire encoding treats the bit pattern of the signed
+    /// `EOSType` as unsigned; this cast preserves it.
+    pub(crate) const fn proto_value(self) -> u32 {
+        self.0 as u32
+    }
+
     /// Windows 11 (wire value 20). Matches the steamroom CLI default.
     pub const WINDOWS_11: Self = Self(20);
 }
