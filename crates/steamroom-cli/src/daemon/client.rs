@@ -107,13 +107,10 @@ pub async fn run_daemon_subcommand(sub: DaemonSub) -> Result<(), CliError> {
         DaemonSub::Stop { force } => stop_daemon(force).await,
         DaemonSub::Attach { job_id } => attach_existing(JobId(job_id)).await,
         DaemonSub::Status { once, format } => {
-            // TUI default lands in T21; for now, --once / --format json
-            // are functional and an absent flag prints a hint.
             if once || format == Some(CliOutputFormat::Json) {
                 print_status_once(format).await
             } else {
-                // TUI placeholder until T21 wires it.
-                print_status_once(format).await
+                crate::daemon::tui::run_tui().await
             }
         }
     }
