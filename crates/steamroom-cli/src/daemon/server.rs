@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::proto::{
-    Event, JobId, JobKind, JobRecord, Request, StatusSnapshot,
+    Event, JobId, JobKind, JobRecord, LogLevel, ProgressUpdate, Request, StatusSnapshot,
 };
 
 /// One unit of work waiting to run. The `request` carries the parameters;
@@ -252,5 +252,153 @@ mod tests {
         s.toggle_priority(target).await.expect("ok");
         let kinds: Vec<bool> = s.snapshot().await.queue.iter().map(|j| j.priority).collect();
         assert_eq!(kinds, vec![true, true]);
+    }
+}
+
+use crate::sink::JobSink;
+use steamroom::client::{LoggedIn, SteamClient};
+
+/// Daemon-side JobSink that translates every call into an Event and
+/// broadcasts it. Cheap to construct per job.
+pub struct BroadcastSink {
+    pub job_id: JobId,
+    pub events: broadcast::Sender<Event>,
+}
+
+impl JobSink for BroadcastSink {
+    fn stdout_line(&self, line: &str) {
+        let _ = self.events.send(Event::Stdout { job_id: self.job_id, line: line.to_string() });
+    }
+    fn progress(&self, update: ProgressUpdate) {
+        let _ = self.events.send(Event::Progress { job_id: self.job_id, update });
+    }
+    fn log(&self, level: LogLevel, target: &str, message: &str) {
+        let _ = self.events.send(Event::Log {
+            job_id: Some(self.job_id),
+            level,
+            target: target.to_string(),
+            message: message.to_string(),
+        });
+    }
+}
+
+async fn wait_for_next_job(state: &DaemonState) -> Option<QueuedJob> {
+    loop {
+        if state.shutdown.is_cancelled() {
+            return None;
+        }
+        {
+            let mut q = state.queue.lock().await;
+            if let Some(job) = q.pop_front() {
+                return Some(job);
+            }
+        }
+        tokio::select! {
+            _ = state.queue_notify.notified() => {}
+            _ = state.shutdown.cancelled() => return None,
+        }
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        // Zero on error is acceptable: timestamps are advisory for display.
+        .unwrap_or(0)
+}
+
+/// Single-job worker loop. Owns the authenticated SteamClient and runs
+/// it through every `run_*` dispatch.
+pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>) {
+    while let Some(job) = wait_for_next_job(&state).await {
+        let started_at = unix_now();
+        let sink = BroadcastSink { job_id: job.job_id, events: state.events.clone() };
+        let record = JobRecord {
+            job_id: job.job_id,
+            kind: job.kind,
+            args_summary: job.args_summary.clone(),
+            priority: job.priority,
+            submitted_at: job.submitted_at,
+            started_at: Some(started_at),
+            finished_at: None,
+            exit_code: None,
+            progress: None,
+        };
+        {
+            let mut active = state.active.lock().await;
+            *active = Some(RunningJob { record: record.clone(), cancel: job.cancel.clone() });
+        }
+        let _ = state.events.send(Event::JobStarted {
+            job_id: job.job_id,
+            kind: job.kind,
+            args_summary: job.args_summary.clone(),
+        });
+
+        let exit_code = dispatch(job.request, client.clone(), &sink, job.cancel.clone()).await;
+
+        {
+            let mut active = state.active.lock().await;
+            *active = None;
+        }
+        let mut finished = record;
+        finished.finished_at = Some(unix_now());
+        finished.exit_code = Some(exit_code);
+        state.recent.lock().await.push(finished);
+        let _ = state.events.send(Event::JobFinished { job_id: job.job_id, exit_code });
+    }
+}
+
+async fn dispatch(
+    req: Request,
+    client: SteamClient<LoggedIn>,
+    sink: &dyn JobSink,
+    cancel: CancellationToken,
+) -> i32 {
+    use crate::commands;
+    let result = match req {
+        Request::Download { args, .. } => {
+            // show_progress=false: progress flows via sink.progress, not indicatif.
+            commands::download::run_download(args.into(), client, sink, cancel, false).await
+        }
+        Request::Info { args, .. } => {
+            commands::info::run_info(args.into(), client, sink, cancel).await
+        }
+        Request::Files { args, .. } => {
+            commands::files::run_files(args.into(), Some(client), sink, cancel).await
+        }
+        Request::Manifests { args, .. } => {
+            commands::manifests::run_manifests(args.into(), client, sink, cancel).await
+        }
+        Request::Diff { args, .. } => {
+            commands::diff::run_diff(args.into(), client, sink, cancel).await
+        }
+        Request::Packages { args, .. } => {
+            commands::packages::run_packages(args.into(), client, sink, cancel).await
+        }
+        Request::SaveManifest { args, .. } => {
+            commands::save_manifest::run_save_manifest(args.into(), client, sink, cancel).await
+        }
+        Request::Workshop { args, .. } => {
+            // show_progress=false: progress flows via sink.progress, not indicatif.
+            commands::workshop::run_workshop(args.into(), client, sink, cancel, false).await
+        }
+        Request::LocalInfo { args, .. } => {
+            commands::local_info::run_local_info(args.into(), sink, cancel).await
+        }
+        Request::Status
+        | Request::Subscribe
+        | Request::Attach { .. }
+        | Request::Cancel { .. }
+        | Request::TogglePriority { .. }
+        | Request::Stop { .. } => {
+            // Control variants are handled by handle_connection (T14), not dispatched as jobs.
+            unreachable!("control variants do not produce jobs");
+        }
+    };
+    match result {
+        Ok(()) => 0,
+        Err(crate::errors::CliError::Cancelled) => 130,
+        Err(_) => 1,
     }
 }

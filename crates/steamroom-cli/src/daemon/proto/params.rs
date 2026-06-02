@@ -224,6 +224,130 @@ impl From<crate::cli::LocalInfoArgs> for LocalInfoParams {
     }
 }
 
+impl From<DownloadParams> for crate::cli::DownloadArgs {
+    fn from(p: DownloadParams) -> Self {
+        Self {
+            app: p.app,
+            depot: p.depot,
+            manifest: p.manifest,
+            filelist: p.filelist.map(std::path::PathBuf::from),
+            file_regex: p.file_regex,
+            output: p.output.map(std::path::PathBuf::from),
+            verify: p.verify,
+            os: p.os,
+            arch: p.arch,
+            language: p.language,
+            login_id: p.login_id,
+            all_platforms: p.all_platforms,
+            all_architectures: p.all_architectures,
+            all_languages: p.all_languages,
+            lancache: p.lancache,
+            max_downloads: p.max_downloads.map(|n| n as usize),
+            branch: p.branch,
+            branch_password: p.branch_password,
+            local_keys: p.local_keys,
+            non_atomic: p.non_atomic,
+            save_manifests: p.save_manifests,
+            capture: None, // --capture is rejected at parse time under --use-daemon
+            bytes: p.bytes,
+        }
+    }
+}
+
+impl From<InfoParams> for crate::cli::InfoArgs {
+    fn from(p: InfoParams) -> Self {
+        Self {
+            app: p.app,
+            format: p.format.map(Into::into),
+            os: p.os,
+            show_all: p.show_all,
+        }
+    }
+}
+
+impl From<FilesParams> for crate::cli::FilesArgs {
+    fn from(p: FilesParams) -> Self {
+        Self {
+            app: p.app,
+            depot: p.depot,
+            manifest: p.manifest,
+            manifest_file: p.manifest_file.map(std::path::PathBuf::from),
+            depot_key: p.depot_key,
+            branch: p.branch,
+            branch_password: p.branch_password,
+            os: p.os,
+            format: p.format.map(Into::into),
+            raw: p.raw,
+            bytes: p.bytes,
+        }
+    }
+}
+
+impl From<ManifestsParams> for crate::cli::ManifestsArgs {
+    fn from(p: ManifestsParams) -> Self {
+        Self {
+            app: p.app,
+            branch: p.branch,
+            branch_password: p.branch_password,
+            format: p.format.map(Into::into),
+        }
+    }
+}
+
+impl From<DiffParams> for crate::cli::DiffArgs {
+    fn from(p: DiffParams) -> Self {
+        Self {
+            app: p.app,
+            depot: p.depot,
+            from: p.from,
+            to: p.to,
+            branch: p.branch,
+            format: p.format.map(Into::into),
+        }
+    }
+}
+
+impl From<PackagesParams> for crate::cli::PackagesArgs {
+    fn from(p: PackagesParams) -> Self {
+        Self {
+            packages: p.packages,
+            format: p.format.map(Into::into),
+        }
+    }
+}
+
+impl From<SaveManifestParams> for crate::cli::SaveManifestArgs {
+    fn from(p: SaveManifestParams) -> Self {
+        Self {
+            app: p.app,
+            depot: p.depot,
+            manifest: p.manifest,
+            branch: p.branch,
+            output: std::path::PathBuf::from(p.output),
+        }
+    }
+}
+
+impl From<WorkshopParams> for crate::cli::WorkshopArgs {
+    fn from(p: WorkshopParams) -> Self {
+        Self {
+            app: p.app,
+            item: p.item,
+            output: p.output.map(std::path::PathBuf::from),
+        }
+    }
+}
+
+impl From<LocalInfoParams> for crate::cli::LocalInfoArgs {
+    fn from(p: LocalInfoParams) -> Self {
+        Self {
+            format: p.format.map(Into::into),
+            user: p.user,
+            users: p.users,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

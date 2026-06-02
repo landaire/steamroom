@@ -48,15 +48,26 @@ struct ClientInner {
     source_job_id: AtomicU64,
 }
 
-pub struct SteamClient<S> {
+pub struct SteamClient<S: Clone> {
     inner: Arc<ClientInner>,
     _state: S,
 }
 
+impl<S: Clone> Clone for SteamClient<S> {
+    fn clone(&self) -> Self {
+        Self { inner: Arc::clone(&self.inner), _state: self._state.clone() }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct Disconnected;
+#[derive(Clone, Copy)]
 pub struct Connected;
+#[derive(Clone, Copy)]
 pub struct Encrypted;
+#[derive(Clone, Copy)]
 pub struct Ready;
+#[derive(Clone, Copy)]
 pub struct LoggedIn;
 
 pub type DisconnectedClient = SteamClient<Disconnected>;
