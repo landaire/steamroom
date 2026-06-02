@@ -2,6 +2,7 @@ mod cli;
 mod daemon;
 mod download;
 mod errors;
+mod sink;
 
 use clap::Parser;
 use cli::*;
