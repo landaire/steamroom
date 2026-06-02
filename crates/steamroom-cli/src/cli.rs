@@ -38,6 +38,11 @@ pub struct Cli {
     /// Suppress all output except errors
     #[arg(short, long)]
     pub quiet: bool,
+
+    /// Never prompt; fail loudly if interactive auth is required. Also
+    /// implied automatically when stdin is not a TTY.
+    #[arg(long, env = "STEAMROOM_NON_INTERACTIVE")]
+    pub non_interactive: bool,
 }
 
 /// Legacy flat-argument CLI compatible with the original DepotDownloader.
@@ -133,6 +138,7 @@ impl CompatCli {
             capture: None,
             no_progress: false,
             quiet: false,
+            non_interactive: false,
         }
     }
 }

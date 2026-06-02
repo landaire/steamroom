@@ -7,17 +7,24 @@
 //! `docs/superpowers/specs/2026-05-24-login-builder-design.md`.
 
 mod credentials;
-pub use credentials::{CredentialsLogin, CredentialsLoginFlow, GuardChallenge, MobileChallenge};
+pub use credentials::CredentialsLogin;
+pub use credentials::CredentialsLoginFlow;
+pub use credentials::GuardChallenge;
+pub use credentials::MobileChallenge;
 mod error;
 mod qr;
-pub use qr::{QrLogin, QrLoginFlow};
+pub use qr::QrLogin;
+pub use qr::QrLoginFlow;
 mod terminal;
-pub use terminal::{AnonymousLogin, ApprovedAuth, TokenLogin};
+pub use terminal::AnonymousLogin;
+pub use terminal::ApprovedAuth;
+pub use terminal::TokenLogin;
 
 pub use error::LoginError;
 
 // Re-exports from steamroom::auth so callers don't need both imports.
-pub use steamroom::auth::{AuthTokens, GuardType};
+pub use steamroom::auth::AuthTokens;
+pub use steamroom::auth::GuardType;
 
 /// Steam's `client_os_type` value (its internal `EOSType` — hundreds of entries
 /// covering OS + version combinations). Steam encodes both OS and version in a
@@ -64,8 +71,17 @@ impl Default for ClientOs {
     }
 }
 
-use steamroom::client::{Encrypted, Ready, SteamClient};
+use steamroom::client::Encrypted;
+use steamroom::client::Ready;
+use steamroom::client::SteamClient;
 use steamroom::connection::Protocol;
+
+/// `EAuthTokenPlatformType::SteamClient`. Sent in `BeginAuthSession*` requests
+/// so Steam issues tokens valid for client logon (`aud` includes `"client"`).
+/// Defaulting to `Unknown` (0) yields a web-platform token whose audiences
+/// (`web`/`renew`/`derive`) the CM rejects at `CMsgClientLogon` with
+/// `InvalidPassword`.
+pub(crate) const STEAM_CLIENT_PLATFORM_TYPE: i32 = 1;
 
 /// Configuration shared by `LoginBuilder` and `PreparedLoginBuilder`.
 /// Private — the public API exposes setters individually.
@@ -110,9 +126,13 @@ pub(crate) async fn establish_ready_client(
 ) -> Result<SteamClient<Ready>, LoginError> {
     match transport {
         TransportConfig::Provided(client) => Ok(client),
-        TransportConfig::Auto { prefer, allow_fallback } => {
-            Ok(connect_auto(prefer, allow_fallback).await?.prepare().await?)
-        }
+        TransportConfig::Auto {
+            prefer,
+            allow_fallback,
+        } => Ok(connect_auto(prefer, allow_fallback)
+            .await?
+            .prepare()
+            .await?),
     }
 }
 

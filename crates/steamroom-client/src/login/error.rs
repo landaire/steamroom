@@ -46,9 +46,8 @@ mod tests {
 
     #[test]
     fn transport_from_steamroom_error() {
-        let inner = steamroom::Error::Connection(
-            steamroom::error::ConnectionError::DnsResolutionFailed,
-        );
+        let inner =
+            steamroom::Error::Connection(steamroom::error::ConnectionError::DnsResolutionFailed);
         let err: LoginError = inner.into();
         assert!(matches!(err, LoginError::Transport(_)));
     }
@@ -62,6 +61,9 @@ mod tests {
         // Unknown variant should produce the human-readable Display form,
         // not the Debug form "Unknown(42)".
         let err = LoginError::LogonFailed(EResultError::Unknown(42));
-        assert_eq!(err.to_string(), "logon rejected by Steam: unknown error (code 42)");
+        assert_eq!(
+            err.to_string(),
+            "logon rejected by Steam: unknown error (code 42)"
+        );
     }
 }

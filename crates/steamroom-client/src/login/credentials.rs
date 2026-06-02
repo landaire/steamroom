@@ -1,10 +1,14 @@
+use crate::login::BuilderConfig;
+use crate::login::STEAM_CLIENT_PLATFORM_TYPE;
+use crate::login::TransportConfig;
 use crate::login::error::LoginError;
+use crate::login::establish_ready_client;
 use crate::login::terminal::ApprovedAuth;
-use crate::login::{BuilderConfig, TransportConfig, establish_ready_client};
 
 use base64::Engine;
 use steamroom::auth::GuardType;
-use steamroom::client::{Ready, SteamClient};
+use steamroom::client::Ready;
+use steamroom::client::SteamClient;
 use steamroom::generated::CAuthenticationBeginAuthSessionViaCredentialsRequest;
 
 /// Configured credentials login. Call [`begin()`] to start the auth flow.
@@ -58,8 +62,12 @@ impl CredentialsLogin {
         let rsa = client
             .get_password_rsa_public_key(&self.account_name)
             .await?;
-        let modulus = rsa.publickey_mod.ok_or(LoginError::MissingField("publickey_mod"))?;
-        let exponent = rsa.publickey_exp.ok_or(LoginError::MissingField("publickey_exp"))?;
+        let modulus = rsa
+            .publickey_mod
+            .ok_or(LoginError::MissingField("publickey_mod"))?;
+        let exponent = rsa
+            .publickey_exp
+            .ok_or(LoginError::MissingField("publickey_exp"))?;
         let timestamp = rsa.timestamp.unwrap_or(0);
 
         let encrypted_password = steamroom::crypto::rsa::encrypt_with_rsa_public_key(
@@ -78,6 +86,7 @@ impl CredentialsLogin {
             encryption_timestamp: Some(timestamp),
             remember_login: Some(true),
             persistence: Some(1),
+            platform_type: Some(STEAM_CLIENT_PLATFORM_TYPE),
             device_friendly_name: self.config.device_name.clone(),
             ..Default::default()
         };
@@ -91,9 +100,15 @@ impl CredentialsLogin {
             Err(e) => return Err(LoginError::Transport(e)),
         };
 
-        let client_id = session.client_id.ok_or(LoginError::MissingField("client_id"))?;
-        let request_id = session.request_id.ok_or(LoginError::MissingField("request_id"))?;
-        let steam_id = session.steam_id.ok_or(LoginError::MissingField("steamid"))?;
+        let client_id = session
+            .client_id
+            .ok_or(LoginError::MissingField("client_id"))?;
+        let request_id = session
+            .request_id
+            .ok_or(LoginError::MissingField("request_id"))?;
+        let steam_id = session
+            .steam_id
+            .ok_or(LoginError::MissingField("steamid"))?;
         let poll_interval = session.poll_interval.unwrap_or(5.0);
 
         // Classify the next step.
@@ -102,13 +117,7 @@ impl CredentialsLogin {
         {
             // No 2FA needed — poll once for tokens (Steam may have them ready)
             // and produce ApprovedAuth directly.
-            let tokens = poll_until_tokens(
-                &client,
-                client_id,
-                &request_id,
-                poll_interval,
-            )
-            .await?;
+            let tokens = poll_until_tokens(&client, client_id, &request_id, poll_interval).await?;
             return Ok(CredentialsLoginFlow::Approved(ApprovedAuth {
                 client,
                 config: self.config,

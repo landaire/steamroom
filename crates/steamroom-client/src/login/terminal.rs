@@ -1,11 +1,16 @@
+use crate::login::BuilderConfig;
+use crate::login::TransportConfig;
 use crate::login::error::LoginError;
-use crate::login::{BuilderConfig, TransportConfig, establish_ready_client};
+use crate::login::establish_ready_client;
 
 use steamroom::auth::AuthTokens;
 
 use prost::Message;
+use steamroom::client::LoggedIn;
+use steamroom::client::PROTOCOL_VERSION;
+use steamroom::client::Ready;
+use steamroom::client::SteamClient;
 use steamroom::client::msg::ClientMsg;
-use steamroom::client::{LoggedIn, PROTOCOL_VERSION, Ready, SteamClient};
 use steamroom::generated::CMsgClientLogon;
 use steamroom::messages::EMsg;
 use steamroom::types::SteamId;
@@ -80,17 +85,18 @@ impl ApprovedAuth {
     }
 
     pub async fn finish(self) -> Result<SteamClient<LoggedIn>, LoginError> {
-        let account_name = self
-            .tokens
-            .account_name
-            .clone()
-            .ok_or(LoginError::MissingField("account_name"))?;
+        let AuthTokens {
+            refresh_token,
+            account_name,
+            ..
+        } = self.tokens;
+        let account_name = account_name.ok_or(LoginError::MissingField("account_name"))?;
         let logon = CMsgClientLogon {
             protocol_version: Some(PROTOCOL_VERSION),
             cell_id: Some(self.config.cell_id),
             client_os_type: Some(self.config.client_os.proto_value()),
             account_name: Some(account_name),
-            access_token: Some(self.tokens.access_token),
+            access_token: Some(refresh_token),
             ..Default::default()
         };
         let steam_id = SteamId::from_parts(1, 1, 1, 0).raw();
@@ -113,9 +119,9 @@ pub(crate) async fn finish_logon(
 
     match client.login(msg).await {
         Ok((client, _resp)) => Ok(client),
-        Err(steamroom::Error::Connection(
-            steamroom::error::ConnectionError::LogonFailed(eresult),
-        )) => Err(LoginError::LogonFailed(eresult)),
+        Err(steamroom::Error::Connection(steamroom::error::ConnectionError::LogonFailed(
+            eresult,
+        ))) => Err(LoginError::LogonFailed(eresult)),
         Err(e) => Err(LoginError::Transport(e)),
     }
 }

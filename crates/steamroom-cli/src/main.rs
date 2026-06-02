@@ -15,15 +15,24 @@ use steamroom::depot::*;
 use steamroom::types::key_value;
 use steamroom::types::key_value::KeyValue;
 use steamroom::types::key_value::KvValue;
-use steamroom_client::login::{
-    CredentialsLoginFlow, GuardType, LoginBuilder, LoginError,
-};
+use steamroom_client::login::CredentialsLoginFlow;
+use steamroom_client::login::GuardType;
+use steamroom_client::login::LoginBuilder;
+use steamroom_client::login::LoginError;
 use tabled::builder::Builder as TableBuilder;
 use tabled::settings::Style;
 
 use tracing::debug;
 use tracing::info;
 use tracing::warn;
+
+/// Set once in `main`: true iff the user did not pass `--non-interactive`
+/// and stdin is a TTY. Read via [`is_interactive`].
+static INTERACTIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn is_interactive() -> bool {
+    INTERACTIVE.get().copied().unwrap_or(false)
+}
 
 fn main() {
     let cli = if std::env::var("DD_COMPAT").as_deref() == Ok("1") {
@@ -75,6 +84,8 @@ fn main() {
         .expect("failed to build tokio runtime");
 
     let raw_errors = cli.raw_errors;
+    let _ = INTERACTIVE
+        .set(!cli.non_interactive && std::io::IsTerminal::is_terminal(&std::io::stdin()));
     if let Err(err) = rt.block_on(async_main(cli)) {
         if raw_errors {
             // Wrap in rootcause Report for full context chain
@@ -103,8 +114,8 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
 }
 
 async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, CliError> {
-    let builder = LoginBuilder::new()
-        .device_name(auth.device_name.as_deref().unwrap_or("steamroom"));
+    let builder =
+        LoginBuilder::new().device_name(auth.device_name.as_deref().unwrap_or("steamroom"));
 
     // --use-steam-token: prefer local Steam install's cached token.
     if auth.use_steam_token {
@@ -133,14 +144,39 @@ async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, 
         return Ok(builder.anonymous().login().await?);
     }
 
-    // -u/--username given: try saved token, then QR, then password.
+    // -u/--username given. --qr forces a fresh QR session; otherwise try a
+    // saved refresh token (with fallback to interactive auth if it's stale),
+    // then password.
     if let Some(ref username) = auth.username {
+        if auth.qr {
+            if !is_interactive() {
+                return Err(CliError::InteractiveAuthRequired);
+            }
+            return drive_qr_flow(builder, username).await;
+        }
         if let Some(token) = load_saved_token(username) {
             info!("using saved refresh token for {username}");
-            return Ok(builder.with_refresh_token(username, token).login().await?);
+            let attempt = LoginBuilder::new()
+                .device_name(auth.device_name.as_deref().unwrap_or("steamroom"))
+                .with_refresh_token(username, token)
+                .login()
+                .await;
+            match attempt {
+                Ok(client) => return Ok(client),
+                Err(LoginError::LogonFailed(
+                    steamroom::enums::EResultError::InvalidPassword
+                    | steamroom::enums::EResultError::AccessDenied
+                    | steamroom::enums::EResultError::Expired,
+                ))
+                | Err(LoginError::InvalidPassword) => {
+                    warn!("saved refresh token rejected; re-authenticating");
+                    forget_saved_token(username);
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
-        if auth.qr {
-            return drive_qr_flow(builder, username).await;
+        if !is_interactive() && auth.password.is_none() {
+            return Err(CliError::InteractiveAuthRequired);
         }
         return drive_credentials_flow(builder, username, auth).await;
     }
@@ -194,6 +230,23 @@ fn save_token(username: &str, refresh_token: &str) {
     info!("saved refresh token for {username}");
 }
 
+fn forget_saved_token(username: &str) {
+    let Some(path) = tokens_path() else { return };
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&data) else {
+        return;
+    };
+    if let Some(tokens) = root.get_mut("tokens").and_then(|v| v.as_object_mut()) {
+        tokens.remove(username);
+    }
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&root).unwrap_or_default(),
+    );
+}
+
 async fn drive_credentials_flow(
     builder: LoginBuilder,
     username: &str,
@@ -202,14 +255,17 @@ async fn drive_credentials_flow(
     let _ = builder; // Dropped here — the loop creates a fresh LoginBuilder per attempt (each attempt reconnects).
     for attempt in 0..3u32 {
         let password = if attempt == 0 {
-            auth.password.clone().unwrap_or_else(|| {
-                rpassword::prompt_password(format!("Password for {username}: "))
-                    .unwrap_or_default()
-            })
+            match (auth.password.clone(), is_interactive()) {
+                (Some(p), _) => p,
+                (None, true) => rpassword::prompt_password(format!("Password for {username}: "))
+                    .unwrap_or_default(),
+                (None, false) => return Err(CliError::InteractiveAuthRequired),
+            }
+        } else if !is_interactive() {
+            return Err(CliError::InteractiveAuthRequired);
         } else {
             eprintln!("Invalid password, try again ({}/3)", attempt + 1);
-            rpassword::prompt_password(format!("Password for {username}: "))
-                .unwrap_or_default()
+            rpassword::prompt_password(format!("Password for {username}: ")).unwrap_or_default()
         };
 
         let credentials = LoginBuilder::new()
@@ -223,20 +279,28 @@ async fn drive_credentials_flow(
 
         let approved = match flow {
             CredentialsLoginFlow::Approved(a) => a,
-            CredentialsLoginFlow::NeedsGuardCode(mut challenge) => loop {
-                let prompt = guard_prompt(challenge.allowed_kinds());
-                let kind = preferred_kind(challenge.allowed_kinds());
-                let code = rpassword::prompt_password(prompt).unwrap_or_default();
-                match challenge.submit_code(&code, kind).await {
-                    Ok(a) => break a,
-                    Err((c, LoginError::InvalidGuardCode)) => {
-                        eprintln!("Invalid Steam Guard code, try again.");
-                        challenge = c;
-                    }
-                    Err((_, e)) => return Err(e.into()),
+            CredentialsLoginFlow::NeedsGuardCode(mut challenge) => {
+                if !is_interactive() {
+                    return Err(CliError::InteractiveAuthRequired);
                 }
-            },
+                loop {
+                    let prompt = guard_prompt(challenge.allowed_kinds());
+                    let kind = preferred_kind(challenge.allowed_kinds());
+                    let code = rpassword::prompt_password(prompt).unwrap_or_default();
+                    match challenge.submit_code(&code, kind).await {
+                        Ok(a) => break a,
+                        Err((c, LoginError::InvalidGuardCode)) => {
+                            eprintln!("Invalid Steam Guard code, try again.");
+                            challenge = c;
+                        }
+                        Err((_, e)) => return Err(e.into()),
+                    }
+                }
+            }
             CredentialsLoginFlow::NeedsMobileConfirm(mobile) => {
+                if !is_interactive() {
+                    return Err(CliError::InteractiveAuthRequired);
+                }
                 info!("confirm login on your Steam mobile app...");
                 mobile.wait_for_confirmation().await?
             }
@@ -282,8 +346,8 @@ async fn drive_qr_flow(
     let flow = builder.with_qr().begin().await?;
 
     let url = flow.challenge_url();
-    let qr = qrcode::QrCode::new(url.as_bytes())
-        .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+    let qr =
+        qrcode::QrCode::new(url.as_bytes()).map_err(|e| CliError::Io(std::io::Error::other(e)))?;
     let rendered = qr.render::<qrcode::render::unicode::Dense1x2>().build();
     eprintln!("{rendered}");
     eprintln!("Scan this QR code with the Steam mobile app");

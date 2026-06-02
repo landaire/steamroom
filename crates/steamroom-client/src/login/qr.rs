@@ -1,10 +1,14 @@
+use crate::login::BuilderConfig;
+use crate::login::STEAM_CLIENT_PLATFORM_TYPE;
+use crate::login::TransportConfig;
 use crate::login::credentials::poll_until_tokens;
 use crate::login::error::LoginError;
+use crate::login::establish_ready_client;
 use crate::login::terminal::ApprovedAuth;
-use crate::login::{BuilderConfig, TransportConfig, establish_ready_client};
 
 use steamroom::auth::GuardType;
-use steamroom::client::{Ready, SteamClient};
+use steamroom::client::Ready;
+use steamroom::client::SteamClient;
 use steamroom::generated::CAuthenticationBeginAuthSessionViaQrRequest;
 
 /// Configured QR login. Call [`begin()`] to start the flow.
@@ -40,6 +44,7 @@ impl QrLogin {
             .unwrap_or_else(|| "steamroom".to_string());
         let req = CAuthenticationBeginAuthSessionViaQrRequest {
             device_friendly_name: Some(device_name),
+            platform_type: Some(STEAM_CLIENT_PLATFORM_TYPE),
             ..Default::default()
         };
         let session = client.begin_auth_session_via_qr(req).await?;

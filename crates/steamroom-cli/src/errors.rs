@@ -60,6 +60,13 @@ pub enum CliError {
     #[error("{}", display_login_error(.0))]
     Login(#[from] steamroom_client::login::LoginError),
 
+    #[error(
+        "authentication requires an interactive terminal. Re-run on a TTY, \
+         supply --password / STEAM_PASS for credentials login, or use a \
+         valid saved refresh token."
+    )]
+    InteractiveAuthRequired,
+
     #[error("Steam returned no CDN servers")]
     NoCdnServers,
 }
