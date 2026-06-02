@@ -64,7 +64,7 @@ impl Default for ClientOs {
     }
 }
 
-use steamroom::client::{Encrypted, SteamClient};
+use steamroom::client::{Encrypted, Ready, SteamClient};
 use steamroom::connection::Protocol;
 
 /// Configuration shared by `LoginBuilder` and `PreparedLoginBuilder`.
@@ -77,15 +77,17 @@ pub(crate) struct BuilderConfig {
     pub(crate) client_os: ClientOs,
 }
 
-/// How the builder obtains the underlying encrypted client.
+/// How the builder obtains the underlying ready client.
 pub(crate) enum TransportConfig {
-    /// Discover CM servers, connect via preferred protocol, run encryption.
+    /// Discover CM servers, connect via preferred protocol, run encryption,
+    /// then send `CMsgClientHello`.
     Auto {
         prefer: Protocol,
         allow_fallback: bool,
     },
-    /// Use a pre-built encrypted client (capture/replay, custom transport).
-    Provided(SteamClient<Encrypted>),
+    /// Use a pre-built `Ready` client (capture/replay, custom transport). The
+    /// caller is responsible for having driven `connect → encrypt → prepare`.
+    Provided(SteamClient<Ready>),
 }
 
 impl Default for TransportConfig {
@@ -101,15 +103,15 @@ use steamroom::connection::CmServer;
 use steamroom::transport::tcp::TcpTransport;
 use steamroom::transport::websocket::WebSocketTransport;
 
-/// Establish an encrypted Steam client according to `transport`.
-/// Consumes the `TransportConfig`. For `Provided`, returns the client as-is.
-pub(crate) async fn establish_encrypted_client(
+/// Establish a `Ready` Steam client according to `transport`. For `Provided`,
+/// returns the caller-supplied client as-is (already prepared by the caller).
+pub(crate) async fn establish_ready_client(
     transport: TransportConfig,
-) -> Result<SteamClient<Encrypted>, LoginError> {
+) -> Result<SteamClient<Ready>, LoginError> {
     match transport {
         TransportConfig::Provided(client) => Ok(client),
         TransportConfig::Auto { prefer, allow_fallback } => {
-            connect_auto(prefer, allow_fallback).await
+            Ok(connect_auto(prefer, allow_fallback).await?.prepare().await?)
         }
     }
 }
@@ -126,7 +128,7 @@ async fn connect_auto(
         match try_connect(server).await {
             Ok(client) => return Ok(client),
             Err(e) if !allow_fallback => return Err(e),
-            Err(_) => { /* fall through to other protocol */ }
+            Err(_) => {}
         }
     }
 
@@ -158,7 +160,7 @@ async fn try_connect(server: &CmServer) -> Result<SteamClient<Encrypted>, LoginE
 
 /// Top-level builder for the auto-discovery login path: builder discovers
 /// CM servers, connects, runs the encryption handshake, then drives the
-/// chosen auth method. For a pre-built `SteamClient<Encrypted>`, use
+/// chosen auth method. For a pre-built `SteamClient<Ready>`, use
 /// `PreparedLoginBuilder` instead.
 pub struct LoginBuilder {
     config: BuilderConfig,
@@ -259,18 +261,18 @@ impl Default for LoginBuilder {
     }
 }
 
-/// Top-level builder for the BYO-encrypted-client path. Use this when you
-/// have already constructed a `SteamClient<Encrypted>` yourself (e.g. via the
-/// capture/replay transport in tests, or a custom transport). Transport
+/// Top-level builder for the BYO-client path. Use this when you have already
+/// driven a client through `connect → encrypt → prepare` yourself (e.g. via
+/// the capture/replay transport in tests, or a custom transport). Transport
 /// configuration methods are intentionally absent — the transport is already
 /// chosen by the caller.
 pub struct PreparedLoginBuilder {
     config: BuilderConfig,
-    client: Option<SteamClient<Encrypted>>,
+    client: Option<SteamClient<Ready>>,
 }
 
 impl PreparedLoginBuilder {
-    pub fn new(client: SteamClient<Encrypted>) -> Self {
+    pub fn new(client: SteamClient<Ready>) -> Self {
         Self {
             config: BuilderConfig::default(),
             client: Some(client),

@@ -1,10 +1,10 @@
 use crate::login::credentials::poll_until_tokens;
 use crate::login::error::LoginError;
 use crate::login::terminal::ApprovedAuth;
-use crate::login::{BuilderConfig, TransportConfig, establish_encrypted_client};
+use crate::login::{BuilderConfig, TransportConfig, establish_ready_client};
 
 use steamroom::auth::GuardType;
-use steamroom::client::{Encrypted, SteamClient};
+use steamroom::client::{Ready, SteamClient};
 use steamroom::generated::CAuthenticationBeginAuthSessionViaQrRequest;
 
 /// Configured QR login. Call [`begin()`] to start the flow.
@@ -19,7 +19,7 @@ pub struct QrLogin {
 /// code (or prints it), then calls `wait_for_scan()` to block until the user
 /// approves on their Steam mobile app.
 pub struct QrLoginFlow {
-    client: SteamClient<Encrypted>,
+    client: SteamClient<Ready>,
     config: BuilderConfig,
     challenge_url: String,
     client_id: u64,
@@ -31,7 +31,7 @@ pub struct QrLoginFlow {
 impl QrLogin {
     /// Connect (or accept BYO client) and call `BeginAuthSessionViaQR`.
     pub async fn begin(self) -> Result<QrLoginFlow, LoginError> {
-        let client = establish_encrypted_client(self.transport).await?;
+        let client = establish_ready_client(self.transport).await?;
 
         let device_name = self
             .config

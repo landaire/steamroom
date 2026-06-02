@@ -1,11 +1,11 @@
 use crate::login::error::LoginError;
-use crate::login::{BuilderConfig, TransportConfig, establish_encrypted_client};
+use crate::login::{BuilderConfig, TransportConfig, establish_ready_client};
 
 use steamroom::auth::AuthTokens;
 
 use prost::Message;
 use steamroom::client::msg::ClientMsg;
-use steamroom::client::{Encrypted, LoggedIn, PROTOCOL_VERSION, SteamClient};
+use steamroom::client::{LoggedIn, PROTOCOL_VERSION, Ready, SteamClient};
 use steamroom::generated::CMsgClientLogon;
 use steamroom::messages::EMsg;
 use steamroom::types::SteamId;
@@ -21,7 +21,7 @@ impl AnonymousLogin {
     /// Connect (if needed), send `CMsgClientLogon` with no credentials, wait
     /// for `CLIENT_LOG_ON_RESPONSE`.
     pub async fn login(self) -> Result<SteamClient<LoggedIn>, LoginError> {
-        let client = establish_encrypted_client(self.transport).await?;
+        let client = establish_ready_client(self.transport).await?;
         let logon = CMsgClientLogon {
             protocol_version: Some(PROTOCOL_VERSION),
             cell_id: Some(self.config.cell_id),
@@ -48,7 +48,7 @@ impl TokenLogin {
     /// in the `access_token` field (Steam's wire name for this slot — yes,
     /// it's confusing), wait for `CLIENT_LOG_ON_RESPONSE`.
     pub async fn login(self) -> Result<SteamClient<LoggedIn>, LoginError> {
-        let client = establish_encrypted_client(self.transport).await?;
+        let client = establish_ready_client(self.transport).await?;
         let logon = CMsgClientLogon {
             protocol_version: Some(PROTOCOL_VERSION),
             cell_id: Some(self.config.cell_id),
@@ -69,7 +69,7 @@ impl TokenLogin {
 /// [`tokens()`]: ApprovedAuth::tokens
 /// [`finish()`]: ApprovedAuth::finish
 pub struct ApprovedAuth {
-    pub(crate) client: SteamClient<Encrypted>,
+    pub(crate) client: SteamClient<Ready>,
     pub(crate) config: BuilderConfig,
     pub(crate) tokens: AuthTokens,
 }
@@ -102,7 +102,7 @@ impl ApprovedAuth {
 /// Translates `ConnectionError::LogonFailed` to `LoginError::LogonFailed`;
 /// other errors become `LoginError::Transport`.
 pub(crate) async fn finish_logon(
-    client: SteamClient<Encrypted>,
+    client: SteamClient<Ready>,
     logon: CMsgClientLogon,
     steam_id: u64,
 ) -> Result<SteamClient<LoggedIn>, LoginError> {

@@ -14,6 +14,7 @@ impl EMsg {
     pub const SERVICE_METHOD_RESPONSE: Self = Self(147);
     pub const SERVICE_METHOD_CALL_FROM_CLIENT: Self = Self(151);
     pub const SERVICE_METHOD_SEND_TO_CLIENT: Self = Self(152);
+    pub const SERVICE_METHOD_CALL_FROM_CLIENT_NON_AUTHED: Self = Self(9804);
     pub const CLIENT_HEART_BEAT: Self = Self(703);
     pub const CLIENT_LOGOFF: Self = Self(706);
     pub const CLIENT_GAMES_PLAYED: Self = Self(716);

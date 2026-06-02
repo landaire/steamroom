@@ -69,16 +69,7 @@ async fn do_login(
     logon: steamroom::generated::CMsgClientLogon,
     steam_id: u64,
 ) -> Result<steamroom::client::SteamClient<steamroom::client::LoggedIn>, steamroom::error::Error> {
-    let hello = steamroom::generated::CMsgClientHello {
-        protocol_version: Some(steamroom::client::PROTOCOL_VERSION),
-    };
-    let hello_body = hello.encode_to_vec();
-    let hello_msg = steamroom::client::msg::ClientMsg::with_body(
-        steamroom::messages::EMsg::CLIENT_HELLO,
-        &hello_body,
-    );
-    client.send_msg(&hello_msg).await?;
-
+    let client = client.prepare().await?;
     let body = logon.encode_to_vec();
     let mut msg = steamroom::client::msg::ClientMsg::with_body(
         steamroom::messages::EMsg::CLIENT_LOGON,

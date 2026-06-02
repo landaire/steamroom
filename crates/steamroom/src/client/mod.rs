@@ -56,6 +56,7 @@ pub struct SteamClient<S> {
 pub struct Disconnected;
 pub struct Connected;
 pub struct Encrypted;
+pub struct Ready;
 pub struct LoggedIn;
 
 pub type DisconnectedClient = SteamClient<Disconnected>;
@@ -220,21 +221,20 @@ impl SteamClient<Connected> {
     }
 }
 
-impl SteamClient<Encrypted> {
+impl ClientInner {
     async fn send_raw(&self, msg: &ClientMsg<'_>) -> Result<(), Error> {
         let data = msg.to_bytes();
-        if let Some(cipher) = self.inner.cipher.get() {
+        if let Some(cipher) = self.cipher.get() {
             let encrypted = cipher.encrypt(&data);
-            self.inner.transport.send(&encrypted).await
+            self.transport.send(&encrypted).await
         } else {
-            self.inner.transport.send(&data).await
+            self.transport.send(&data).await
         }
     }
 
     async fn recv_raw(&self) -> Result<IncomingMsg, Error> {
-        let raw = self.inner.transport.recv().await?;
-
-        let data = if let Some(cipher) = self.inner.cipher.get() {
+        let raw = self.transport.recv().await?;
+        let data = if let Some(cipher) = self.cipher.get() {
             cipher
                 .decrypt(&raw)
                 .map_err(|_| ConnectionError::EncryptionFailed)?
@@ -252,20 +252,32 @@ impl SteamClient<Encrypted> {
         let msg = ClientMsg::with_body(EMsg::CLIENT_HELLO, &body);
         self.send_raw(&msg).await
     }
+}
 
+impl SteamClient<Encrypted> {
+    /// Send `CMsgClientHello` and transition to [`Ready`].
+    ///
+    /// Steam requires a hello message before any service-method call. Calling
+    /// `prepare` is the only thing you can do in the `Encrypted` state.
+    pub async fn prepare(self) -> Result<SteamClient<Ready>, Error> {
+        self.inner.send_hello().await?;
+        Ok(SteamClient {
+            inner: self.inner,
+            _state: Ready,
+        })
+    }
+}
+
+impl SteamClient<Ready> {
     pub async fn login(
         self,
         msg: ClientMsg<'_>,
     ) -> Result<(SteamClient<LoggedIn>, IncomingMsg), Error> {
-        // Send ClientHello then logon immediately
-        self.send_hello().await?;
-        self.send_raw(&msg).await?;
+        self.inner.send_raw(&msg).await?;
 
         // Process messages until we get LogOnResponse
         loop {
-            let incoming = self.recv_raw().await?;
-            debug!("login: received {:?}", incoming.emsg);
-
+            let incoming = self.inner.recv_raw().await?;
             debug!("login: received emsg={:?}", incoming.emsg);
             match incoming.emsg {
                 EMsg::CLIENT_LOG_ON_RESPONSE => {
@@ -334,11 +346,11 @@ impl SteamClient<Encrypted> {
     }
 
     pub async fn send_msg(&self, msg: &ClientMsg<'_>) -> Result<(), Error> {
-        self.send_raw(msg).await
+        self.inner.send_raw(msg).await
     }
 
     pub async fn recv_msg(&self) -> Result<IncomingMsg, Error> {
-        self.recv_raw().await
+        self.inner.recv_raw().await
     }
 
     pub async fn call_service_method_non_authed(
@@ -347,13 +359,13 @@ impl SteamClient<Encrypted> {
         body: &[u8],
     ) -> Result<ServiceResponse, Error> {
         let job_id = self.inner.source_job_id.fetch_add(1, Ordering::Relaxed);
-        let mut msg = ClientMsg::with_body(EMsg::SERVICE_METHOD_CALL_FROM_CLIENT, body);
+        let mut msg = ClientMsg::with_body(EMsg::SERVICE_METHOD_CALL_FROM_CLIENT_NON_AUTHED, body);
         msg.header.target_job_name = Some(method_name.to_string());
         msg.header.jobid_source = Some(job_id);
-        self.send_raw(&msg).await?;
+        self.inner.send_raw(&msg).await?;
 
         loop {
-            let incoming = self.recv_raw().await?;
+            let incoming = self.inner.recv_raw().await?;
             if incoming.emsg == EMsg::SERVICE_METHOD_RESPONSE
                 && incoming.header.jobid_target == Some(job_id)
             {
@@ -493,28 +505,6 @@ impl SteamClient<Encrypted> {
 }
 
 impl SteamClient<LoggedIn> {
-    async fn send_raw(&self, msg: &ClientMsg<'_>) -> Result<(), Error> {
-        let data = msg.to_bytes();
-        if let Some(cipher) = self.inner.cipher.get() {
-            let encrypted = cipher.encrypt(&data);
-            self.inner.transport.send(&encrypted).await
-        } else {
-            self.inner.transport.send(&data).await
-        }
-    }
-
-    async fn recv_raw(&self) -> Result<IncomingMsg, Error> {
-        let raw = self.inner.transport.recv().await?;
-        let data = if let Some(cipher) = self.inner.cipher.get() {
-            cipher
-                .decrypt(&raw)
-                .map_err(|_| ConnectionError::EncryptionFailed)?
-        } else {
-            raw.to_vec()
-        };
-        parse_incoming(&data)
-    }
-
     fn make_msg<'a>(&self, emsg: EMsg, body: &'a [u8]) -> ClientMsg<'a> {
         let mut msg = ClientMsg::with_body(emsg, body);
         msg.header.steamid = Some(self.inner.steam_id.load(Ordering::Relaxed));
@@ -523,16 +513,16 @@ impl SteamClient<LoggedIn> {
     }
 
     pub async fn send_msg(&self, msg: &ClientMsg<'_>) -> Result<(), Error> {
-        self.send_raw(msg).await
+        self.inner.send_raw(msg).await
     }
 
     pub async fn recv_msg(&self) -> Result<IncomingMsg, Error> {
-        self.recv_raw().await
+        self.inner.recv_raw().await
     }
 
     pub async fn send_heartbeat(&self) -> Result<(), Error> {
         let msg = self.make_msg(EMsg::CLIENT_HEART_BEAT, &[]);
-        self.send_raw(&msg).await
+        self.inner.send_raw(&msg).await
     }
 
     pub async fn call_service_method(
@@ -544,10 +534,10 @@ impl SteamClient<LoggedIn> {
         let mut msg = self.make_msg(EMsg::SERVICE_METHOD_CALL_FROM_CLIENT, body);
         msg.header.target_job_name = Some(method_name.to_string());
         msg.header.jobid_source = Some(job_id);
-        self.send_raw(&msg).await?;
+        self.inner.send_raw(&msg).await?;
 
         loop {
-            let incoming = self.recv_raw().await?;
+            let incoming = self.inner.recv_raw().await?;
             if incoming.emsg == EMsg::SERVICE_METHOD_RESPONSE
                 && incoming.header.jobid_target == Some(job_id)
             {
@@ -581,10 +571,10 @@ impl SteamClient<LoggedIn> {
         };
         let body = req.encode_to_vec();
         let msg = self.make_msg(EMsg::CLIENT_PICS_ACCESS_TOKEN_REQUEST, &body); // k_EMsgClientPICSAccessTokenRequest
-        self.send_raw(&msg).await?;
+        self.inner.send_raw(&msg).await?;
 
         loop {
-            let incoming = self.recv_raw().await?;
+            let incoming = self.inner.recv_raw().await?;
             if incoming.emsg == EMsg::CLIENT_PICS_ACCESS_TOKEN_RESPONSE {
                 // k_EMsgClientPICSAccessTokenResponse
                 let resp = generated::CMsgClientPicsAccessTokenResponse::decode(&*incoming.body)?;
@@ -635,10 +625,10 @@ impl SteamClient<LoggedIn> {
         };
         let body = req.encode_to_vec();
         let msg = self.make_msg(EMsg::CLIENT_PICS_PRODUCT_INFO_REQUEST, &body); // k_EMsgClientPICSProductInfoRequest
-        self.send_raw(&msg).await?;
+        self.inner.send_raw(&msg).await?;
 
         loop {
-            let incoming = self.recv_raw().await?;
+            let incoming = self.inner.recv_raw().await?;
             if incoming.emsg == EMsg::CLIENT_PICS_PRODUCT_INFO_RESPONSE {
                 // k_EMsgClientPICSProductInfoResponse
                 let resp = generated::CMsgClientPicsProductInfoResponse::decode(&*incoming.body)?;
@@ -684,10 +674,10 @@ impl SteamClient<LoggedIn> {
         };
         let body = req.encode_to_vec();
         let msg = self.make_msg(EMsg::CLIENT_PICS_ACCESS_TOKEN_REQUEST, &body);
-        self.send_raw(&msg).await?;
+        self.inner.send_raw(&msg).await?;
 
         loop {
-            let incoming = self.recv_raw().await?;
+            let incoming = self.inner.recv_raw().await?;
             if incoming.emsg == EMsg::CLIENT_PICS_ACCESS_TOKEN_RESPONSE {
                 let resp = generated::CMsgClientPicsAccessTokenResponse::decode(&*incoming.body)?;
                 return Ok(resp
@@ -743,10 +733,10 @@ impl SteamClient<LoggedIn> {
         };
         let body = req.encode_to_vec();
         let msg = self.make_msg(EMsg::CLIENT_PICS_PRODUCT_INFO_REQUEST, &body);
-        self.send_raw(&msg).await?;
+        self.inner.send_raw(&msg).await?;
 
         loop {
-            let incoming = self.recv_raw().await?;
+            let incoming = self.inner.recv_raw().await?;
             if incoming.emsg == EMsg::CLIENT_PICS_PRODUCT_INFO_RESPONSE {
                 let resp = generated::CMsgClientPicsProductInfoResponse::decode(&*incoming.body)?;
                 debug!(
@@ -811,10 +801,10 @@ impl SteamClient<LoggedIn> {
         };
         let body = req.encode_to_vec();
         let msg = self.make_msg(EMsg::CLIENT_GET_DEPOT_DECRYPTION_KEY, &body); // k_EMsgClientGetDepotDecryptionKey
-        self.send_raw(&msg).await?;
+        self.inner.send_raw(&msg).await?;
 
         loop {
-            let incoming = self.recv_raw().await?;
+            let incoming = self.inner.recv_raw().await?;
             if incoming.emsg == EMsg::CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE {
                 return Self::parse_depot_key_response(&incoming.body);
             }
@@ -860,10 +850,10 @@ impl SteamClient<LoggedIn> {
         };
         let body = req.encode_to_vec();
         let msg = self.make_msg(EMsg::CLIENT_PICS_PRIVATE_BETA_REQUEST, &body);
-        self.send_raw(&msg).await?;
+        self.inner.send_raw(&msg).await?;
 
         loop {
-            let incoming = self.recv_raw().await?;
+            let incoming = self.inner.recv_raw().await?;
             if incoming.emsg == EMsg::CLIENT_PICS_PRIVATE_BETA_RESPONSE {
                 return Self::parse_private_beta_response(&incoming.body);
             }

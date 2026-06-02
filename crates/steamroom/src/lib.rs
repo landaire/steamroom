@@ -24,6 +24,7 @@
 //!     .expect("no WebSocket server");
 //! let transport = WebSocketTransport::connect(ws_server).await?;
 //! let (client, _rx) = SteamClient::connect_ws(transport).await?;
+//! let client = client.prepare().await?;
 //!
 //! // For authenticated downloads, build a logon message and call client.login().
 //! // For anonymous access (free apps like Spacewar), use an anonymous logon.

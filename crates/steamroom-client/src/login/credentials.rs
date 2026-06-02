@@ -1,10 +1,10 @@
 use crate::login::error::LoginError;
 use crate::login::terminal::ApprovedAuth;
-use crate::login::{BuilderConfig, TransportConfig, establish_encrypted_client};
+use crate::login::{BuilderConfig, TransportConfig, establish_ready_client};
 
 use base64::Engine;
 use steamroom::auth::GuardType;
-use steamroom::client::{Encrypted, SteamClient};
+use steamroom::client::{Ready, SteamClient};
 use steamroom::generated::CAuthenticationBeginAuthSessionViaCredentialsRequest;
 
 /// Configured credentials login. Call [`begin()`] to start the auth flow.
@@ -30,7 +30,7 @@ pub enum CredentialsLoginFlow {
 }
 
 pub struct GuardChallenge {
-    pub(crate) client: SteamClient<Encrypted>,
+    pub(crate) client: SteamClient<Ready>,
     pub(crate) config: BuilderConfig,
     pub(crate) client_id: u64,
     pub(crate) steam_id: u64,
@@ -40,7 +40,7 @@ pub struct GuardChallenge {
 }
 
 pub struct MobileChallenge {
-    pub(crate) client: SteamClient<Encrypted>,
+    pub(crate) client: SteamClient<Ready>,
     pub(crate) config: BuilderConfig,
     pub(crate) client_id: u64,
     pub(crate) request_id: Vec<u8>,
@@ -52,7 +52,7 @@ impl CredentialsLogin {
     /// password, and call `BeginAuthSessionViaCredentials`. The returned flow
     /// indicates whether 2FA is needed and which kind.
     pub async fn begin(self) -> Result<CredentialsLoginFlow, LoginError> {
-        let client = establish_encrypted_client(self.transport).await?;
+        let client = establish_ready_client(self.transport).await?;
 
         // RSA exchange
         let rsa = client
@@ -215,7 +215,7 @@ impl MobileChallenge {
 /// guard-code and mobile-confirmation completion paths, and by the no-2FA
 /// path in `begin()`.
 pub(crate) async fn poll_until_tokens(
-    client: &SteamClient<Encrypted>,
+    client: &SteamClient<Ready>,
     client_id: u64,
     request_id: &[u8],
     interval_secs: f32,
