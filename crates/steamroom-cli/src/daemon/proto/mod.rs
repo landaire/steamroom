@@ -1,6 +1,9 @@
 //! Wire types for the daemon RPC. Owned, rkyv-archivable; never contain
 //! `PathBuf`, `Regex`, or other types that rkyv cannot archive directly.
 
+mod params;
+pub use params::*;
+
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// Monotonically increasing identifier minted by the daemon. Stable for
