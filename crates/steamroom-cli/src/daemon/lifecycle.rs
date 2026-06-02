@@ -160,7 +160,13 @@ pub fn detach_and_exec_resume(username: &str, log_path: &std::path::Path) -> Res
                     let arg0 = CString::new(exe.as_os_str().as_encoded_bytes()).unwrap();
                     let arg1 = CString::new("--daemon-resume").unwrap();
                     let arg2 = CString::new(username).unwrap();
-                    execv(&arg0, &[&arg0, &arg1, &arg2])
+                    // `daemon start` is included only to satisfy clap's
+                    // subcommand requirement. `main()` checks
+                    // `cli.daemon_resume` first and routes to
+                    // `serve_resumed` before the subcommand handler runs.
+                    let arg3 = CString::new("daemon").unwrap();
+                    let arg4 = CString::new("start").unwrap();
+                    execv(&arg0, &[&arg0, &arg1, &arg2, &arg3, &arg4])
                         .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
                     unreachable!("execv either succeeds or fails");
                 }
@@ -217,6 +223,20 @@ use crate::daemon::tracing_layer::{JobIdAttachmentInstaller, JobScopedLogLayer};
 /// Returns the username that the resumed child will pass to
 /// `serve_resumed` as the account to log in with.
 pub async fn launch_daemon_authenticate(cli: &Cli) -> Result<String, CliError> {
+    // Fail fast if a daemon is already up. Avoids running the user
+    // through Steam Guard prompts only to have the grandchild's
+    // bind_listener reject and the parent's probe time out.
+    if ipc::probe_peer().await.is_ok() {
+        return Err(CliError::DaemonAlreadyRunning);
+    }
+    // If a PID file references a dead process, remove it so we don't
+    // mislead `daemon info` after a successful restart.
+    if let Ok(stale_pid) = read_pid_file() {
+        if !pid_is_alive(stale_pid) {
+            remove_pid_file();
+        }
+    }
+
     let client = shared::connect_and_login(&cli.auth).await?;
     let username = cli
         .auth
@@ -227,6 +247,24 @@ pub async fn launch_daemon_authenticate(cli: &Cli) -> Result<String, CliError> {
     drop(client);
     Ok(username)
 }
+
+/// `kill(pid, 0)` returns 0 if the process exists and we have signal
+/// permission, ESRCH if the pid is unknown, EPERM if it exists but is
+/// owned by another user. Both EPERM and 0 count as "alive" -- a pid
+/// we cannot signal is still occupying the pid namespace.
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    // SAFETY: libc::kill is always safe to call with signal 0.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // SAFETY: __error()/errno_location depending on platform, but the
+    // io::Error::last_os_error() wrapper handles both.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool { true }
 
 /// The actual long-lived daemon process, post-exec. Builds a fresh
 /// tokio runtime above this; this just runs the accept loop.
