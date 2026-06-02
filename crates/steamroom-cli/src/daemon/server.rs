@@ -253,6 +253,28 @@ mod tests {
         let kinds: Vec<bool> = s.snapshot().await.queue.iter().map(|j| j.priority).collect();
         assert_eq!(kinds, vec![true, true]);
     }
+
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn status_request_round_trips() {
+        let s = DaemonState::new(Some("acct".into()), 42, 1000);
+        let (mut client, server) = duplex(64 * 1024);
+        let server_state = s.clone();
+        let server_task = tokio::spawn(async move {
+            handle_connection(server_state, server).await;
+        });
+        crate::daemon::framing::write_frame(&mut client, &Frame::Request(Request::Status)).await.unwrap();
+        let resp = crate::daemon::framing::read_frame(&mut client).await.unwrap();
+        match resp {
+            Frame::Response(Response::Status(snap)) => {
+                assert_eq!(snap.daemon_pid, 42);
+                assert_eq!(snap.account.as_deref(), Some("acct"));
+            }
+            other => panic!("wrong: {other:?}"),
+        }
+        server_task.await.unwrap();
+    }
 }
 
 use crate::sink::JobSink;
@@ -400,5 +422,170 @@ async fn dispatch(
         Ok(()) => 0,
         Err(crate::errors::CliError::Cancelled) => 130,
         Err(_) => 1,
+    }
+}
+
+use tokio::io::{AsyncRead, AsyncWrite};
+
+use crate::daemon::framing::{read_frame, write_frame};
+use crate::daemon::proto::{ErrorKind, Frame, Response};
+
+/// Handle a single client connection. Reads exactly one Request, then
+/// either replies with a single Response and closes (control RPCs), or
+/// streams Events filtered by job id (job submissions, Subscribe, Attach)
+/// until terminated by JobFinished or a shutdown signal.
+pub async fn handle_connection<S>(state: Arc<DaemonState>, mut stream: S)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let req = match read_frame(&mut stream).await {
+        Ok(Frame::Request(r)) => r,
+        Ok(other) => {
+            let _ = write_frame(&mut stream, &Frame::Response(Response::Error {
+                kind: ErrorKind::InvalidRequest,
+                message: format!("expected Request, got {other:?}"),
+            })).await;
+            return;
+        }
+        Err(e) => {
+            let _ = write_frame(&mut stream, &Frame::Response(Response::Error {
+                kind: ErrorKind::InvalidRequest,
+                message: e.to_string(),
+            })).await;
+            return;
+        }
+    };
+
+    match req {
+        Request::Status => {
+            let snap = state.snapshot().await;
+            let _ = write_frame(&mut stream, &Frame::Response(Response::Status(snap))).await;
+        }
+        Request::Stop { force } => {
+            if force {
+                if let Some(running) = state.active.lock().await.as_ref() {
+                    running.cancel.cancel();
+                }
+            }
+            state.shutdown.cancel();
+            state.queue_notify.notify_one();
+            let _ = write_frame(&mut stream, &Frame::Response(Response::Stopping)).await;
+        }
+        Request::Cancel { job_id } => {
+            let resp = match state.cancel(job_id).await {
+                Ok(()) => Response::Ack,
+                Err(_) => Response::Error { kind: ErrorKind::JobNotFound, message: format!("{job_id}") },
+            };
+            let _ = write_frame(&mut stream, &Frame::Response(resp)).await;
+        }
+        Request::TogglePriority { job_id } => {
+            let resp = match state.toggle_priority(job_id).await {
+                Ok(()) => Response::Ack,
+                Err(_) => Response::Error { kind: ErrorKind::JobNotFound, message: format!("{job_id}") },
+            };
+            let _ = write_frame(&mut stream, &Frame::Response(resp)).await;
+        }
+        Request::Subscribe => {
+            stream_events(state.clone(), &mut stream, None).await;
+        }
+        Request::Attach { job_id } => {
+            // Replay buffer for finished jobs is a follow-up; for now we
+            // stream live events filtered by job_id until JobFinished.
+            stream_events(state.clone(), &mut stream, Some(job_id)).await;
+        }
+        // Job submissions.
+        other => {
+            let priority = matches!(&other,
+                Request::Download { priority: true, .. }
+                | Request::Info { priority: true, .. }
+                | Request::Files { priority: true, .. }
+                | Request::Manifests { priority: true, .. }
+                | Request::Diff { priority: true, .. }
+                | Request::Packages { priority: true, .. }
+                | Request::SaveManifest { priority: true, .. }
+                | Request::Workshop { priority: true, .. }
+                | Request::LocalInfo { priority: true, .. });
+            let kind = job_kind_of(&other);
+            let args_summary = summarize(&other);
+            let job_id = state.allocate_job_id();
+            let cancel = CancellationToken::new();
+            let job = QueuedJob {
+                job_id,
+                kind,
+                request: other,
+                priority,
+                submitted_at: unix_now(),
+                cancel,
+                args_summary,
+            };
+            let position = state.enqueue(job).await;
+            let _ = write_frame(&mut stream, &Frame::Response(Response::JobAccepted { job_id, position })).await;
+            stream_events(state.clone(), &mut stream, Some(job_id)).await;
+        }
+    }
+}
+
+async fn stream_events<S>(state: Arc<DaemonState>, stream: &mut S, filter: Option<JobId>)
+where
+    S: AsyncWrite + Unpin,
+{
+    let mut rx = state.events.subscribe();
+    loop {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => {
+                let _ = write_frame(stream, &Frame::EndOfStream { exit_code: 130 }).await;
+                return;
+            }
+            ev = rx.recv() => match ev {
+                Ok(ev) => {
+                    if let Some(want) = filter
+                        && ev.job_id() != Some(want)
+                    {
+                        continue;
+                    }
+                    let is_terminal = matches!(&ev, Event::JobFinished { .. });
+                    let exit_code = if let Event::JobFinished { exit_code, .. } = &ev { *exit_code } else { 0 };
+                    if write_frame(stream, &Frame::Event(ev)).await.is_err() {
+                        return; // Client dropped; that is fine.
+                    }
+                    if is_terminal {
+                        let _ = write_frame(stream, &Frame::EndOfStream { exit_code }).await;
+                        return;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+}
+
+fn job_kind_of(r: &Request) -> JobKind {
+    match r {
+        Request::Download { .. } => JobKind::Download,
+        Request::Info { .. } => JobKind::Info,
+        Request::Files { .. } => JobKind::Files,
+        Request::Manifests { .. } => JobKind::Manifests,
+        Request::Diff { .. } => JobKind::Diff,
+        Request::Packages { .. } => JobKind::Packages,
+        Request::SaveManifest { .. } => JobKind::SaveManifest,
+        Request::Workshop { .. } => JobKind::Workshop,
+        Request::LocalInfo { .. } => JobKind::LocalInfo,
+        _ => unreachable!("control variants do not produce jobs"),
+    }
+}
+
+fn summarize(r: &Request) -> String {
+    match r {
+        Request::Download { args, .. } => format!("download app={} depot={:?}", args.app, args.depot),
+        Request::Info { args, .. } => format!("info app={}", args.app),
+        Request::Files { args, .. } => format!("files app={:?}", args.app),
+        Request::Manifests { args, .. } => format!("manifests app={}", args.app),
+        Request::Diff { args, .. } => format!("diff depot={} from={} to={}", args.depot, args.from, args.to),
+        Request::Packages { args, .. } => format!("packages count={}", args.packages.len()),
+        Request::SaveManifest { args, .. } => format!("save-manifest app={} depot={}", args.app, args.depot),
+        Request::Workshop { args, .. } => format!("workshop item={}", args.item),
+        Request::LocalInfo { .. } => "local-info".to_string(),
+        _ => "(control)".to_string(),
     }
 }
