@@ -227,6 +227,56 @@ steamroom local-info --users
 steamroom local-info --user myaccount
 ```
 
+## Daemon mode
+
+`steamroom` can run as a background daemon that holds an authenticated Steam session
+and services subsequent CLI invocations over a local socket. The daemon authenticates
+once at launch and reuses the connection across many requests, which avoids the per-command
+CM discovery + handshake + logon round trip.
+
+```bash
+# Start a daemon in the background. Authenticates once; prints PID and stop hint.
+steamroom --daemon --username myaccount
+
+# Route subsequent commands through the running daemon.
+steamroom --use-daemon info --app 730
+steamroom --use-daemon download --app 480 --depot 481 -o spacewar/
+
+# Jump the queue.
+steamroom --use-daemon --priority info --app 730
+
+# Submit without waiting. Reattach later with `daemon attach`.
+steamroom --use-daemon --detach download --app 480 --depot 481
+
+# Observe the daemon.
+steamroom daemon status              # ratatui dashboard
+steamroom daemon status --once       # one-shot text snapshot
+steamroom daemon status --once --format json
+steamroom daemon info                # pid + socket + stop command (no RPC)
+
+# Stop.
+steamroom daemon stop
+steamroom daemon stop --force        # cancel the active job too
+```
+
+The daemon serves exactly one account: the one it authenticated as at launch. To switch
+accounts, stop and restart the daemon. The daemon binds a per-user socket
+(`/tmp/steamroom-<uid>.sock` on macOS, abstract `steamroom-<uid>` on Linux) and writes
+its PID to `$XDG_RUNTIME_DIR/steamroom.pid` (or `$TMPDIR/steamroom-<uid>.pid`).
+`steamroom daemon info` reads both without contacting the daemon, which is useful when
+diagnosing a wedged process.
+
+Limitations in this release:
+- Background mode (`--daemon`'s fork+exec) is Unix-only. On Windows, run `--daemon` in
+  the foreground and background it manually.
+- The parent's success exit does not guarantee the daemon stayed up: if the resumed
+  child fails to bind the socket or re-authenticate from the cached refresh token, the
+  parent has already exited 0. Check `steamroom daemon info` and the log file at
+  `$TMPDIR/steamroom-<uid>.log` to confirm.
+- `--use-daemon` rejects `--username`, `--password`, `--qr`, `--use-steam-token`,
+  `--remember-password`, `--device-name`, and `--capture` at parse time. These flags
+  belong on `--daemon` at launch.
+
 ## Authentication
 
 steamroom supports multiple authentication methods:
