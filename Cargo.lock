@@ -3104,6 +3104,7 @@ dependencies = [
  "indicatif",
  "interprocess",
  "jiff",
+ "libc",
  "nix",
  "prost",
  "qrcode",

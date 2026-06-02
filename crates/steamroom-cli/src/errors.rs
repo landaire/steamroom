@@ -93,6 +93,9 @@ pub enum CliError {
 
     #[error("operation cancelled")]
     Cancelled,
+
+    #[error("a steamroom daemon is already running on this socket")]
+    DaemonAlreadyRunning,
 }
 
 impl From<steamroom::error::ConnectionError> for CliError {
