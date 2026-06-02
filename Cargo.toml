@@ -52,6 +52,7 @@ object = "0.39"
 protox = "0.9"
 dirs-next = "2"
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+futures = "0.3"
 futures-util = "0.3"
 async-channel = "2"
 crossterm = "0.28"

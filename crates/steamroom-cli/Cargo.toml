@@ -43,6 +43,7 @@ interprocess = { workspace = true }
 ratatui = { workspace = true }
 rkyv = { workspace = true }
 tabled = { workspace = true }
+futures = { workspace = true }
 tokio-util = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

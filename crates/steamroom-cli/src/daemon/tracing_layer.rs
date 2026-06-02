@@ -11,8 +11,11 @@ use tracing_subscriber::Layer;
 
 use crate::daemon::proto::{Event, JobId, LogLevel};
 
-/// Span field name carrying the job id. The worker sets this when
-/// entering each job's span: `tracing::info_span!("job", job_id = %job.0)`.
+/// Span field name carrying the job id. The worker sets this when entering
+/// each job's span. Pass the numeric value directly for the most reliable
+/// path: `tracing::info_span!("job", job_id = job.0)`. The `%`-formatter
+/// (Display) is also handled but requires a successful parse from the
+/// formatted string.
 pub const JOB_ID_FIELD: &str = "job_id";
 
 pub struct JobScopedLogLayer {
@@ -84,7 +87,15 @@ where
 struct JobIdFieldVisitor { job_id: Option<u64> }
 
 impl tracing::field::Visit for JobIdFieldVisitor {
-    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == JOB_ID_FIELD {
+            // Tracing's %/?formatters route through record_debug. Try to
+            // parse a numeric form (works for `%id` where id is u64-Display).
+            if let Ok(n) = format!("{value:?}").parse::<u64>() {
+                self.job_id = Some(n);
+            }
+        }
+    }
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
         if field.name() == JOB_ID_FIELD { self.job_id = Some(value); }
     }

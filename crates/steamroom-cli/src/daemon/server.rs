@@ -36,6 +36,12 @@ pub struct DaemonState {
     pub recent: Mutex<RingBuffer<JobRecord>>,
     pub events: broadcast::Sender<Event>,
     pub next_job_id: AtomicU64,
+    /// Set when Stop is received. The accept loop and worker_loop check
+    /// this to refuse new jobs and exit when idle. Active connections
+    /// keep streaming until their job completes.
+    pub accepting: CancellationToken,
+    /// Set for a hard stop (force=true) or when the queue drains after a
+    /// graceful stop. Signals all subscribers and the accept loop to exit.
     pub shutdown: CancellationToken,
     pub started_at: u64,
     pub daemon_pid: u32,
@@ -56,6 +62,7 @@ impl DaemonState {
             recent: Mutex::new(RingBuffer::new(32)),
             events,
             next_job_id: AtomicU64::new(1),
+            accepting: CancellationToken::new(),
             shutdown: CancellationToken::new(),
             started_at,
             daemon_pid,
@@ -109,14 +116,19 @@ impl DaemonState {
     }
 
     pub async fn cancel(&self, job_id: JobId) -> Result<(), JobNotFound> {
-        // Active first.
-        if let Some(running) = self.active.lock().await.as_ref() {
-            if running.record.job_id == job_id {
-                running.cancel.cancel();
-                return Ok(());
-            }
+        // Pull the active job's cancel token under a scoped guard so the
+        // active lock is released before we take the queue lock.
+        let active_token = {
+            let guard = self.active.lock().await;
+            guard.as_ref().and_then(|r| {
+                (r.record.job_id == job_id).then(|| r.cancel.clone())
+            })
+        };
+        if let Some(token) = active_token {
+            token.cancel();
+            return Ok(());
         }
-        // Queued: remove and emit JobFinished with exit_code 130 (SIGINT-ish).
+        // Not active; try queued.
         let mut q = self.queue.lock().await;
         let Some(idx) = q.iter().position(|j| j.job_id == job_id) else {
             return Err(JobNotFound);
@@ -150,6 +162,14 @@ impl DaemonState {
     pub async fn snapshot(&self) -> StatusSnapshot {
         let q = self.queue.lock().await;
         self.snapshot_inner(&q, None).await
+    }
+
+    /// Look up a recently-finished job by id. Used by `stream_events` to
+    /// recover the terminal exit code after a broadcast lag.
+    pub async fn recent_exit_code(&self, job_id: JobId) -> Option<i32> {
+        self.recent.lock().await.iter()
+            .find(|r| r.job_id == job_id)
+            .and_then(|r| r.exit_code)
     }
 }
 
@@ -275,6 +295,33 @@ mod tests {
         }
         server_task.await.unwrap();
     }
+
+    #[tokio::test]
+    async fn cancel_active_job_releases_active_lock_promptly() {
+        // Construct a DaemonState with a fake active job.
+        let s = DaemonState::new(None, 1, 0);
+        let active_cancel = CancellationToken::new();
+        let record = JobRecord {
+            job_id: JobId(99),
+            kind: JobKind::Info,
+            args_summary: "fake".into(),
+            priority: false,
+            submitted_at: 0,
+            started_at: Some(0),
+            finished_at: None,
+            exit_code: None,
+            progress: None,
+        };
+        *s.active.lock().await = Some(RunningJob { record, cancel: active_cancel.clone() });
+
+        // Cancel should return quickly (no lock held across the queue lock).
+        let res = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            s.cancel(JobId(99)),
+        ).await;
+        assert!(res.is_ok(), "cancel timed out -- deadlock?");
+        assert!(active_cancel.is_cancelled());
+    }
 }
 
 use crate::sink::JobSink;
@@ -313,6 +360,10 @@ async fn wait_for_next_job(state: &DaemonState) -> Option<QueuedJob> {
             let mut q = state.queue.lock().await;
             if let Some(job) = q.pop_front() {
                 return Some(job);
+            }
+            if state.accepting.is_cancelled() {
+                // Graceful Stop: queue empty, no more work coming.
+                return None;
             }
         }
         tokio::select! {
@@ -357,7 +408,28 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
             args_summary: job.args_summary.clone(),
         });
 
-        let exit_code = dispatch(job.request, client.clone(), &sink, job.cancel.clone()).await;
+        use futures::future::FutureExt;
+        let exit_code = match std::panic::AssertUnwindSafe(
+            dispatch(job.request, client.clone(), &sink, job.cancel.clone())
+        ).catch_unwind().await {
+            Ok(code) => code,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "(non-string panic payload)".into()
+                };
+                let _ = state.events.send(Event::Log {
+                    job_id: Some(job.job_id),
+                    level: LogLevel::Error,
+                    target: "daemon::worker".into(),
+                    message: format!("job panicked: {msg}"),
+                });
+                255
+            }
+        };
 
         {
             let mut active = state.active.lock().await;
@@ -368,6 +440,11 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
         finished.exit_code = Some(exit_code);
         state.recent.lock().await.push(finished);
         let _ = state.events.send(Event::JobFinished { job_id: job.job_id, exit_code });
+    }
+    // If we got here because accepting was cancelled and the queue is empty,
+    // signal full shutdown so the accept loop and any Subscribe streams wind down.
+    if state.accepting.is_cancelled() {
+        state.shutdown.cancel();
     }
 }
 
@@ -462,13 +539,17 @@ where
             let _ = write_frame(&mut stream, &Frame::Response(Response::Status(snap))).await;
         }
         Request::Stop { force } => {
+            state.accepting.cancel();           // refuse new submissions
+            state.queue_notify.notify_one();    // unstick worker if idle
             if force {
+                // Hard stop: cancel active job and tell all subscribers.
                 if let Some(running) = state.active.lock().await.as_ref() {
                     running.cancel.cancel();
                 }
+                state.shutdown.cancel();
             }
-            state.shutdown.cancel();
-            state.queue_notify.notify_one();
+            // Graceful (force=false): do NOT signal `shutdown` here. The
+            // worker_loop will set shutdown once active is None AND queue is empty.
             let _ = write_frame(&mut stream, &Frame::Response(Response::Stopping)).await;
         }
         Request::Cancel { job_id } => {
@@ -486,12 +567,14 @@ where
             let _ = write_frame(&mut stream, &Frame::Response(resp)).await;
         }
         Request::Subscribe => {
-            stream_events(state.clone(), &mut stream, None).await;
+            let rx = state.events.subscribe();
+            stream_events(state.clone(), &mut stream, None, rx).await;
         }
         Request::Attach { job_id } => {
             // Replay buffer for finished jobs is a follow-up; for now we
             // stream live events filtered by job_id until JobFinished.
-            stream_events(state.clone(), &mut stream, Some(job_id)).await;
+            let rx = state.events.subscribe();
+            stream_events(state.clone(), &mut stream, Some(job_id), rx).await;
         }
         // Job submissions.
         other => {
@@ -518,18 +601,24 @@ where
                 cancel,
                 args_summary,
             };
+            // Subscribe BEFORE enqueue so we don't miss JobStarted.
+            let rx = state.events.subscribe();
             let position = state.enqueue(job).await;
             let _ = write_frame(&mut stream, &Frame::Response(Response::JobAccepted { job_id, position })).await;
-            stream_events(state.clone(), &mut stream, Some(job_id)).await;
+            stream_events(state.clone(), &mut stream, Some(job_id), rx).await;
         }
     }
 }
 
-async fn stream_events<S>(state: Arc<DaemonState>, stream: &mut S, filter: Option<JobId>)
+async fn stream_events<S>(
+    state: Arc<DaemonState>,
+    stream: &mut S,
+    filter: Option<JobId>,
+    mut rx: tokio::sync::broadcast::Receiver<Event>,
+)
 where
     S: AsyncWrite + Unpin,
 {
-    let mut rx = state.events.subscribe();
     loop {
         tokio::select! {
             _ = state.shutdown.cancelled() => {
@@ -553,7 +642,18 @@ where
                         return;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // If the filtered job already finished while we were lagging,
+                    // recover its exit code from `recent` and write the terminal
+                    // frame. Otherwise resume reading and hope the buffer recovers.
+                    if let Some(want) = filter
+                        && let Some(exit_code) = state.recent_exit_code(want).await
+                    {
+                        let _ = write_frame(stream, &Frame::EndOfStream { exit_code }).await;
+                        return;
+                    }
+                    continue;
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
         }
