@@ -23,7 +23,7 @@ pub async fn run_workshop(
     args: WorkshopArgs,
     client: SteamClient<LoggedIn>,
     sink: &dyn JobSink,
-    _cancel: CancellationToken,
+    cancel: CancellationToken,
     show_progress: bool,
 ) -> Result<(), CliError> {
     let _ = sink; // T10 wires sink-side progress; direct mode still uses spawn_progress_renderer.
@@ -109,11 +109,20 @@ pub async fn run_workshop(
 
     let progress_handle = direct_progress::spawn_progress_renderer(event_rx, show_progress);
 
-    let stats = job
-        .download(&manifest, std::sync::Arc::new(fetcher))
-        .await
-        .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
-    drop(job);
+    // Wrap the download in a select! against the cancel token. Dropping
+    // the future aborts the orchestration; spawned chunk-fetch tasks held
+    // inside DepotJob may continue until their next yield point, but the
+    // `set_installing` marker on disk signals partial state for the next
+    // resume.
+    let download_fut = job.download(&manifest, std::sync::Arc::new(fetcher));
+    tokio::pin!(download_fut);
+    let stats = tokio::select! {
+        res = &mut download_fut => res.map_err(|e| CliError::Io(std::io::Error::other(e)))?,
+        _ = cancel.cancelled() => {
+            return Err(CliError::Cancelled);
+        }
+    };
+    drop(download_fut);
     let _ = progress_handle.await;
 
     info!(

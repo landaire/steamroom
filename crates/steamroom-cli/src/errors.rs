@@ -90,6 +90,9 @@ pub enum CliError {
 
     #[error("daemon RPC: socket closed before frame complete")]
     SocketClosed,
+
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 impl From<steamroom::error::ConnectionError> for CliError {
