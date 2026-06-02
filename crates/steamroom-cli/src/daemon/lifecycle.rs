@@ -151,3 +151,91 @@ pub fn detach_and_exec_resume(_username: &str, _log_path: &std::path::Path) -> R
         "background daemon mode is not yet supported on Windows; run --daemon in the foreground",
     )))
 }
+
+use crate::cli::Cli;
+use crate::commands::shared;
+use crate::daemon::ipc;
+use crate::daemon::server::{DaemonState, handle_connection, worker_loop};
+use crate::daemon::tracing_layer::{JobIdAttachmentInstaller, JobScopedLogLayer};
+
+/// Phase 1 of `--daemon`: authenticate in the foreground (Steam Guard
+/// prompts work here), save the refresh token via the existing path,
+/// return the username so main can fork+exec the resume child.
+///
+/// Returns the username that the resumed child will pass to
+/// `serve_resumed` as the account to log in with.
+pub async fn launch_daemon_authenticate(cli: &Cli) -> Result<String, CliError> {
+    let client = shared::connect_and_login(&cli.auth).await?;
+    let username = cli
+        .auth
+        .username
+        .clone()
+        .or_else(|| shared::detect_steam_user().map(|(u, _)| u))
+        .ok_or(CliError::InteractiveAuthRequired)?;
+    drop(client);
+    Ok(username)
+}
+
+/// The actual long-lived daemon process, post-exec. Builds a fresh
+/// tokio runtime above this; this just runs the accept loop.
+pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> {
+    // Re-authenticate using the refresh token saved by launch_daemon_authenticate.
+    let token = shared::load_saved_token(&username).ok_or(CliError::InteractiveAuthRequired)?;
+    let client = steamroom_client::login::LoginBuilder::new()
+        .device_name("steamroom")
+        .with_refresh_token(&username, &token)
+        .login()
+        .await?;
+
+    let pid = std::process::id();
+    write_pid_file(pid)?;
+    let state = DaemonState::new(Some(username.clone()), pid, unix_now_lifecycle());
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let _ = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(JobIdAttachmentInstaller)
+        .with(JobScopedLogLayer::new(state.events.clone()))
+        .try_init();
+
+    let listener = ipc::bind_listener().await?;
+
+    let worker_state = state.clone();
+    let worker_task = tokio::spawn(async move {
+        worker_loop(worker_state, client).await;
+    });
+
+    loop {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            res = ipc::accept(&listener) => match res {
+                Ok(stream) => {
+                    let st = state.clone();
+                    tokio::spawn(handle_connection(st, stream));
+                }
+                Err(e) => {
+                    tracing::warn!("accept failed: {e}");
+                }
+            }
+        }
+    }
+
+    let _ = state.events.send(crate::daemon::proto::Event::Log {
+        job_id: None,
+        level: crate::daemon::proto::LogLevel::Info,
+        target: "daemon".into(),
+        message: "shutting down".into(),
+    });
+    worker_task.abort();
+    let _ = worker_task.await;
+    remove_pid_file();
+    Ok(())
+}
+
+fn unix_now_lifecycle() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}

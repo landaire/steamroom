@@ -43,6 +43,29 @@ pub struct Cli {
     /// implied automatically when stdin is not a TTY.
     #[arg(long, env = "STEAMROOM_NON_INTERACTIVE")]
     pub non_interactive: bool,
+
+    /// Launch a daemon: authenticate, fork, detach, and serve RPC.
+    #[arg(long, conflicts_with = "use_daemon")]
+    pub daemon: bool,
+
+    /// Send this command to the running daemon instead of executing
+    /// directly.
+    #[arg(long = "use-daemon")]
+    pub use_daemon: bool,
+
+    /// (internal) Resume daemon execution after fork+exec.
+    #[arg(long, hide = true)]
+    pub daemon_resume: Option<String>,
+
+    /// Push this request to the front of the daemon queue.
+    /// Only valid with --use-daemon.
+    #[arg(long)]
+    pub priority: bool,
+
+    /// Return immediately after the daemon accepts the job; do not
+    /// stream progress. Only valid with --use-daemon.
+    #[arg(long)]
+    pub detach: bool,
 }
 
 /// Legacy flat-argument CLI compatible with the original DepotDownloader.
@@ -139,6 +162,11 @@ impl CompatCli {
             no_progress: false,
             quiet: false,
             non_interactive: false,
+            daemon: false,
+            use_daemon: false,
+            daemon_resume: None,
+            priority: false,
+            detach: false,
         }
     }
 }
@@ -172,24 +200,57 @@ pub struct AuthOptions {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Daemon control commands (stop, status, info, attach).
+    Daemon(DaemonArgs),
+    /// Compare two manifests and show added, removed, and changed files
+    Diff(DiffArgs),
     /// Download depot content to a local directory
     Download(DownloadArgs),
     /// List files in a depot manifest
     Files(FilesArgs),
     /// Show app metadata: name, type, depots, branches
     Info(InfoArgs),
-    /// List depot manifest IDs for a branch
-    Manifests(ManifestsArgs),
-    /// Download and save a depot manifest without downloading content
-    SaveManifest(SaveManifestArgs),
-    /// Compare two manifests and show added, removed, and changed files
-    Diff(DiffArgs),
-    /// Query Steam package (sub) details by ID
-    Packages(PackagesArgs),
-    /// Download a Steam Workshop item
-    Workshop(WorkshopArgs),
     /// Show locally cached depot keys and beta branches from Steam's config.vdf
     LocalInfo(LocalInfoArgs),
+    /// List depot manifest IDs for a branch
+    Manifests(ManifestsArgs),
+    /// Query Steam package (sub) details by ID
+    Packages(PackagesArgs),
+    /// Download and save a depot manifest without downloading content
+    SaveManifest(SaveManifestArgs),
+    /// Download a Steam Workshop item
+    Workshop(WorkshopArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct DaemonArgs {
+    #[command(subcommand)]
+    pub command: DaemonSub,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DaemonSub {
+    /// Stop the running daemon.
+    Stop {
+        /// Cancel the active job immediately instead of waiting for it.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print queue, active job, and recent history. Default: TUI dashboard.
+    Status {
+        /// One-shot text snapshot instead of the TUI.
+        #[arg(long)]
+        once: bool,
+        /// Output format (implies --once when set to json).
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+    },
+    /// Print PID, socket path, and stop command. Does not contact the daemon.
+    Info,
+    /// Attach to an existing job by id.
+    Attach {
+        job_id: u64,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -418,7 +479,6 @@ pub enum OutputFormat {
     Plain,
 }
 
-#[allow(unused_imports)]
 use crate::daemon::proto::Request;
 use crate::errors::CliError;
 
@@ -426,10 +486,78 @@ impl Cli {
     /// Lower a parsed `Cli` into the wire-typed `Request`. Validates that
     /// daemon-mode constraints hold (per-request auth flags rejected,
     /// `--priority` only with `--use-daemon`, etc.).
-    ///
-    /// Stubbed until task 18 adds the `--daemon`/`--use-daemon`/`--priority`
-    /// flags and the `Command::Daemon` subcommand variant.
     pub fn into_rpc_request(self) -> Result<Request, CliError> {
-        todo!("Cli::into_rpc_request: completed in task 18")
+        // Per-request auth flags belong on --daemon, not --use-daemon.
+        let auth = &self.auth;
+        let has_auth = auth.username.is_some()
+            || auth.password.is_some()
+            || auth.qr
+            || auth.use_steam_token
+            || auth.remember_password
+            || auth.device_name.is_some();
+        if has_auth {
+            return Err(CliError::DaemonRejectedFlag("auth flags"));
+        }
+        if self.capture.is_some() {
+            return Err(CliError::DaemonRejectedFlag("--capture"));
+        }
+
+        let priority = self.priority;
+        match self.command {
+            Command::Download(a) => Ok(Request::Download {
+                args: crate::daemon::proto::DownloadParams::from(a),
+                priority,
+            }),
+            Command::Info(a) => Ok(Request::Info {
+                args: crate::daemon::proto::InfoParams::from(a),
+                priority,
+            }),
+            Command::Files(a) => Ok(Request::Files {
+                args: crate::daemon::proto::FilesParams::from(a),
+                priority,
+            }),
+            Command::Manifests(a) => Ok(Request::Manifests {
+                args: crate::daemon::proto::ManifestsParams::from(a),
+                priority,
+            }),
+            Command::Diff(a) => Ok(Request::Diff {
+                args: crate::daemon::proto::DiffParams::from(a),
+                priority,
+            }),
+            Command::Packages(a) => Ok(Request::Packages {
+                args: crate::daemon::proto::PackagesParams::from(a),
+                priority,
+            }),
+            Command::SaveManifest(a) => Ok(Request::SaveManifest {
+                args: crate::daemon::proto::SaveManifestParams::from(a),
+                priority,
+            }),
+            Command::Workshop(a) => Ok(Request::Workshop {
+                args: crate::daemon::proto::WorkshopParams::from(a),
+                priority,
+            }),
+            Command::LocalInfo(a) => Ok(Request::LocalInfo {
+                args: crate::daemon::proto::LocalInfoParams::from(a),
+                priority,
+            }),
+            Command::Daemon(_) => Err(CliError::DaemonRejectedFlag("daemon subcommand")),
+        }
+    }
+
+    /// Belt-and-suspenders flag validation that clap can't express.
+    pub fn validate(&self) -> Result<(), CliError> {
+        if self.priority && !self.use_daemon {
+            return Err(CliError::PriorityWithoutDaemon);
+        }
+        if self.detach && !self.use_daemon {
+            return Err(CliError::DaemonRejectedFlag(
+                "--detach is only valid with --use-daemon",
+            ));
+        }
+        // clap's conflicts_with covers daemon vs use_daemon; this is just defensive.
+        if self.daemon && self.use_daemon {
+            return Err(CliError::DaemonModeConflict);
+        }
+        Ok(())
     }
 }

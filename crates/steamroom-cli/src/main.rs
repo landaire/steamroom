@@ -51,22 +51,82 @@ fn main() {
         )
         .init();
 
+    if let Err(err) = cli.validate() {
+        eprintln!("Error: {err}");
+        std::process::exit(2);
+    }
+
+    // Daemon resume path: this process IS the long-lived daemon worker.
+    // It must build its own runtime and NEVER fork.
+    if let Some(user) = cli.daemon_resume.clone() {
+        let rt = build_runtime();
+        // Daemon is non-interactive; no TTY in the resumed child.
+        commands::shared::init_interactive(false);
+        let result = rt.block_on(async { daemon::lifecycle::serve_resumed(user, cli).await });
+        report_and_exit(result, false);
+    }
+
+    let interactive =
+        !cli.non_interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
+
+    // --daemon: authenticate in the foreground (tokio is allowed here),
+    // then drop the runtime fully before forking.
+    if cli.daemon {
+        commands::shared::init_interactive(interactive);
+        let rt = build_runtime();
+        let auth_result =
+            rt.block_on(async { daemon::lifecycle::launch_daemon_authenticate(&cli).await });
+        // Critically: drop the runtime BEFORE forking. Tokio worker
+        // threads holding glibc locks at fork() would deadlock the
+        // post-fork process.
+        drop(rt);
+        let username = match auth_result {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        };
+        match daemon::lifecycle::detach_and_exec_resume(&username, &daemon::lifecycle::log_path())
+        {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // --use-daemon: connect to daemon, ship the Request, attach.
+    if cli.use_daemon {
+        commands::shared::init_interactive(interactive);
+        let rt = build_runtime();
+        let result = rt.block_on(async { daemon::client::dispatch_use_daemon(cli).await });
+        report_and_exit(result, false);
+    }
+
+    // Direct mode (existing path).
+    commands::shared::init_interactive(interactive);
+    let rt = build_runtime();
+    let raw_errors = cli.raw_errors;
+    let result = rt.block_on(async_main(cli));
+    report_and_exit(result, raw_errors);
+}
+
+fn build_runtime() -> tokio::runtime::Runtime {
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .max_blocking_threads(cpus)
         .build()
-        .expect("failed to build tokio runtime");
+        .expect("failed to build tokio runtime")
+}
 
-    let raw_errors = cli.raw_errors;
-    commands::shared::init_interactive(
-        !cli.non_interactive && std::io::IsTerminal::is_terminal(&std::io::stdin()),
-    );
-    if let Err(err) = rt.block_on(async_main(cli)) {
+fn report_and_exit(result: Result<(), CliError>, raw_errors: bool) -> ! {
+    if let Err(err) = result {
         if raw_errors {
-            // Wrap in rootcause Report for full context chain
             let report: rootcause::Report<CliError> = rootcause::report!(err);
             eprintln!("Error: {report:?}");
         } else {
@@ -74,6 +134,7 @@ fn main() {
         }
         std::process::exit(1);
     }
+    std::process::exit(0);
 }
 
 async fn async_main(cli: Cli) -> Result<(), CliError> {
@@ -124,5 +185,19 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
             commands::workshop::run_workshop(args, client, sink_ref, cancel, show_progress).await
         }
+        Command::Daemon(args) => match args.command {
+            DaemonSub::Info => {
+                daemon::lifecycle::render_daemon_info();
+                Ok(())
+            }
+            // Stop/Status/Attach are implemented in T19 (daemon client).
+            // Until then, surface a clear error so the CLI still parses.
+            DaemonSub::Stop { .. } | DaemonSub::Status { .. } | DaemonSub::Attach { .. } => {
+                Err(CliError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "daemon control subcommands will be implemented in task 19",
+                )))
+            }
+        },
     }
 }
