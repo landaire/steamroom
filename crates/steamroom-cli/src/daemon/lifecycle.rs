@@ -14,13 +14,23 @@ use std::path::PathBuf;
 use crate::errors::CliError;
 use crate::daemon::ipc::socket_name_string;
 
-pub fn pid_file_path() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(dir).join("steamroom.pid");
+/// PID file and log file live in a stable per-user cache dir so they
+/// can be found from any shell. `$TMPDIR` on macOS is session-specific
+/// (`/var/folders/<hash>/T/`), which would cause `daemon info` and
+/// `daemon stop` to miss the daemon from a different shell session.
+fn cache_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_CACHE_HOME") {
+        return PathBuf::from(dir).join("steamroom");
     }
-    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let uid = unix_uid();
-    PathBuf::from(tmp).join(format!("steamroom-{uid}.pid"))
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".cache").join("steamroom");
+    }
+    // Last resort: /tmp + uid so we at least match the socket location.
+    PathBuf::from("/tmp").join(format!("steamroom-{}", unix_uid()))
+}
+
+pub fn pid_file_path() -> PathBuf {
+    cache_dir().join("daemon.pid")
 }
 
 #[cfg(unix)]
@@ -59,8 +69,7 @@ pub fn render_daemon_info() {
 }
 
 pub fn log_path() -> PathBuf {
-    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(tmp).join(format!("steamroom-{}.log", unix_uid()))
+    cache_dir().join("daemon.log")
 }
 
 /// Foreground-then-detach launch on Unix.
@@ -102,6 +111,19 @@ pub fn detach_and_exec_resume(username: &str, log_path: &std::path::Path) -> Res
                 .map_err(|e| CliError::MalformedFrame(e.to_string()))?;
             let pid: u32 = s.trim().parse()
                 .map_err(|e: std::num::ParseIntError| CliError::MalformedFrame(e.to_string()))?;
+
+            // The pipe only tells us the grandchild's PID, not whether
+            // `serve_resumed` got far enough to bind the socket. Probe
+            // the socket with Status retries before reporting success.
+            // If the grandchild fails (auth, bind, panic), this turns the
+            // parent's silent exit-0 into a clear error pointing at the
+            // log.
+            if !wait_for_socket(std::time::Duration::from_secs(5)) {
+                eprintln!("steamroom daemon (pid {pid}) failed to bind socket within 5s");
+                eprintln!("check the log for the failure:");
+                eprintln!("  {}", log_path.display());
+                std::process::exit(1);
+            }
             println!("steamroom daemon started");
             println!("  pid    : {pid}");
             println!("  socket : {}", socket_name_string());
@@ -127,6 +149,9 @@ pub fn detach_and_exec_resume(username: &str, log_path: &std::path::Path) -> Res
                 }
                 ForkResult::Child => {
                     close(write_fd).ok();
+                    if let Some(parent) = log_path.parent() {
+                        std::fs::create_dir_all(parent).map_err(CliError::Io)?;
+                    }
                     let log = std::fs::OpenOptions::new().create(true).append(true)
                         .open(log_path).map_err(CliError::Io)?;
                     dup2(log.as_raw_fd(), 1).ok();
@@ -150,6 +175,33 @@ pub fn detach_and_exec_resume(_username: &str, _log_path: &std::path::Path) -> R
         std::io::ErrorKind::Unsupported,
         "background daemon mode is not yet supported on Windows; run --daemon in the foreground",
     )))
+}
+
+/// Poll the daemon socket until `Status` round-trips successfully or
+/// `timeout` elapses. Used by the parent of `detach_and_exec_resume`
+/// to verify the grandchild actually finished `serve_resumed`'s
+/// `bind_listener` step before reporting success.
+fn wait_for_socket(timeout: std::time::Duration) -> bool {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(_) => return false,
+    };
+    rt.block_on(async move {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut delay = std::time::Duration::from_millis(50);
+        while std::time::Instant::now() < deadline {
+            if crate::daemon::ipc::probe_peer().await.is_ok() {
+                return true;
+            }
+            tokio::time::sleep(delay).await;
+            // Backoff: 50ms, 100ms, 200ms, then 200ms thereafter.
+            delay = (delay * 2).min(std::time::Duration::from_millis(200));
+        }
+        false
+    })
 }
 
 use crate::cli::Cli;
