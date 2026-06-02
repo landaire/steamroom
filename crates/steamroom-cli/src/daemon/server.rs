@@ -410,10 +410,11 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
 
         let sink: Arc<dyn JobSink> = Arc::new(sink);
         use futures::future::FutureExt;
-        let exit_code = match std::panic::AssertUnwindSafe(
-            dispatch(job.request, client.clone(), sink, job.cancel.clone())
-        ).catch_unwind().await {
-            Ok(code) => code,
+        use tracing::Instrument;
+        let dispatch_fut = dispatch(job.request, client.clone(), sink.clone(), job.cancel.clone())
+            .instrument(tracing::info_span!("job", job_id = job.job_id.0));
+        let dispatch_result = match std::panic::AssertUnwindSafe(dispatch_fut).catch_unwind().await {
+            Ok(res) => res,
             Err(payload) => {
                 let msg = if let Some(s) = payload.downcast_ref::<&str>() {
                     s.to_string()
@@ -428,7 +429,20 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
                     target: "daemon::worker".into(),
                     message: format!("job panicked: {msg}"),
                 });
-                255
+                Err(crate::errors::CliError::Io(std::io::Error::other("job panicked")))
+            }
+        };
+        let exit_code = match dispatch_result {
+            Ok(()) => 0,
+            Err(crate::errors::CliError::Cancelled) => 130,
+            Err(e) => {
+                let _ = state.events.send(Event::Log {
+                    job_id: Some(job.job_id),
+                    level: LogLevel::Error,
+                    target: "daemon::worker".into(),
+                    message: format!("{e}"),
+                });
+                1
             }
         };
 
@@ -454,9 +468,9 @@ async fn dispatch(
     client: SteamClient<LoggedIn>,
     sink: Arc<dyn JobSink>,
     cancel: CancellationToken,
-) -> i32 {
+) -> Result<(), crate::errors::CliError> {
     use crate::commands;
-    let result = match req {
+    match req {
         Request::Download { args, .. } => {
             // show_progress=false: progress flows via sink.progress, not indicatif.
             commands::download::run_download(args.into(), client, sink, cancel, false).await
@@ -495,11 +509,6 @@ async fn dispatch(
             // Control variants are handled by handle_connection (T14), not dispatched as jobs.
             unreachable!("control variants do not produce jobs");
         }
-    };
-    match result {
-        Ok(()) => 0,
-        Err(crate::errors::CliError::Cancelled) => 130,
-        Err(_) => 1,
     }
 }
 
@@ -572,8 +581,22 @@ where
             stream_events(state.clone(), &mut stream, None, rx).await;
         }
         Request::Attach { job_id } => {
-            // Replay buffer for finished jobs is a follow-up; for now we
-            // stream live events filtered by job_id until JobFinished.
+            let active_match = state.active.lock().await.as_ref()
+                .map(|r| r.record.job_id == job_id).unwrap_or(false);
+            let queued = state.queue.lock().await.iter().any(|j| j.job_id == job_id);
+
+            if !active_match && !queued {
+                // Either finished or never existed.
+                if let Some(exit_code) = state.recent_exit_code(job_id).await {
+                    let _ = write_frame(&mut stream, &Frame::EndOfStream { exit_code }).await;
+                } else {
+                    let _ = write_frame(&mut stream, &Frame::Response(Response::Error {
+                        kind: ErrorKind::JobNotFound,
+                        message: format!("{job_id}"),
+                    })).await;
+                }
+                return;
+            }
             let rx = state.events.subscribe();
             stream_events(state.clone(), &mut stream, Some(job_id), rx).await;
         }

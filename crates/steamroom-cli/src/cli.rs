@@ -504,10 +504,15 @@ impl Cli {
 
         let priority = self.priority;
         match self.command {
-            Command::Download(a) => Ok(Request::Download {
-                args: crate::daemon::proto::DownloadParams::from(a),
-                priority,
-            }),
+            Command::Download(a) => {
+                if a.capture.is_some() {
+                    return Err(CliError::DaemonRejectedFlag("--capture"));
+                }
+                Ok(Request::Download {
+                    args: crate::daemon::proto::DownloadParams::from(a),
+                    priority,
+                })
+            }
             Command::Info(a) => Ok(Request::Info {
                 args: crate::daemon::proto::InfoParams::from(a),
                 priority,
