@@ -550,9 +550,7 @@ impl Cli {
             return Err(CliError::PriorityWithoutDaemon);
         }
         if self.detach && !self.use_daemon {
-            return Err(CliError::DaemonRejectedFlag(
-                "--detach is only valid with --use-daemon",
-            ));
+            return Err(CliError::DetachWithoutDaemon);
         }
         // clap's conflicts_with covers daemon vs use_daemon; this is just defensive.
         if self.daemon && self.use_daemon {

@@ -35,21 +35,28 @@ fn main() {
     } else {
         Cli::parse()
     };
-    let default_filter = if cli.quiet {
-        "off"
-    } else if cli.debug {
-        "debug"
-    } else if cfg!(debug_assertions) {
-        "warn,steamroom=debug,steamroom_client=debug,steamroom_ffi=debug,steamroom_cli=debug"
-    } else {
-        "warn"
-    };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| default_filter.into()),
-        )
-        .init();
+    // The daemon-resume child installs its own subscriber inside serve_resumed
+    // (which adds the JobScopedLogLayer). Installing a global fmt subscriber
+    // here first would cause serve_resumed's try_init() to silently no-op,
+    // leaving JobScopedLogLayer uninstalled.
+    let is_daemon_resume = cli.daemon_resume.is_some();
+    if !is_daemon_resume {
+        let default_filter = if cli.quiet {
+            "off"
+        } else if cli.debug {
+            "debug"
+        } else if cfg!(debug_assertions) {
+            "warn,steamroom=debug,steamroom_client=debug,steamroom_ffi=debug,steamroom_cli=debug"
+        } else {
+            "warn"
+        };
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| default_filter.into()),
+            )
+            .init();
+    }
 
     if let Err(err) = cli.validate() {
         eprintln!("Error: {err}");

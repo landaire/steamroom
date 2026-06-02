@@ -76,6 +76,9 @@ pub enum CliError {
     #[error("--priority is only valid with --use-daemon")]
     PriorityWithoutDaemon,
 
+    #[error("--detach is only valid with --use-daemon")]
+    DetachWithoutDaemon,
+
     #[error("--daemon and --use-daemon are mutually exclusive")]
     DaemonModeConflict,
 

@@ -66,6 +66,9 @@ pub async fn bind_listener() -> Result<Listener, CliError> {
     let name = socket_name()?;
     ListenerOptions::new()
         .name(name)
+        // The probe above confirmed no live peer, so overwriting a stale
+        // socket file (e.g. from a crashed daemon) is safe.
+        .try_overwrite(true)
         .create_tokio()
         .map_err(CliError::Io)
 }

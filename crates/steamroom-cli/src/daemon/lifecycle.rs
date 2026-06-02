@@ -187,6 +187,11 @@ pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> 
         .login()
         .await?;
 
+    // Bind the socket BEFORE writing the PID file so the PID file's
+    // existence tracks the listener's lifetime. If bind_listener returns
+    // DaemonAlreadyRunning, we exit without touching the PID file.
+    let listener = ipc::bind_listener().await?;
+
     let pid = std::process::id();
     write_pid_file(pid)?;
     let state = DaemonState::new(Some(username.clone()), pid, unix_now_lifecycle());
@@ -199,16 +204,31 @@ pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> 
         .with(JobScopedLogLayer::new(state.events.clone()))
         .try_init();
 
-    let listener = ipc::bind_listener().await?;
-
     let worker_state = state.clone();
-    let worker_task = tokio::spawn(async move {
+    let mut worker_task = Some(tokio::spawn(async move {
         worker_loop(worker_state, client).await;
-    });
+    }));
 
     loop {
+        // worker_task is always Some here; the None arm is unreachable but
+        // avoids an unwrap().
+        let join_arm = match worker_task {
+            Some(ref mut h) => h,
+            None => break,
+        };
         tokio::select! {
             _ = state.shutdown.cancelled() => break,
+            res = join_arm => {
+                // Worker ended -- graceful drain, panic, or abort.
+                match res {
+                    Ok(()) => tracing::info!("worker_loop exited"),
+                    Err(ref e) if e.is_panic() => tracing::error!("worker_loop panicked: {e}"),
+                    Err(ref e) => tracing::warn!("worker_loop join error: {e}"),
+                }
+                worker_task = None;
+                state.shutdown.cancel();
+                break;
+            }
             res = ipc::accept(&listener) => match res {
                 Ok(stream) => {
                     let st = state.clone();
@@ -227,8 +247,12 @@ pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> 
         target: "daemon".into(),
         message: "shutting down".into(),
     });
-    worker_task.abort();
-    let _ = worker_task.await;
+    // If the accept loop exited via shutdown.cancelled() (not via the worker
+    // arm), worker_task is still Some -- abort it.
+    if let Some(h) = worker_task {
+        h.abort();
+        let _ = h.await;
+    }
     remove_pid_file();
     Ok(())
 }
