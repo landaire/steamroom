@@ -417,3 +417,19 @@ pub enum OutputFormat {
     Json,
     Plain,
 }
+
+#[allow(unused_imports)]
+use crate::daemon::proto::Request;
+use crate::errors::CliError;
+
+impl Cli {
+    /// Lower a parsed `Cli` into the wire-typed `Request`. Validates that
+    /// daemon-mode constraints hold (per-request auth flags rejected,
+    /// `--priority` only with `--use-daemon`, etc.).
+    ///
+    /// Stubbed until task 18 adds the `--daemon`/`--use-daemon`/`--priority`
+    /// flags and the `Command::Daemon` subcommand variant.
+    pub fn into_rpc_request(self) -> Result<Request, CliError> {
+        todo!("Cli::into_rpc_request: completed in task 18")
+    }
+}

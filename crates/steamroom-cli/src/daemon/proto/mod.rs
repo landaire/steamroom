@@ -4,6 +4,9 @@
 mod params;
 pub use params::*;
 
+mod request;
+pub use request::Request;
+
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// Monotonically increasing identifier minted by the daemon. Stable for

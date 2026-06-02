@@ -69,6 +69,15 @@ pub enum CliError {
 
     #[error("Steam returned no CDN servers")]
     NoCdnServers,
+
+    #[error("--use-daemon: {0} are not supported via the daemon; pass them to --daemon at launch instead")]
+    DaemonRejectedFlag(&'static str),
+
+    #[error("--priority is only valid with --use-daemon")]
+    PriorityWithoutDaemon,
+
+    #[error("--daemon and --use-daemon are mutually exclusive")]
+    DaemonModeConflict,
 }
 
 impl From<steamroom::error::ConnectionError> for CliError {
