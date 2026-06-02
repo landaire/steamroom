@@ -23,7 +23,7 @@ pub struct DownloadParams {
     pub all_architectures: bool,
     pub all_languages: bool,
     pub lancache: bool,
-    pub max_downloads: Option<usize>,
+    pub max_downloads: Option<u32>,
     pub branch: Option<String>,
     pub branch_password: Option<String>,
     pub local_keys: bool,
@@ -134,7 +134,8 @@ impl From<crate::cli::DownloadArgs> for DownloadParams {
             all_architectures: a.all_architectures,
             all_languages: a.all_languages,
             lancache: a.lancache,
-            max_downloads: a.max_downloads,
+            // Saturate at u32::MAX: real CDN parallelism caps are far below this.
+            max_downloads: a.max_downloads.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
             branch: a.branch,
             branch_password: a.branch_password,
             local_keys: a.local_keys,

@@ -17,20 +17,36 @@ use crate::errors::CliError;
 
 pub const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 
+/// Map `UnexpectedEof` to `CliError::SocketClosed`; all other I/O errors
+/// become `CliError::Io`.  Used by `read_frame` for all three reads so that
+/// a peer disconnecting mid-frame always yields `SocketClosed` rather than a
+/// raw I/O error.
+async fn read_exact_or_closed<R>(r: &mut R, buf: &mut [u8]) -> Result<(), CliError>
+where
+    R: AsyncReadExt + Unpin,
+{
+    match r.read_exact(buf).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Err(CliError::SocketClosed),
+        Err(e) => Err(CliError::Io(e)),
+    }
+}
+
 pub async fn write_frame<W>(w: &mut W, frame: &Frame) -> Result<(), CliError>
 where
     W: AsyncWriteExt + Unpin,
 {
     let bytes = rkyv::to_bytes::<rancor::Error>(frame)
         .map_err(|e| CliError::MalformedFrame(e.to_string()))?;
-    let len: u32 = u32::try_from(bytes.len())
-        .map_err(|_| CliError::FrameTooLarge {
-            len_bytes: u32::MAX,
-            limit_bytes: MAX_FRAME_BYTES,
-        })?;
-    if len > MAX_FRAME_BYTES {
-        return Err(CliError::FrameTooLarge { len_bytes: len, limit_bytes: MAX_FRAME_BYTES });
+    let len_usize = bytes.len();
+    if len_usize > MAX_FRAME_BYTES as usize {
+        return Err(CliError::FrameTooLarge {
+            len_bytes: len_usize as u64,
+            limit_bytes: MAX_FRAME_BYTES as u64,
+        });
     }
+    // len_usize <= MAX_FRAME_BYTES (u32-sized), so the cast is lossless.
+    let len: u32 = len_usize as u32;
     w.write_all(&PROTO_VERSION.to_le_bytes()).await.map_err(CliError::Io)?;
     w.write_all(&len.to_le_bytes()).await.map_err(CliError::Io)?;
     w.write_all(&bytes).await.map_err(CliError::Io)?;
@@ -38,32 +54,41 @@ where
     Ok(())
 }
 
+/// Read one length-prefixed rkyv-archived `Frame` from `r`.
+///
+/// # Cancel safety
+///
+/// This function is NOT cancel-safe. `AsyncReadExt::read_exact` may
+/// partially consume bytes from the stream before the future is dropped,
+/// leaving the connection in an undefined framing state. Callers that
+/// race this against another future (e.g. via `tokio::select!` on a
+/// shutdown signal) MUST abort the connection on cancellation rather
+/// than re-entering `read_frame` on the same stream.
 pub async fn read_frame<R>(r: &mut R) -> Result<Frame, CliError>
 where
     R: AsyncReadExt + Unpin,
 {
     let mut ver_buf = [0u8; 2];
-    match r.read_exact(&mut ver_buf).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Err(CliError::SocketClosed),
-        Err(e) => return Err(CliError::Io(e)),
-    }
+    read_exact_or_closed(r, &mut ver_buf).await?;
     let peer = u16::from_le_bytes(ver_buf);
     if peer != PROTO_VERSION {
         return Err(CliError::ProtocolVersionMismatch { peer, ours: PROTO_VERSION });
     }
 
     let mut len_buf = [0u8; 4];
-    r.read_exact(&mut len_buf).await.map_err(CliError::Io)?;
+    read_exact_or_closed(r, &mut len_buf).await?;
     let len = u32::from_le_bytes(len_buf);
     if len > MAX_FRAME_BYTES {
-        return Err(CliError::FrameTooLarge { len_bytes: len, limit_bytes: MAX_FRAME_BYTES });
+        return Err(CliError::FrameTooLarge {
+            len_bytes: len as u64,
+            limit_bytes: MAX_FRAME_BYTES as u64,
+        });
     }
 
     // rkyv's checked access demands 16-byte alignment.
     let mut buf = AlignedVec::<16>::with_capacity(len as usize);
     buf.resize(len as usize, 0);
-    r.read_exact(&mut buf).await.map_err(CliError::Io)?;
+    read_exact_or_closed(r, &mut buf).await?;
     rkyv::from_bytes::<Frame, rancor::Error>(&buf)
         .map_err(|e| CliError::MalformedFrame(e.to_string()))
 }

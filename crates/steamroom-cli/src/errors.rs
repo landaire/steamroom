@@ -83,7 +83,7 @@ pub enum CliError {
     ProtocolVersionMismatch { peer: u16, ours: u16 },
 
     #[error("daemon RPC: frame exceeds {limit_bytes} byte cap (got {len_bytes})")]
-    FrameTooLarge { len_bytes: u32, limit_bytes: u32 },
+    FrameTooLarge { len_bytes: u64, limit_bytes: u64 },
 
     #[error("daemon RPC: malformed frame: {0}")]
     MalformedFrame(String),
