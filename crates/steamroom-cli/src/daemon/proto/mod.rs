@@ -1,11 +1,19 @@
 //! Wire types for the daemon RPC. Owned, rkyv-archivable; never contain
 //! `PathBuf`, `Regex`, or other types that rkyv cannot archive directly.
 
+mod event;
+mod frame;
 mod params;
-pub use params::*;
-
 mod request;
+mod response;
+mod status;
+
+pub use event::Event;
+pub use frame::{Frame, PROTO_VERSION};
+pub use params::*;
 pub use request::Request;
+pub use response::{ErrorKind, Response};
+pub use status::{JobRecord, StatusSnapshot};
 
 use rkyv::{Archive, Deserialize, Serialize};
 
@@ -120,5 +128,42 @@ mod tests {
     fn log_level_maps_from_tracing() {
         assert_eq!(LogLevel::from(tracing::Level::ERROR), LogLevel::Error);
         assert_eq!(LogLevel::from(tracing::Level::TRACE), LogLevel::Trace);
+    }
+
+    #[test]
+    fn frame_round_trips_response_jobaccepted() {
+        let f = Frame::Response(Response::JobAccepted { job_id: JobId(7), position: 0 });
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&f).unwrap();
+        let back = rkyv::from_bytes::<Frame, rkyv::rancor::Error>(&bytes).unwrap();
+        match back {
+            Frame::Response(Response::JobAccepted { job_id, position }) => {
+                assert_eq!(job_id, JobId(7));
+                assert_eq!(position, 0);
+            }
+            other => panic!("wrong frame: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frame_round_trips_event_log() {
+        let f = Frame::Event(Event::Log {
+            job_id: Some(JobId(3)),
+            level: LogLevel::Warn,
+            target: "steamroom_cli".into(),
+            message: "stale".into(),
+        });
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&f).unwrap();
+        let _back = rkyv::from_bytes::<Frame, rkyv::rancor::Error>(&bytes).unwrap();
+    }
+
+    #[test]
+    fn event_job_id_routes_correctly() {
+        let scoped = Event::Stdout { job_id: JobId(9), line: "x".into() };
+        assert_eq!(scoped.job_id(), Some(JobId(9)));
+        let qc = Event::QueueChanged { snapshot: StatusSnapshot {
+            daemon_pid: 1, daemon_started_at: 0, account: None,
+            active: None, queue: vec![], recent: vec![],
+        }};
+        assert_eq!(qc.job_id(), None);
     }
 }
