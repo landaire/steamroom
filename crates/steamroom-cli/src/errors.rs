@@ -99,6 +99,12 @@ pub enum CliError {
 
     #[error("a steamroom daemon is already running on this socket")]
     DaemonAlreadyRunning,
+
+    #[error("no daemon running on this socket; start one with `steamroom --daemon`")]
+    NoDaemonRunning,
+
+    #[error("daemon returned error: {0}")]
+    DaemonError(String),
 }
 
 impl From<steamroom::error::ConnectionError> for CliError {

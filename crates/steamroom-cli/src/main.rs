@@ -192,19 +192,6 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
             commands::workshop::run_workshop(args, client, sink_ref, cancel, show_progress).await
         }
-        Command::Daemon(args) => match args.command {
-            DaemonSub::Info => {
-                daemon::lifecycle::render_daemon_info();
-                Ok(())
-            }
-            // Stop/Status/Attach are implemented in T19 (daemon client).
-            // Until then, surface a clear error so the CLI still parses.
-            DaemonSub::Stop { .. } | DaemonSub::Status { .. } | DaemonSub::Attach { .. } => {
-                Err(CliError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "daemon control subcommands will be implemented in task 19",
-                )))
-            }
-        },
+        Command::Daemon(args) => daemon::client::run_daemon_subcommand(args.command).await,
     }
 }
