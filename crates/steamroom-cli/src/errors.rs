@@ -78,6 +78,18 @@ pub enum CliError {
 
     #[error("--daemon and --use-daemon are mutually exclusive")]
     DaemonModeConflict,
+
+    #[error("daemon RPC: incompatible wire-protocol version (peer={peer}, ours={ours}); restart the daemon")]
+    ProtocolVersionMismatch { peer: u16, ours: u16 },
+
+    #[error("daemon RPC: frame exceeds {limit_bytes} byte cap (got {len_bytes})")]
+    FrameTooLarge { len_bytes: u32, limit_bytes: u32 },
+
+    #[error("daemon RPC: malformed frame: {0}")]
+    MalformedFrame(String),
+
+    #[error("daemon RPC: socket closed before frame complete")]
+    SocketClosed,
 }
 
 impl From<steamroom::error::ConnectionError> for CliError {
