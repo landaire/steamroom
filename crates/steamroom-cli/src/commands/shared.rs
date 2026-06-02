@@ -344,12 +344,9 @@ pub async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedI
     // saved refresh token (with fallback to interactive auth if it's stale),
     // then password.
     if let Some(ref username) = auth.username {
-        if auth.qr {
-            if !is_interactive() {
-                return Err(CliError::InteractiveAuthRequired);
-            }
-            return drive_qr_flow(builder, username).await;
-        }
+        // Try the saved refresh token first regardless of `--qr` /
+        // password. The flags describe how to RECOVER if the token is
+        // missing or stale; a valid token is always the cheap path.
         if let Some(token) = load_saved_token(username) {
             info!("using saved refresh token for {username}");
             let attempt = LoginBuilder::new()
@@ -370,6 +367,14 @@ pub async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedI
                 }
                 Err(e) => return Err(e.into()),
             }
+        }
+        // No token (or it was rejected). Fall through to the requested
+        // interactive flow.
+        if auth.qr {
+            if !is_interactive() {
+                return Err(CliError::InteractiveAuthRequired);
+            }
+            return drive_qr_flow(builder, username).await;
         }
         if !is_interactive() && auth.password.is_none() {
             return Err(CliError::InteractiveAuthRequired);

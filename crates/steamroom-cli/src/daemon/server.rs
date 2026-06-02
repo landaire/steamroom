@@ -656,12 +656,18 @@ where
                     {
                         continue;
                     }
-                    let is_terminal = matches!(&ev, Event::JobFinished { .. });
-                    let exit_code = if let Event::JobFinished { exit_code, .. } = &ev { *exit_code } else { 0 };
+                    // A JobFinished terminates a single-job attach (filter
+                    // = Some(id)) but is just another broadcast to a global
+                    // Subscribe (filter = None) -- the TUI / monitor stays
+                    // up for the next job.
+                    let terminal_exit = match (&ev, filter) {
+                        (Event::JobFinished { exit_code, .. }, Some(_)) => Some(*exit_code),
+                        _ => None,
+                    };
                     if write_frame(stream, &Frame::Event(ev)).await.is_err() {
                         return; // Client dropped; that is fine.
                     }
-                    if is_terminal {
+                    if let Some(exit_code) = terminal_exit {
                         let _ = write_frame(stream, &Frame::EndOfStream { exit_code }).await;
                         return;
                     }

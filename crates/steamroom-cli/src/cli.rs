@@ -485,11 +485,11 @@ use crate::daemon::proto::Request;
 use crate::errors::CliError;
 
 impl Cli {
-    /// Lower a parsed `Cli` into the wire-typed `Request`. Validates that
-    /// daemon-mode constraints hold (per-request auth flags rejected,
-    /// `--priority` only with `--use-daemon`, etc.).
+    /// Lower a parsed `Cli` into the wire-typed `Request`. Flags that
+    /// the daemon cannot honor (auth flags, `--capture`) are warned
+    /// about on stderr and ignored; only structural mistakes (a daemon
+    /// control subcommand) are returned as errors.
     pub fn into_rpc_request(self) -> Result<Request, CliError> {
-        // Per-request auth flags belong on --daemon, not --use-daemon.
         let auth = &self.auth;
         let has_auth = auth.username.is_some()
             || auth.password.is_some()
@@ -498,17 +498,20 @@ impl Cli {
             || auth.remember_password
             || auth.device_name.is_some();
         if has_auth {
-            return Err(CliError::DaemonRejectedFlag("auth flags"));
+            eprintln!(
+                "warning: auth flags are ignored under --use-daemon; \
+                 the daemon serves the account it was started with"
+            );
         }
         if self.capture.is_some() {
-            return Err(CliError::DaemonRejectedFlag("--capture"));
+            eprintln!("warning: --capture is ignored under --use-daemon");
         }
 
         let priority = self.priority;
         match self.command {
             Command::Download(a) => {
                 if a.capture.is_some() {
-                    return Err(CliError::DaemonRejectedFlag("--capture"));
+                    eprintln!("warning: --capture is ignored under --use-daemon");
                 }
                 Ok(Request::Download {
                     args: crate::daemon::proto::DownloadParams::from(a),
