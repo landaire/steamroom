@@ -31,11 +31,11 @@ impl ManifestCache {
     }
 
     pub fn load(&self, depot_id: DepotId, manifest_id: ManifestId) -> Option<Vec<u8>> {
-        std::fs::read(self.cache_path(depot_id, manifest_id)).ok()
+        non_empty(std::fs::read(self.cache_path(depot_id, manifest_id)).ok())
     }
 
     pub fn load_raw(&self, depot_id: DepotId, manifest_id: ManifestId) -> Option<Vec<u8>> {
-        std::fs::read(self.raw_cache_path(depot_id, manifest_id)).ok()
+        non_empty(std::fs::read(self.raw_cache_path(depot_id, manifest_id)).ok())
     }
 
     pub fn save(
@@ -53,6 +53,13 @@ impl ManifestCache {
         std::fs::write(self.raw_cache_path(depot_id, manifest_id), raw)?;
         Ok(())
     }
+}
+
+/// Treat a zero-byte cache file as a miss. A download killed mid-write can leave
+/// an empty `.manifest`/`.zip`; without this it would be loaded as a valid cache
+/// hit, fail to parse, and never be re-fetched, permanently poisoning the entry.
+fn non_empty(bytes: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    bytes.filter(|b| !b.is_empty())
 }
 
 pub fn parse_cdn_manifest(data: &[u8]) -> Result<DepotManifest, ManifestError> {
