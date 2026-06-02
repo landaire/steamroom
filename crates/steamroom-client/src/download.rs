@@ -560,6 +560,22 @@ impl DepotJob {
             read_offset += size;
             written += size as u64;
         }
+        drop(out);
+
+        // Verify the assembled file against the manifest's SHA-1. Reused chunks
+        // are gated only on a weak per-chunk Adler-32, so a torn or partial
+        // existing file can slip corrupt bytes through; without this the bad
+        // package is accepted silently and only surfaces at extraction time.
+        if let Some(expected_sha) = file.sha_content.as_ref() {
+            let data = std::fs::read(output_path)?;
+            let actual = steamroom::util::checksum::Sha1Hash::compute(&data);
+            if actual.0 != *expected_sha {
+                // Drop the bad output so a retry re-fetches every chunk instead
+                // of reusing the corrupt data again.
+                let _ = std::fs::remove_file(output_path);
+                return Err(format!("{}: assembled file failed SHA-1 verification", file.filename).into());
+            }
+        }
 
         Ok(written)
     }
