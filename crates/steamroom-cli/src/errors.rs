@@ -100,7 +100,7 @@ pub enum CliError {
     #[error("a steamroom daemon is already running on this socket")]
     DaemonAlreadyRunning,
 
-    #[error("no daemon running on this socket; start one with `steamroom --daemon`")]
+    #[error("no daemon running on this socket; start one with `steamroom daemon start`")]
     NoDaemonRunning,
 
     #[error("daemon returned error: {0}")]

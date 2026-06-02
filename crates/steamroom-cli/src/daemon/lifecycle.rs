@@ -23,6 +23,16 @@ fn cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_CACHE_HOME") {
         return PathBuf::from(dir).join("steamroom");
     }
+    // Windows has no HOME, so resolve %LOCALAPPDATA% via dirs_next before
+    // the HOME branch. Checked first on Windows because a stray HOME (set
+    // by Git Bash, MSYS, etc.) would otherwise route the PID file to a
+    // drive-relative `\.cache\steamroom`, which `daemon info` and the
+    // history reload would miss when the CLI is launched from a different
+    // drive.
+    #[cfg(windows)]
+    if let Some(dir) = dirs_next::cache_dir() {
+        return dir.join("steamroom");
+    }
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home).join(".cache").join("steamroom");
     }
@@ -197,10 +207,14 @@ pub fn detach_and_exec_resume(username: &str, log_path: &std::path::Path) -> Res
         eprintln!("  {}", log_path.display());
         std::process::exit(1);
     }
+    #[cfg(windows)]
+    let manual_kill = format!("taskkill /PID {pid} /F");
+    #[cfg(not(windows))]
+    let manual_kill = format!("kill {pid}");
     println!("steamroom daemon started");
     println!("  pid    : {pid}");
     println!("  socket : {}", socket_name_string());
-    println!("  stop   : steamroom daemon stop    (or: kill {pid} on Unix; taskkill /PID {pid} /F on Windows)");
+    println!("  stop   : steamroom daemon stop    (or: {manual_kill})");
     println!("  logs   : {}", log_path.display());
     std::process::exit(0);
 }
