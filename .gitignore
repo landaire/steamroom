@@ -1,5 +1,6 @@
 target/
 .claude/
+.worktrees/
 
 # Test output directories
 test_output/
