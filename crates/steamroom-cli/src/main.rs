@@ -78,7 +78,7 @@ fn main() {
 
 async fn async_main(cli: Cli) -> Result<(), CliError> {
     let show_progress = !cli.no_progress;
-    let sink = StdoutSink::new(show_progress);
+    let sink = StdoutSink::new();
     let sink_ref: &dyn sink::JobSink = &sink;
     let cancel = CancellationToken::new();
 

@@ -14,16 +14,11 @@ pub trait JobSink: Send + Sync {
 /// Direct-mode sink: writes to the inherited stdout and to `tracing`.
 /// Progress updates are absorbed (direct mode wires the progress bar
 /// separately through `download::spawn_progress_renderer`).
-pub struct StdoutSink {
-    show_progress: bool,
-}
+pub struct StdoutSink;
 
 impl StdoutSink {
-    pub fn new(show_progress: bool) -> Self {
-        Self { show_progress }
-    }
-    pub fn show_progress(&self) -> bool {
-        self.show_progress
+    pub fn new() -> Self {
+        Self
     }
 }
 
