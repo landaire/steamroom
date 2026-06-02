@@ -5,6 +5,7 @@ use crate::cli::LocalInfoArgs;
 use crate::cli::OutputFormat;
 use crate::errors::CliError;
 use crate::sink::JobSink;
+use std::sync::Arc;
 use tabled::builder::Builder as TableBuilder;
 use tabled::settings::Style;
 use tokio_util::sync::CancellationToken;
@@ -12,7 +13,7 @@ use tracing::info;
 
 pub async fn run_local_info(
     args: LocalInfoArgs,
-    sink: &dyn JobSink,
+    sink: Arc<dyn JobSink>,
     _cancel: CancellationToken,
 ) -> Result<(), CliError> {
     let steam_dir = steamroom_client::steam_creds::steam_dir().ok_or(CliError::SteamNotFound)?;

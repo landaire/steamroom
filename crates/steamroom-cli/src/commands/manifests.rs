@@ -6,6 +6,7 @@ use crate::cli::OutputFormat;
 use crate::commands::shared::fetch_app_kv;
 use crate::errors::CliError;
 use crate::sink::JobSink;
+use std::sync::Arc;
 use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
 use steamroom::depot::*;
@@ -17,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 pub async fn run_manifests(
     args: ManifestsArgs,
     client: SteamClient<LoggedIn>,
-    sink: &dyn JobSink,
+    sink: Arc<dyn JobSink>,
     _cancel: CancellationToken,
 ) -> Result<(), CliError> {
     let app_id = AppId(args.app);

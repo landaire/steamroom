@@ -42,10 +42,48 @@ pub async fn dispatch_use_daemon(cli: Cli) -> Result<(), CliError> {
     attach_loop(&mut stream, job_id).await
 }
 
+struct AttachRenderer {
+    bar: Option<indicatif::ProgressBar>,
+}
+
+impl AttachRenderer {
+    fn new() -> Self {
+        Self { bar: None }
+    }
+
+    fn handle(&mut self, ev: Event) {
+        match ev {
+            Event::Stdout { line, .. } => println!("{line}"),
+            Event::Log { level, target, message, .. } => emit_log(level, &target, &message),
+            Event::Progress { update, .. } => {
+                let bar = self.bar.get_or_insert_with(|| {
+                    let pb = indicatif::ProgressBar::new(update.bytes_total);
+                    pb.set_style(
+                        indicatif::ProgressStyle::default_bar()
+                            .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+                            .unwrap()
+                            .progress_chars("=> "),
+                    );
+                    pb
+                });
+                bar.set_length(update.bytes_total);
+                bar.set_position(update.bytes_done);
+            }
+            Event::JobFinished { .. } => {
+                if let Some(bar) = self.bar.take() {
+                    bar.finish_and_clear();
+                }
+            }
+            Event::JobStarted { .. } | Event::QueueChanged { .. } => {}
+        }
+    }
+}
+
 /// Stream events from a connection and render them as the direct CLI
 /// would. Returns when EndOfStream arrives, when Ctrl-C detaches, or
 /// when the socket closes cleanly.
 pub async fn attach_loop(stream: &mut Stream, job_id: JobId) -> Result<(), CliError> {
+    let mut renderer = AttachRenderer::new();
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
 
@@ -58,7 +96,7 @@ pub async fn attach_loop(stream: &mut Stream, job_id: JobId) -> Result<(), CliEr
                 return Ok(());
             }
             r = &mut frame_fut => match r {
-                Ok(Frame::Event(ev)) => render_event(ev),
+                Ok(Frame::Event(ev)) => renderer.handle(ev),
                 Ok(Frame::EndOfStream { exit_code }) => {
                     if exit_code != 0 {
                         std::process::exit(exit_code);
@@ -72,17 +110,6 @@ pub async fn attach_loop(stream: &mut Stream, job_id: JobId) -> Result<(), CliEr
                 Err(e) => return Err(e),
             }
         }
-    }
-}
-
-fn render_event(ev: Event) {
-    match ev {
-        Event::Stdout { line, .. } => println!("{line}"),
-        Event::Log { level, target, message, .. } => emit_log(level, &target, &message),
-        Event::Progress { .. } => {
-            // Indicatif-based bar rendering wires up in task 23.
-        }
-        Event::JobStarted { .. } | Event::JobFinished { .. } | Event::QueueChanged { .. } => {}
     }
 }
 

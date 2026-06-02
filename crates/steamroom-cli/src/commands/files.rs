@@ -12,6 +12,7 @@ use crate::commands::shared::fmt_timestamp;
 use crate::commands::shared::resolve_depot_key;
 use crate::errors::CliError;
 use crate::sink::JobSink;
+use std::sync::Arc;
 use steamroom::cdn::CdnClient;
 use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
@@ -24,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 pub async fn run_files(
     args: FilesArgs,
     client: Option<SteamClient<LoggedIn>>,
-    sink: &dyn JobSink,
+    sink: Arc<dyn JobSink>,
     _cancel: CancellationToken,
 ) -> Result<(), CliError> {
     let raw_bytes = args.bytes;

@@ -9,6 +9,7 @@ use crate::commands::shared::fmt_size;
 use crate::commands::shared::kv_to_json;
 use crate::errors::CliError;
 use crate::sink::JobSink;
+use std::sync::Arc;
 use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
 use steamroom::depot::*;
@@ -20,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 pub async fn run_info(
     args: InfoArgs,
     client: SteamClient<LoggedIn>,
-    sink: &dyn JobSink,
+    sink: Arc<dyn JobSink>,
     _cancel: CancellationToken,
 ) -> Result<(), CliError> {
     let app_id = AppId(args.app);

@@ -408,9 +408,10 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
             args_summary: job.args_summary.clone(),
         });
 
+        let sink: Arc<dyn JobSink> = Arc::new(sink);
         use futures::future::FutureExt;
         let exit_code = match std::panic::AssertUnwindSafe(
-            dispatch(job.request, client.clone(), &sink, job.cancel.clone())
+            dispatch(job.request, client.clone(), sink, job.cancel.clone())
         ).catch_unwind().await {
             Ok(code) => code,
             Err(payload) => {
@@ -451,7 +452,7 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
 async fn dispatch(
     req: Request,
     client: SteamClient<LoggedIn>,
-    sink: &dyn JobSink,
+    sink: Arc<dyn JobSink>,
     cancel: CancellationToken,
 ) -> i32 {
     use crate::commands;

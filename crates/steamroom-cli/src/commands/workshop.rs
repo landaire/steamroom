@@ -11,6 +11,7 @@ use crate::download as direct_progress;
 use crate::errors::CliError;
 use crate::sink::JobSink;
 use std::path::PathBuf;
+use std::sync::Arc;
 use steamroom::cdn::CdnClient;
 use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
@@ -22,11 +23,10 @@ use tracing::info;
 pub async fn run_workshop(
     args: WorkshopArgs,
     client: SteamClient<LoggedIn>,
-    sink: &dyn JobSink,
+    sink: Arc<dyn JobSink>,
     cancel: CancellationToken,
     show_progress: bool,
 ) -> Result<(), CliError> {
-    let _ = sink; // T10 wires sink-side progress; direct mode still uses spawn_progress_renderer.
 
     info!("fetching workshop item {} details...", args.item);
     let req = steamroom::generated::CPublishedFileGetDetailsRequest {
@@ -107,7 +107,7 @@ pub async fn run_workshop(
 
     info!("downloading to {}", output_dir.display());
 
-    let progress_handle = direct_progress::spawn_progress_renderer(event_rx, show_progress);
+    let progress_handle = direct_progress::spawn_progress_renderer(event_rx, show_progress, Some(sink.clone()));
 
     // Run the download inside a block so the future (and its inner event_tx)
     // drops before we await the progress renderer. This ensures the renderer

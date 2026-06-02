@@ -6,6 +6,7 @@ use crate::commands::shared::kv_to_json;
 use crate::commands::shared::parse_package_kv;
 use crate::errors::CliError;
 use crate::sink::JobSink;
+use std::sync::Arc;
 use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
 use steamroom::depot::*;
@@ -19,7 +20,7 @@ use tracing::info;
 pub async fn run_packages(
     args: PackagesArgs,
     client: SteamClient<LoggedIn>,
-    sink: &dyn JobSink,
+    sink: Arc<dyn JobSink>,
     _cancel: CancellationToken,
 ) -> Result<(), CliError> {
     let ids: Vec<PackageId> = args.packages.iter().map(|&id| PackageId(id)).collect();

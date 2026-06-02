@@ -18,6 +18,7 @@ use crate::download as direct_progress;
 use crate::errors::CliError;
 use crate::sink::JobSink;
 use std::path::PathBuf;
+use std::sync::Arc;
 use steamroom::cdn::CdnClient;
 use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
@@ -31,11 +32,10 @@ use tracing::warn;
 pub async fn run_download(
     args: DownloadArgs,
     client: SteamClient<LoggedIn>,
-    sink: &dyn JobSink,
+    sink: Arc<dyn JobSink>,
     cancel: CancellationToken,
     show_progress: bool,
 ) -> Result<(), CliError> {
-    let _ = sink; // T9 wires sink-side progress; direct mode still uses spawn_progress_renderer.
     let app_id = AppId(args.app);
 
     // Get access tokens
@@ -299,7 +299,7 @@ pub async fn run_download(
     depot_config.set_installing(depot_id, manifest_id, &depot_key);
     let _ = depot_config.save(&output_dir);
 
-    let progress_handle = direct_progress::spawn_progress_renderer(event_rx, show_progress);
+    let progress_handle = direct_progress::spawn_progress_renderer(event_rx, show_progress, Some(sink.clone()));
 
     // Run the download inside a block so the future (and its inner event_tx)
     // drops before we await the progress renderer. This ensures the renderer

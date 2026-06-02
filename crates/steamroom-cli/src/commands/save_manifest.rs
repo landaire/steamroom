@@ -7,6 +7,7 @@ use crate::commands::shared::find_manifest_for_depot;
 use crate::commands::shared::parse_app_kv;
 use crate::errors::CliError;
 use crate::sink::JobSink;
+use std::sync::Arc;
 use steamroom::apps::AccessToken;
 use steamroom::cdn::CdnClient;
 use steamroom::client::LoggedIn;
@@ -19,7 +20,7 @@ use tracing::info;
 pub async fn run_save_manifest(
     args: SaveManifestArgs,
     client: SteamClient<LoggedIn>,
-    _sink: &dyn JobSink,
+    _sink: Arc<dyn JobSink>,
     _cancel: CancellationToken,
 ) -> Result<(), CliError> {
     let app_id = AppId(args.app);

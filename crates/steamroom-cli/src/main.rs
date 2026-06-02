@@ -145,15 +145,15 @@ fn report_and_exit(result: Result<(), CliError>, raw_errors: bool) -> ! {
 }
 
 async fn async_main(cli: Cli) -> Result<(), CliError> {
+    use std::sync::Arc;
     let show_progress = !cli.no_progress;
-    let sink = StdoutSink::new();
-    let sink_ref: &dyn sink::JobSink = &sink;
+    let sink: Arc<dyn sink::JobSink> = Arc::new(StdoutSink::new());
     let cancel = CancellationToken::new();
 
     match cli.command {
         Command::LocalInfo(args) => {
             // No Steam connection required.
-            commands::local_info::run_local_info(args, sink_ref, cancel).await
+            commands::local_info::run_local_info(args, sink, cancel).await
         }
         Command::Files(args) => {
             // --manifest-file path needs no client; only fetch when we have to.
@@ -162,35 +162,35 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
             } else {
                 None
             };
-            commands::files::run_files(args, client, sink_ref, cancel).await
+            commands::files::run_files(args, client, sink, cancel).await
         }
         Command::Info(args) => {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
-            commands::info::run_info(args, client, sink_ref, cancel).await
+            commands::info::run_info(args, client, sink, cancel).await
         }
         Command::Manifests(args) => {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
-            commands::manifests::run_manifests(args, client, sink_ref, cancel).await
+            commands::manifests::run_manifests(args, client, sink, cancel).await
         }
         Command::Diff(args) => {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
-            commands::diff::run_diff(args, client, sink_ref, cancel).await
+            commands::diff::run_diff(args, client, sink, cancel).await
         }
         Command::Packages(args) => {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
-            commands::packages::run_packages(args, client, sink_ref, cancel).await
+            commands::packages::run_packages(args, client, sink, cancel).await
         }
         Command::SaveManifest(args) => {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
-            commands::save_manifest::run_save_manifest(args, client, sink_ref, cancel).await
+            commands::save_manifest::run_save_manifest(args, client, sink, cancel).await
         }
         Command::Download(args) => {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
-            commands::download::run_download(args, client, sink_ref, cancel, show_progress).await
+            commands::download::run_download(args, client, sink, cancel, show_progress).await
         }
         Command::Workshop(args) => {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
-            commands::workshop::run_workshop(args, client, sink_ref, cancel, show_progress).await
+            commands::workshop::run_workshop(args, client, sink, cancel, show_progress).await
         }
         Command::Daemon(args) => daemon::client::run_daemon_subcommand(args.command).await,
     }
