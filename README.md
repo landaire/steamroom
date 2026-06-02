@@ -236,7 +236,7 @@ CM discovery + handshake + logon round trip.
 
 ```bash
 # Start a daemon in the background. Authenticates once; prints PID and stop hint.
-steamroom --daemon --username myaccount
+steamroom --username myaccount daemon start
 
 # Route subsequent commands through the running daemon.
 steamroom --use-daemon info --app 730
@@ -267,15 +267,15 @@ its PID to `$XDG_RUNTIME_DIR/steamroom.pid` (or `$TMPDIR/steamroom-<uid>.pid`).
 diagnosing a wedged process.
 
 Limitations in this release:
-- Background mode (`--daemon`'s fork+exec) is Unix-only. On Windows, run `--daemon` in
-  the foreground and background it manually.
+- Background mode (`daemon start`'s fork+exec) is Unix-only. On Windows, run the
+  daemon process in the foreground and background it manually.
 - The parent's success exit does not guarantee the daemon stayed up: if the resumed
   child fails to bind the socket or re-authenticate from the cached refresh token, the
   parent has already exited 0. Check `steamroom daemon info` and the log file at
   `$TMPDIR/steamroom-<uid>.log` to confirm.
 - `--use-daemon` rejects `--username`, `--password`, `--qr`, `--use-steam-token`,
   `--remember-password`, `--device-name`, and `--capture` at parse time. These flags
-  belong on `--daemon` at launch.
+  belong on `daemon start` at launch.
 
 ## Authentication
 

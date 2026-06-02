@@ -127,6 +127,10 @@ fn emit_log(level: LogLevel, target: &str, message: &str) {
 
 pub async fn run_daemon_subcommand(sub: DaemonSub) -> Result<(), CliError> {
     match sub {
+        // `Start` is intercepted in main() before the tokio runtime is built,
+        // because launching the daemon must fork after dropping the runtime.
+        // Reaching this arm means the dispatcher missed it.
+        DaemonSub::Start => unreachable!("daemon start is dispatched in main() pre-runtime"),
         DaemonSub::Info => {
             crate::daemon::lifecycle::render_daemon_info();
             Ok(())

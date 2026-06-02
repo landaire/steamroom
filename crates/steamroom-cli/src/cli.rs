@@ -44,16 +44,14 @@ pub struct Cli {
     #[arg(long, env = "STEAMROOM_NON_INTERACTIVE")]
     pub non_interactive: bool,
 
-    /// Launch a daemon: authenticate, fork, detach, and serve RPC.
-    #[arg(long, conflicts_with = "use_daemon")]
-    pub daemon: bool,
-
     /// Send this command to the running daemon instead of executing
-    /// directly.
+    /// directly. Pair with any subcommand. Start a daemon with
+    /// `steamroom daemon start`.
     #[arg(long = "use-daemon")]
     pub use_daemon: bool,
 
-    /// (internal) Resume daemon execution after fork+exec.
+    /// Resume daemon execution after fork+exec. Set by the parent
+    /// during `daemon start`; not intended to be passed by the user.
     #[arg(long, hide = true)]
     pub daemon_resume: Option<String>,
 
@@ -162,7 +160,6 @@ impl CompatCli {
             no_progress: false,
             quiet: false,
             non_interactive: false,
-            daemon: false,
             use_daemon: false,
             daemon_resume: None,
             priority: false,
@@ -200,7 +197,8 @@ pub struct AuthOptions {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Daemon control commands (stop, status, info, attach).
+    /// Daemon control: start a background daemon, then stop, observe,
+    /// or attach to it.
     Daemon(DaemonArgs),
     /// Compare two manifests and show added, removed, and changed files
     Diff(DiffArgs),
@@ -230,6 +228,10 @@ pub struct DaemonArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DaemonSub {
+    /// Authenticate (interactively if needed), fork into the background,
+    /// and serve RPC. Auth flags (`--username`, `--qr`, etc.) go on the
+    /// top-level command, e.g. `steamroom --username foo daemon start`.
+    Start,
     /// Stop the running daemon.
     Stop {
         /// Cancel the active job immediately instead of waiting for it.
@@ -557,8 +559,11 @@ impl Cli {
         if self.detach && !self.use_daemon {
             return Err(CliError::DetachWithoutDaemon);
         }
-        // clap's conflicts_with covers daemon vs use_daemon; this is just defensive.
-        if self.daemon && self.use_daemon {
+        // `daemon start` and `--use-daemon` together are nonsensical:
+        // start launches a daemon, --use-daemon talks to one.
+        if self.use_daemon
+            && matches!(self.command, Command::Daemon(DaemonArgs { command: DaemonSub::Start }))
+        {
             return Err(CliError::DaemonModeConflict);
         }
         Ok(())
