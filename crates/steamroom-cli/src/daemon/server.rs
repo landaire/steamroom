@@ -164,6 +164,14 @@ impl DaemonState {
         self.snapshot_inner(&q, None).await
     }
 
+    /// Snapshot + broadcast on the events channel. Called whenever the
+    /// queue, active job, or recent ring changes so Subscribe stream
+    /// clients (the TUI, daemon status) refresh without re-polling.
+    pub async fn broadcast_snapshot(&self) {
+        let snap = self.snapshot().await;
+        let _ = self.events.send(Event::QueueChanged { snapshot: snap });
+    }
+
     /// Look up a recently-finished job by id. Used by `stream_events` to
     /// recover the terminal exit code after a broadcast lag.
     pub async fn recent_exit_code(&self, job_id: JobId) -> Option<i32> {
@@ -407,6 +415,11 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
             kind: job.kind,
             args_summary: job.args_summary.clone(),
         });
+        // The job has moved from the queue to active. Subscribe streams
+        // (TUI, status monitors) need a fresh snapshot to drop the queue
+        // entry; QueueChanged is the only event they treat as
+        // queue/active state-of-the-world.
+        state.broadcast_snapshot().await;
 
         let sink: Arc<dyn JobSink> = Arc::new(sink);
         use futures::future::FutureExt;
@@ -455,6 +468,8 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
         finished.exit_code = Some(exit_code);
         state.recent.lock().await.push(finished);
         let _ = state.events.send(Event::JobFinished { job_id: job.job_id, exit_code });
+        // active cleared, recent grew -- refresh subscribed clients.
+        state.broadcast_snapshot().await;
     }
     // If we got here because accepting was cancelled and the queue is empty,
     // signal full shutdown so the accept loop and any Subscribe streams wind down.
