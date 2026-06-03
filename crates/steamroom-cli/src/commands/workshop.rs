@@ -100,8 +100,7 @@ pub async fn run_workshop(
         .depot_key(depot_key)
         .install_dir(output_dir.clone())
         .event_sender(event_tx)
-        .build()
-        .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+        .build()?;
 
     info!("downloading to {}", output_dir.display());
 
@@ -116,7 +115,7 @@ pub async fn run_workshop(
         let download_fut = job.download(&manifest, std::sync::Arc::new(fetcher));
         tokio::pin!(download_fut);
         tokio::select! {
-            res = &mut download_fut => Some(res.map_err(|e| CliError::Io(std::io::Error::other(e)))),
+            res = &mut download_fut => Some(res.map_err(CliError::Download)),
             // Dropping the future aborts the orchestration. Spawned chunk-fetch
             // tasks held inside DepotJob may continue until their next yield
             // point.

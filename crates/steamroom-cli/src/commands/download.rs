@@ -286,12 +286,7 @@ pub async fn run_download(
         ));
     }
 
-    let job = builder.build().map_err(|e| {
-        CliError::Steam(steamroom::error::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            e,
-        )))
-    })?;
+    let job = builder.build()?;
 
     info!("downloading to {}", output_dir.display());
 
@@ -308,7 +303,7 @@ pub async fn run_download(
         let download_fut = job.download(&manifest, std::sync::Arc::new(fetcher));
         tokio::pin!(download_fut);
         tokio::select! {
-            res = &mut download_fut => Some(res.map_err(|e| CliError::Io(std::io::Error::other(e)))),
+            res = &mut download_fut => Some(res.map_err(CliError::Download)),
             _ = cancel.cancelled() => None,
         }
     };

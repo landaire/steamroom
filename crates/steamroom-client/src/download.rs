@@ -1,10 +1,15 @@
 use crate::event::DownloadEvent;
+use crate::event::ErrorChain;
 use bytes::Bytes;
+use rootcause::Report;
+use rootcause::markers::Mutable;
+use rootcause::markers::SendSync;
+use std::fs::File;
 use std::future::Future;
-use std::io::Write;
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::Duration;
 use steamroom::cdn::CdnClient;
 use steamroom::cdn::pool::CdnServerPool;
@@ -13,12 +18,76 @@ use steamroom::depot::DepotId;
 use steamroom::depot::DepotKey;
 use steamroom::depot::chunk;
 use steamroom::depot::manifest::DepotManifest;
+use steamroom::depot::manifest::ManifestChunk;
 use steamroom::depot::manifest::ManifestFile;
 use steamroom::enums::DepotFileFlags;
 use steamroom::error::Error as SteamError;
 use tokio::sync::mpsc;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Owning, mutable, thread-safe `rootcause` report carrying a [`DownloadError`]
+/// at its root.
+pub type DownloadReport = Report<DownloadError, Mutable, SendSync>;
+
+/// Root error variants for the download pipeline. Contextual data (depot id,
+/// chunk id, filename, byte offset, retry chain) is attached to the surrounding
+/// [`Report`] rather than baked into each variant, so the variants stay focused
+/// on *what* failed and the report carries *where* and *while doing what*.
+///
+/// `Fetch` wraps the opaque `BoxError` returned by [`ChunkFetcher::fetch_chunk`]:
+/// the trait is generic over user-supplied data sources, so the inner error
+/// remains untyped at this layer. Every other failure mode is named.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DownloadError {
+    #[error("io: {0}")]
+    Io(#[from] io::Error),
+
+    #[error("chunk: {0}")]
+    Chunk(#[from] chunk::ChunkError),
+
+    #[error("fetch chunk")]
+    Fetch {
+        #[source]
+        source: BoxError,
+    },
+
+    #[error("assembled file failed SHA-1 verification")]
+    Sha1Mismatch {
+        expected: [u8; 20],
+        actual: [u8; 20],
+    },
+
+    #[error("background task: {0}")]
+    Join(#[from] tokio::task::JoinError),
+
+    #[error("semaphore closed: {0}")]
+    Acquire(#[from] tokio::sync::AcquireError),
+}
+
+/// Wrap any error that converts into [`DownloadError`] as a fresh
+/// [`DownloadReport`]. The orphan rule prevents blanket `From<io::Error> for
+/// Report<DownloadError, ..>` impls (both sides are foreign), and `?` only
+/// applies a single `From` step, so callers funnel through this helper -
+/// typically `.map_err(report)?` or `.map_err(|e| report(e).attach(ctx))?`.
+fn report<E: Into<DownloadError>>(e: E) -> DownloadReport {
+    Report::new(e.into())
+}
+
+/// Failures from [`DepotJobBuilder::build`]. Each variant names a single
+/// missing required input so callers do not have to inspect a stringified
+/// message to react.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum BuildError {
+    #[error("depot_id is required")]
+    MissingDepotId,
+    #[error("depot_key is required")]
+    MissingDepotKey,
+    #[error("install_dir is required")]
+    MissingInstallDir,
+}
 
 /// Trait for fetching raw encrypted chunk bytes. Implement this to provide
 /// a custom data source (CDN, local cache, LAN peer, etc.).
@@ -251,7 +320,7 @@ impl DepotJob {
         &self,
         manifest: &DepotManifest,
         fetcher: std::sync::Arc<F>,
-    ) -> Result<DownloadStats, BoxError> {
+    ) -> Result<DownloadStats, DownloadReport> {
         let (total_bytes, total_files) =
             manifest
                 .files
@@ -286,16 +355,18 @@ impl DepotJob {
             let file_path = self.install_dir.join(file.normalized_path());
             let flags = DepotFileFlags::from_bits_retain(file.flags);
 
+            let attach_file = || format!("file `{}` (size {} bytes)", file.filename, file.size);
+
             if flags.is_directory() {
-                std::fs::create_dir_all(&file_path)?;
+                std::fs::create_dir_all(&file_path).map_err(|e| report(e).attach(attach_file()))?;
                 continue;
             }
 
             if file.size == 0 && file.chunks.is_empty() {
                 if let Some(parent) = file_path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    std::fs::create_dir_all(parent).map_err(|e| report(e).attach(attach_file()))?;
                 }
-                std::fs::write(&file_path, [])?;
+                std::fs::write(&file_path, []).map_err(|e| report(e).attach(attach_file()))?;
                 stats.files_completed += 1;
                 continue;
             }
@@ -306,7 +377,7 @@ impl DepotJob {
             }
 
             if let Some(parent) = file_path.parent() {
-                std::fs::create_dir_all(parent)?;
+                std::fs::create_dir_all(parent).map_err(|e| report(e).attach(attach_file()))?;
             }
 
             // Check if file already matches the manifest (skip if up-to-date)
@@ -329,14 +400,16 @@ impl DepotJob {
                     .await?
             } else {
                 let staging_dir = self.install_dir.join(".depotdownloader").join("staging");
-                std::fs::create_dir_all(&staging_dir)?;
+                std::fs::create_dir_all(&staging_dir)
+                    .map_err(|e| report(e).attach(attach_file()))?;
                 let staging_path = staging_dir.join(filename.replace(['/', '\\'], "_"));
 
                 let size = self
                     .download_file_streaming(file, &staging_path, &fetcher, &sem)
                     .await?;
 
-                replace_file(&staging_path, &file_path)?;
+                replace_file(&staging_path, &file_path)
+                    .map_err(|e| report(e).attach(attach_file()))?;
                 size
             };
             stats.bytes_downloaded += file_size;
@@ -404,39 +477,63 @@ impl DepotJob {
 
     /// Streaming chunk download with delta reuse.
     ///
-    /// For each chunk, check if the existing file already has correct data at
-    /// that offset (Adler-32 match). Reusable chunks are copied from the existing
-    /// file; changed chunks are fetched from CDN, decrypted, and decompressed.
-    /// Chunks are written to the output file in order as they complete.
+    /// Pre-allocates the output file via `set_len(file.size)`, then writes each
+    /// chunk at its known offset as soon as it has been fetched, decrypted, and
+    /// decompressed. Reusable chunks (existing bytes whose Adler-32 already
+    /// matches the manifest) are left in place; only differing chunks hit the
+    /// network. Out-of-order completions are fine because writes are positional
+    /// (`pwrite` / `seek_write`).
     ///
-    /// Memory usage is bounded by `max_downloads × chunk_size` (~16 MB typical).
+    /// Memory is bounded by `max_downloads * (encrypted + decompressed chunk
+    /// size)` plus one reusable scratch buffer. The full file is never resident.
     async fn download_file_streaming<F: ChunkFetcher + 'static>(
         &self,
         file: &ManifestFile,
         output_path: &Path,
         fetcher: &std::sync::Arc<F>,
         sem: &std::sync::Arc<tokio::sync::Semaphore>,
-    ) -> Result<u64, BoxError> {
-        use steamroom::util::checksum::SteamAdler32;
-
+    ) -> Result<u64, DownloadReport> {
         let n = file.chunks.len();
+        let attach_file_ctx = || {
+            format!(
+                "file `{}` (size {} bytes, {n} chunks)",
+                file.filename, file.size
+            )
+        };
         if n == 0 {
-            std::fs::write(output_path, [])?;
+            std::fs::write(output_path, []).map_err(|e| report(e).attach(attach_file_ctx()))?;
             return Ok(0);
         }
 
-        // Read existing file to find reusable chunks (delta optimization)
-        let existing = std::fs::read(output_path).unwrap_or_default();
-        let mut reuse: Vec<bool> = Vec::with_capacity(n);
-        let mut offset: usize = 0;
-        for chunk_meta in &file.chunks {
-            let size = chunk_meta.uncompressed_size as usize;
-            let end = offset + size;
-            let ok = end <= existing.len()
-                && SteamAdler32::compute(&existing[offset..end]).0 == chunk_meta.checksum;
-            reuse.push(ok);
-            offset += size;
+        // chunk.offset is the authoritative position from the protobuf; fall
+        // back to a running cumulative sum for manifests that omit it.
+        let mut offsets: Vec<u64> = Vec::with_capacity(n);
+        {
+            let mut running: u64 = 0;
+            for chunk_meta in &file.chunks {
+                let off = chunk_meta.offset.unwrap_or(running);
+                offsets.push(off);
+                running = off + u64::from(chunk_meta.uncompressed_size);
+            }
         }
+
+        let out = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(output_path)
+            .map_err(|e| report(e).attach(attach_file_ctx()))?;
+        let original_len = out
+            .metadata()
+            .map_err(|e| report(e).attach(attach_file_ctx()))?
+            .len();
+        out.set_len(file.size)
+            .map_err(|e| report(e).attach(attach_file_ctx()))?;
+        let out = Arc::new(out);
+
+        let reuse = compute_reuse_mask(&out, &file.chunks, &offsets, original_len)
+            .map_err(|r| r.attach(attach_file_ctx()))?;
 
         let reused = reuse.iter().filter(|&&r| r).count();
         let to_fetch = n - reused;
@@ -446,13 +543,13 @@ impl DepotJob {
                 &file.filename,
             );
         }
-
-        // Only fetch chunks that differ
-        let slots: std::sync::Arc<Vec<OnceLock<Vec<u8>>>> =
-            std::sync::Arc::new((0..n).map(|_| OnceLock::new()).collect());
-
-        let (fetch_tx, mut fetch_rx) =
-            tokio::sync::mpsc::channel::<(usize, Bytes, u32, u32)>(self.max_downloads);
+        for (i, chunk_meta) in file.chunks.iter().enumerate() {
+            if reuse[i] {
+                self.emit(DownloadEvent::ChunkCompleted {
+                    bytes: u64::from(chunk_meta.uncompressed_size),
+                });
+            }
+        }
 
         let mut fetch_handles = Vec::with_capacity(to_fetch);
         for (i, chunk_meta) in file.chunks.iter().enumerate() {
@@ -462,127 +559,260 @@ impl DepotJob {
             let chunk_id = chunk_meta.id.clone();
             let expected_size = chunk_meta.uncompressed_size;
             let checksum = chunk_meta.checksum;
+            let chunk_offset = offsets[i];
             let depot_id = self.depot_id;
+            let depot_key = self.depot_key.clone();
             let retry = self.retry.clone();
             let event_tx = self.event_tx.clone();
             let sem = sem.clone();
             let fetcher = fetcher.clone();
-            let fetch_tx = fetch_tx.clone();
+            let out = out.clone();
 
             fetch_handles.push(tokio::spawn(async move {
+                let attach_chunk = || {
+                    format!(
+                        "chunk {chunk_id} at offset {chunk_offset} ({expected_size} bytes) of depot {}",
+                        depot_id.0
+                    )
+                };
                 let _permit = sem
                     .acquire()
                     .await
-                    .map_err(|e| -> BoxError { Box::new(e) })?;
+                    .map_err(|e| report(e).attach(attach_chunk()))?;
 
-                let mut delay = retry.initial_delay;
-                let mut result = Err::<Bytes, BoxError>("never attempted".into());
-                for attempt in 0..retry.max_attempts {
-                    match fetcher.fetch_chunk(depot_id, &chunk_id).await {
-                        Ok(data) => {
-                            result = Ok(data);
-                            break;
-                        }
-                        Err(e) if attempt + 1 < retry.max_attempts => {
-                            let wait = retry_delay_for_error(&e, delay);
-                            if let Some(ref tx) = event_tx {
-                                let _ = tx.send(DownloadEvent::ChunkFailed {
-                                    error: e.to_string(),
-                                });
-                            }
-                            tokio::time::sleep(wait).await;
-                            delay = (wait * 2).min(Duration::from_secs(30));
-                        }
-                        Err(e) => {
-                            result = Err(e);
-                            break;
-                        }
+                let raw = fetch_with_retry(
+                    fetcher.as_ref(),
+                    depot_id,
+                    &chunk_id,
+                    &retry,
+                    event_tx.as_ref(),
+                )
+                .await
+                .map_err(|r| r.attach(attach_chunk()))?;
+
+                let attach_chunk_for_blocking = attach_chunk();
+                let attach_chunk_in_blocking = attach_chunk_for_blocking.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), DownloadReport> {
+                    let processed = chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
+                        .map_err(|e| report(e).attach(attach_chunk_in_blocking.clone()))?;
+                    let written = processed.len() as u64;
+                    pwrite_all(out.as_ref(), &processed, chunk_offset)
+                        .map_err(|e| report(e).attach(attach_chunk_in_blocking.clone()))?;
+                    drop(processed);
+                    if let Some(ref tx) = event_tx {
+                        let _ = tx.send(DownloadEvent::ChunkCompleted { bytes: written });
                     }
-                }
+                    Ok(())
+                })
+                .await
+                .map_err(|e| report(e).attach(attach_chunk_for_blocking.clone()))?
+                .map_err(|r| r.attach(attach_chunk_for_blocking))?;
 
-                fetch_tx
-                    .send((i, result?, expected_size, checksum))
-                    .await
-                    .map_err(|_| -> BoxError { "process channel closed".into() })?;
-                Ok::<(), BoxError>(())
+                Ok::<(), DownloadReport>(())
             }));
         }
-        drop(fetch_tx);
 
-        // Decrypt + decompress fetched chunks into slots
-        let slots_ref = slots.clone();
-        let depot_key = self.depot_key.clone();
-        let event_tx = self.event_tx.clone();
-
-        let process_handle = tokio::spawn(async move {
-            let mut block_handles = Vec::new();
-            while let Some((i, raw, expected_size, checksum)) = fetch_rx.recv().await {
-                let key = depot_key.clone();
-                let slots = slots_ref.clone();
-                let tx = event_tx.clone();
-
-                block_handles.push(tokio::task::spawn_blocking(move || {
-                    let processed = chunk::process_chunk(&raw, &key, expected_size, checksum)?;
-                    if let Some(ref tx) = tx {
-                        let _ = tx.send(DownloadEvent::ChunkCompleted {
-                            bytes: processed.len() as u64,
-                        });
-                    }
-                    let _ = slots[i].set(processed);
-                    Ok::<(), BoxError>(())
-                }));
-            }
-            for h in block_handles {
-                h.await??;
-            }
-            Ok::<(), BoxError>(())
-        });
-
+        let mut first_err: Option<DownloadReport> = None;
         for h in fetch_handles {
-            h.await??;
-        }
-        process_handle.await??;
-
-        // Write output: reused chunks from existing data, fetched chunks from slots
-        let slots = std::sync::Arc::try_unwrap(slots).map_err(|_| "slots arc still shared")?;
-        let mut out = std::fs::File::create(output_path)?;
-        let mut written: u64 = 0;
-        let mut read_offset: usize = 0;
-        for (i, chunk_meta) in file.chunks.iter().enumerate() {
-            let size = chunk_meta.uncompressed_size as usize;
-            if reuse[i] {
-                out.write_all(&existing[read_offset..read_offset + size])?;
-                self.emit(DownloadEvent::ChunkCompleted { bytes: size as u64 });
-            } else {
-                let data = slots[i].get().ok_or("chunk slot empty after pipeline")?;
-                out.write_all(data)?;
+            match h.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(report(e));
+                    }
+                }
             }
-            read_offset += size;
-            written += size as u64;
         }
-        drop(out);
+        if let Some(e) = first_err {
+            return Err(e.attach(attach_file_ctx()));
+        }
 
-        // Verify the assembled file against the manifest's SHA-1. Reused chunks
-        // are gated only on a weak per-chunk Adler-32, so a torn or partial
-        // existing file can slip corrupt bytes through; without this the bad
-        // package is accepted silently and only surfaces at extraction time.
+        // Stream-verify SHA-1 against the manifest. Reused chunks pass only the
+        // weak Adler-32 gate, so a torn or partial existing file can slip
+        // corrupt bytes through; without the whole-file check the bad package
+        // would be accepted silently and only surface at extraction time.
         if let Some(expected_sha) = file.sha_content.as_ref() {
-            let data = std::fs::read(output_path)?;
-            let actual = steamroom::util::checksum::Sha1Hash::compute(&data);
-            if actual.0 != *expected_sha {
-                // Drop the bad output so a retry re-fetches every chunk instead
-                // of reusing the corrupt data again.
+            let file_size = file.size;
+            let out_for_hash = out.clone();
+            let expected = *expected_sha;
+            let actual = tokio::task::spawn_blocking(move || -> Result<[u8; 20], io::Error> {
+                use sha1::Digest;
+                let mut hasher = sha1::Sha1::new();
+                let mut buf = vec![0u8; HASH_READ_BUFFER];
+                let mut pos: u64 = 0;
+                while pos < file_size {
+                    let want = (file_size - pos).min(buf.len() as u64) as usize;
+                    pread_exact(&out_for_hash, &mut buf[..want], pos)?;
+                    hasher.update(&buf[..want]);
+                    pos += want as u64;
+                }
+                Ok(hasher.finalize().into())
+            })
+            .await
+            .map_err(|e| report(e).attach(attach_file_ctx()))?
+            .map_err(|e| report(e).attach(attach_file_ctx()))?;
+            if actual != expected {
+                // Drop our handle so Windows lets us unlink the bad output.
+                drop(out);
                 let _ = std::fs::remove_file(output_path);
-                return Err(format!(
-                    "{}: assembled file failed SHA-1 verification",
-                    file.filename
-                )
-                .into());
+                return Err(
+                    Report::new(DownloadError::Sha1Mismatch { expected, actual })
+                        .attach(attach_file_ctx()),
+                );
             }
         }
 
-        Ok(written)
+        Ok(file.size)
     }
+}
+
+/// Buffer size for the streaming SHA-1 verification pass. Sized to amortize
+/// syscall cost without holding meaningful memory.
+const HASH_READ_BUFFER: usize = 1 << 20;
+
+/// Buffer size cap for the Adler-32 reuse check. Real Steam chunks are ~1 MiB;
+/// the cap exists only as a guard against pathologically large manifests.
+const REUSE_BUFFER_CAP: usize = 4 << 20;
+
+/// Decide which chunks can be reused from the existing on-disk bytes.
+///
+/// `original_len` is the file size before `set_len`, so chunks that fall in
+/// the zero-extended tail are never considered reusable.
+fn compute_reuse_mask(
+    file: &Arc<File>,
+    chunks: &[ManifestChunk],
+    offsets: &[u64],
+    original_len: u64,
+) -> Result<Vec<bool>, DownloadReport> {
+    use steamroom::util::checksum::SteamAdler32;
+
+    let mut reuse = Vec::with_capacity(chunks.len());
+    let cap = chunks
+        .iter()
+        .map(|c| c.uncompressed_size as usize)
+        .max()
+        .unwrap_or(0)
+        .min(REUSE_BUFFER_CAP);
+    let mut buf = vec![0u8; cap];
+
+    for (chunk_meta, &offset) in chunks.iter().zip(offsets.iter()) {
+        let size = chunk_meta.uncompressed_size as usize;
+        let end = offset.saturating_add(size as u64);
+        if size == 0 || end > original_len || size > buf.len() {
+            reuse.push(false);
+            continue;
+        }
+        match pread_exact(file, &mut buf[..size], offset) {
+            Ok(()) => {
+                let matches = SteamAdler32::compute(&buf[..size]).0 == chunk_meta.checksum;
+                reuse.push(matches);
+            }
+            Err(_) => reuse.push(false),
+        }
+    }
+    Ok(reuse)
+}
+
+async fn fetch_with_retry<F: ChunkFetcher>(
+    fetcher: &F,
+    depot_id: DepotId,
+    chunk_id: &ChunkId,
+    retry: &RetryConfig,
+    event_tx: Option<&mpsc::UnboundedSender<DownloadEvent>>,
+) -> Result<Bytes, DownloadReport> {
+    // Guarantee at least one attempt; a zero-budget config is a misconfiguration
+    // but here it would degenerate to "never tried", which is hard to debug.
+    let attempts = retry.max_attempts.max(1);
+    let mut delay = retry.initial_delay;
+    let mut prior: Vec<DownloadReport> = Vec::new();
+    for attempt in 1..=attempts {
+        match fetcher.fetch_chunk(depot_id, chunk_id).await {
+            Ok(data) => return Ok(data),
+            Err(source) if attempt < attempts => {
+                let wait = retry_delay_for_error(&source, delay);
+                if let Some(tx) = event_tx {
+                    let _ = tx.send(DownloadEvent::ChunkFailed {
+                        error: ErrorChain::from_error(&*source),
+                    });
+                }
+                let attempt_report = Report::new(DownloadError::Fetch { source })
+                    .attach(format!("attempt {attempt} of {attempts}"));
+                prior.push(attempt_report);
+                tokio::time::sleep(wait).await;
+                delay = (wait * 2).min(Duration::from_secs(30));
+            }
+            Err(source) => {
+                let mut final_report = Report::new(DownloadError::Fetch { source })
+                    .attach(format!("attempt {attempt} of {attempts}"));
+                let children = final_report.children_mut();
+                for p in prior {
+                    children.push(p.into_dynamic().into_cloneable());
+                }
+                return Err(final_report);
+            }
+        }
+    }
+    // Loop above returns on `attempt == attempts` either Ok or via the
+    // final `Err` arm; reaching here would mean attempts == 0, which the
+    // `.max(1)` above forbids.
+    unreachable!("retry loop must terminate within attempts iterations")
+}
+
+fn pread_exact(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_exact_at(buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut total = 0;
+        while total < buf.len() {
+            let n = file.seek_read(&mut buf[total..], offset + total as u64)?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "failed to fill buffer",
+                ));
+            }
+            total += n;
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    compile_error!("pread_exact requires unix or windows");
+}
+
+fn pwrite_all(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.write_all_at(buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut total = 0;
+        while total < buf.len() {
+            let n = file.seek_write(&buf[total..], offset + total as u64)?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ));
+            }
+            total += n;
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    compile_error!("pwrite_all requires unix or windows");
 }
 
 /// Collect all parent directories of a normalized path, joined to install_dir.
@@ -709,11 +939,11 @@ impl DepotJobBuilder {
         self
     }
 
-    pub fn build(self) -> Result<DepotJob, BoxError> {
+    pub fn build(self) -> Result<DepotJob, BuildError> {
         Ok(DepotJob {
-            depot_id: self.depot_id.ok_or("depot_id required")?,
-            depot_key: self.depot_key.ok_or("depot_key required")?,
-            install_dir: self.install_dir.ok_or("install_dir required")?,
+            depot_id: self.depot_id.ok_or(BuildError::MissingDepotId)?,
+            depot_key: self.depot_key.ok_or(BuildError::MissingDepotKey)?,
+            install_dir: self.install_dir.ok_or(BuildError::MissingInstallDir)?,
             max_downloads: self.max_downloads.unwrap_or(16),
             verify: self.verify,
             non_atomic: self.non_atomic,

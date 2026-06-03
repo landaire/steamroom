@@ -18,6 +18,12 @@ pub enum CliError {
     #[error("chunk processing failed: {0}")]
     Chunk(#[from] steamroom::depot::chunk::ChunkError),
 
+    #[error("download failed: {0}")]
+    Download(steamroom_client::download::DownloadReport),
+
+    #[error("download job misconfigured: {0}")]
+    Build(#[from] steamroom_client::download::BuildError),
+
     #[error("failed to decode server response: {0}")]
     Protobuf(#[from] prost::DecodeError),
 
@@ -114,6 +120,12 @@ pub enum CliError {
 impl From<steamroom::error::ConnectionError> for CliError {
     fn from(e: steamroom::error::ConnectionError) -> Self {
         Self::Steam(steamroom::error::Error::Connection(e))
+    }
+}
+
+impl From<steamroom_client::download::DownloadReport> for CliError {
+    fn from(e: steamroom_client::download::DownloadReport) -> Self {
+        Self::Download(e)
     }
 }
 
