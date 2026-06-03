@@ -273,10 +273,10 @@ impl ReplayBuffer {
 }
 
 /// Long-running task: subscribes to the broadcast channel and routes
-/// every per-job event into the replay buffer. Spawned once at daemon
-/// startup. Exits when the broadcast sender drops.
-pub async fn replay_collector(state: Arc<DaemonState>) {
-    let mut rx = state.events.subscribe();
+/// every per-job event into the replay buffer. Spawn via
+/// `spawn_replay_collector` so the subscribe happens synchronously and
+/// no events are missed before the task is scheduled.
+async fn replay_collector_loop(state: Arc<DaemonState>, mut rx: broadcast::Receiver<Event>) {
     loop {
         match rx.recv().await {
             Ok(ev) => {
@@ -292,6 +292,15 @@ pub async fn replay_collector(state: Arc<DaemonState>) {
             Err(broadcast::error::RecvError::Closed) => return,
         }
     }
+}
+
+/// Spawn the replay collector. The broadcast subscription is created
+/// synchronously before the task is spawned, so events emitted between
+/// the call to this function and the spawned task's first poll are not
+/// lost.
+pub fn spawn_replay_collector(state: Arc<DaemonState>) -> tokio::task::JoinHandle<()> {
+    let rx = state.events.subscribe();
+    tokio::spawn(replay_collector_loop(state, rx))
 }
 
 #[cfg(test)]

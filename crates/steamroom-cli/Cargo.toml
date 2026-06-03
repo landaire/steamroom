@@ -10,6 +10,10 @@ readme = "../../README.md"
 keywords = ["steam", "depot", "download", "cli"]
 categories = ["command-line-utilities"]
 
+[lib]
+name = "steamroom_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "steamroom"
 path = "src/main.rs"
