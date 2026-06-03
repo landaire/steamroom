@@ -8,6 +8,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
+/// How long a graceful `daemon stop` waits for the active job before
+/// signalling the job's cancel token. Matches the spec's documented
+/// behavior so a runaway job can't pin the daemon indefinitely.
+const GRACEFUL_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 use crate::daemon::proto::{
     Event, JobId, JobKind, JobRecord, LogLevel, ProgressUpdate, Request, StatusSnapshot,
 };
@@ -572,9 +577,34 @@ where
                     running.cancel.cancel();
                 }
                 state.shutdown.cancel();
+            } else {
+                // Graceful: do NOT signal `shutdown` here. The
+                // worker_loop will set shutdown once active is None AND
+                // queue is empty. Spawn a grace-timer task that cancels
+                // the active job (whichever job is active at that
+                // moment) after 30s so a 6-hour download can't pin the
+                // daemon forever.
+                let state = state.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(GRACEFUL_STOP_GRACE).await;
+                    if state.shutdown.is_cancelled() {
+                        // Already fully shut down (queue drained); nothing to do.
+                        return;
+                    }
+                    if let Some(running) = state.active.lock().await.as_ref() {
+                        let _ = state.events.send(Event::Log {
+                            job_id: Some(running.record.job_id),
+                            level: LogLevel::Warn,
+                            target: "daemon::stop".into(),
+                            message: format!(
+                                "graceful stop grace ({}s) elapsed; cancelling active job",
+                                GRACEFUL_STOP_GRACE.as_secs()
+                            ),
+                        });
+                        running.cancel.cancel();
+                    }
+                });
             }
-            // Graceful (force=false): do NOT signal `shutdown` here. The
-            // worker_loop will set shutdown once active is None AND queue is empty.
             let _ = write_frame(&mut stream, &Frame::Response(Response::Stopping)).await;
         }
         Request::Cancel { job_id } => {
