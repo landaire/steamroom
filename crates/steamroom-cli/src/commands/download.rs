@@ -10,9 +10,9 @@
 
 use crate::cli::DownloadArgs;
 use crate::commands::shared::decompress_manifest;
+use crate::commands::shared::fetch_app_kv;
 use crate::commands::shared::find_first_depot;
 use crate::commands::shared::find_manifest_for_depot;
-use crate::commands::shared::fetch_app_kv;
 use crate::commands::shared::fmt_size;
 use crate::download as direct_progress;
 use crate::errors::CliError;
@@ -299,7 +299,8 @@ pub async fn run_download(
     depot_config.set_installing(depot_id, manifest_id, &depot_key);
     let _ = depot_config.save(&output_dir);
 
-    let progress_handle = direct_progress::spawn_progress_renderer(event_rx, show_progress, Some(sink.clone()));
+    let progress_handle =
+        direct_progress::spawn_progress_renderer(event_rx, show_progress, Some(sink.clone()));
 
     // Run the download inside a block so the download future drops (releasing
     // its borrow of `job`) when it finishes or is cancelled.

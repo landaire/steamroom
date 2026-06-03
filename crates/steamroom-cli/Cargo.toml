@@ -23,7 +23,7 @@ name = "bench-profile"
 path = "src/bin/bench_profile.rs"
 
 [features]
-default = ["tui"]
+default = []
 # The ratatui dashboard for `daemon status`. Disable to skip the
 # ratatui + crossterm dependencies; `daemon status` falls back to the
 # `--text` snapshot output.

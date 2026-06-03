@@ -3,14 +3,20 @@
 
 use std::time::Duration;
 
-use interprocess::local_socket::{
-    GenericNamespaced, ListenerOptions, Name, ToNsName,
-    tokio::{Listener, Stream},
-    traits::tokio::{Listener as _, Stream as _},
-};
+use interprocess::local_socket::GenericNamespaced;
+use interprocess::local_socket::ListenerOptions;
+use interprocess::local_socket::Name;
+use interprocess::local_socket::ToNsName;
+use interprocess::local_socket::tokio::Listener;
+use interprocess::local_socket::tokio::Stream;
+use interprocess::local_socket::traits::tokio::Listener as _;
+use interprocess::local_socket::traits::tokio::Stream as _;
 
-use crate::daemon::framing::{read_frame, write_frame};
-use crate::daemon::proto::{Frame, Request, Response};
+use crate::daemon::framing::read_frame;
+use crate::daemon::framing::write_frame;
+use crate::daemon::proto::Frame;
+use crate::daemon::proto::Request;
+use crate::daemon::proto::Response;
 use crate::errors::CliError;
 
 /// Build the platform-appropriate name for the current user's daemon.

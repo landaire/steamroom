@@ -1,23 +1,40 @@
 //! Ratatui status dashboard. Routes input from crossterm and events from
 //! a Subscribe RPC connection through a single state machine.
 
-use crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::Event as CtEvent;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap};
+use ratatui::layout::Constraint;
+use ratatui::layout::Direction;
+use ratatui::layout::Layout;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Gauge;
+use ratatui::widgets::List;
+use ratatui::widgets::ListItem;
+use ratatui::widgets::Paragraph;
+use ratatui::widgets::Wrap;
 use std::io::Stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::daemon::client::connect;
-use crate::daemon::framing::{read_frame, write_frame};
-use crate::daemon::proto::{
-    Event as ProtoEvent, Frame, JobRecord, Request, Response,
-    StatusSnapshot,
-};
+use crate::daemon::framing::read_frame;
+use crate::daemon::framing::write_frame;
+use crate::daemon::proto::Event as ProtoEvent;
+use crate::daemon::proto::Frame;
+use crate::daemon::proto::JobRecord;
+use crate::daemon::proto::Request;
+use crate::daemon::proto::Response;
+use crate::daemon::proto::StatusSnapshot;
 use crate::errors::CliError;
 
 pub async fn run_tui() -> Result<(), CliError> {
@@ -81,9 +98,7 @@ impl TuiState {
     }
 }
 
-async fn main_loop(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-) -> Result<(), CliError> {
+async fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), CliError> {
     // Seed state via Status, then open a Subscribe stream for live updates.
     let mut status_stream = connect().await?;
     write_frame(&mut status_stream, &Frame::Request(Request::Status)).await?;
@@ -98,7 +113,9 @@ async fn main_loop(
     // Subscribe events into a channel.
     let (ev_tx, mut ev_rx) = mpsc::channel::<ProtoEvent>(256);
     let subscribe_task = tokio::spawn(async move {
-        let Ok(mut sub) = connect().await else { return; };
+        let Ok(mut sub) = connect().await else {
+            return;
+        };
         if write_frame(&mut sub, &Frame::Request(Request::Subscribe))
             .await
             .is_err()
@@ -121,12 +138,14 @@ async fn main_loop(
 
     // crossterm key events into a channel.
     let (key_tx, mut key_rx) = mpsc::channel::<CtEvent>(64);
-    let keys_task = tokio::task::spawn_blocking(move || loop {
-        if crossterm::event::poll(Duration::from_millis(200)).unwrap_or(false)
-            && let Ok(ev) = crossterm::event::read()
-            && key_tx.blocking_send(ev).is_err()
-        {
-            return;
+    let keys_task = tokio::task::spawn_blocking(move || {
+        loop {
+            if crossterm::event::poll(Duration::from_millis(200)).unwrap_or(false)
+                && let Ok(ev) = crossterm::event::read()
+                && key_tx.blocking_send(ev).is_err()
+            {
+                return;
+            }
         }
     });
 
@@ -170,8 +189,7 @@ fn apply_event(state: &mut TuiState, ev: ProtoEvent) {
         ProtoEvent::QueueChanged { snapshot } => {
             state.snapshot = snapshot;
             if state.selected_queue_idx >= state.snapshot.queue.len() {
-                state.selected_queue_idx =
-                    state.snapshot.queue.len().saturating_sub(1);
+                state.selected_queue_idx = state.snapshot.queue.len().saturating_sub(1);
             }
         }
         ProtoEvent::Progress { update, .. } => {
@@ -262,7 +280,11 @@ fn draw(
                 .enumerate()
                 .map(|(i, j)| {
                     let star = if j.priority { "* " } else { "  " };
-                    let prefix = if i == state.selected_queue_idx { "> " } else { "  " };
+                    let prefix = if i == state.selected_queue_idx {
+                        "> "
+                    } else {
+                        "  "
+                    };
                     ListItem::new(format!(
                         "{prefix}{star}{} {:?} {}",
                         j.job_id, j.kind, j.args_summary
@@ -290,17 +312,15 @@ fn draw(
                             Constraint::Min(0),
                         ])
                         .split(inner);
-                    let summary = Paragraph::new(format!(
-                        "{} {:?}\n{}",
-                        j.job_id, j.kind, j.args_summary
-                    ))
-                    .wrap(Wrap { trim: true });
+                    let summary =
+                        Paragraph::new(format!("{} {:?}\n{}", j.job_id, j.kind, j.args_summary))
+                            .wrap(Wrap { trim: true });
                     f.render_widget(summary, chunks[0]);
 
                     if let Some(p) = &j.progress {
                         let pct = if p.bytes_total > 0 {
-                            ((p.bytes_done as f64 / p.bytes_total as f64) * 100.0)
-                                .clamp(0.0, 100.0) as u16
+                            ((p.bytes_done as f64 / p.bytes_total as f64) * 100.0).clamp(0.0, 100.0)
+                                as u16
                         } else {
                             0
                         };

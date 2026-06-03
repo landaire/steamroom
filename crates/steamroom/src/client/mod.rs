@@ -55,7 +55,10 @@ pub struct SteamClient<S: Clone> {
 
 impl<S: Clone> Clone for SteamClient<S> {
     fn clone(&self) -> Self {
-        Self { inner: Arc::clone(&self.inner), _state: self._state.clone() }
+        Self {
+            inner: Arc::clone(&self.inner),
+            _state: self._state.clone(),
+        }
     }
 }
 

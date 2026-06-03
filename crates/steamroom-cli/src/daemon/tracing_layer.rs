@@ -4,12 +4,15 @@
 //! log file (handled by the wrapping fmt layer).
 
 use tokio::sync::broadcast::Sender;
-use tracing::{Event as TracingEvent, Subscriber};
+use tracing::Event as TracingEvent;
+use tracing::Subscriber;
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Layer;
 
-use crate::daemon::proto::{Event, JobId, LogLevel};
+use crate::daemon::proto::Event;
+use crate::daemon::proto::JobId;
+use crate::daemon::proto::LogLevel;
 
 /// Span field name carrying the job id. The worker sets this when entering
 /// each job's span. Pass the numeric value directly for the most reliable
@@ -23,7 +26,9 @@ pub struct JobScopedLogLayer {
 }
 
 impl JobScopedLogLayer {
-    pub fn new(events: Sender<Event>) -> Self { Self { events } }
+    pub fn new(events: Sender<Event>) -> Self {
+        Self { events }
+    }
 }
 
 impl<S> Layer<S> for JobScopedLogLayer
@@ -72,7 +77,12 @@ impl<S> Layer<S> for JobIdAttachmentInstaller
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id, ctx: Context<'_, S>) {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: Context<'_, S>,
+    ) {
         let mut v = JobIdFieldVisitor::default();
         attrs.record(&mut v);
         if let Some(jid) = v.job_id
@@ -84,7 +94,9 @@ where
 }
 
 #[derive(Default)]
-struct JobIdFieldVisitor { job_id: Option<u64> }
+struct JobIdFieldVisitor {
+    job_id: Option<u64>,
+}
 
 impl tracing::field::Visit for JobIdFieldVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -97,7 +109,9 @@ impl tracing::field::Visit for JobIdFieldVisitor {
         }
     }
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        if field.name() == JOB_ID_FIELD { self.job_id = Some(value); }
+        if field.name() == JOB_ID_FIELD {
+            self.job_id = Some(value);
+        }
     }
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
         if field.name() == JOB_ID_FIELD && value >= 0 {
@@ -107,7 +121,9 @@ impl tracing::field::Visit for JobIdFieldVisitor {
 }
 
 #[derive(Default)]
-struct MessageVisitor { message: Option<String> }
+struct MessageVisitor {
+    message: Option<String>,
+}
 
 impl tracing::field::Visit for MessageVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -116,6 +132,8 @@ impl tracing::field::Visit for MessageVisitor {
         }
     }
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        if field.name() == "message" { self.message = Some(value.to_string()); }
+        if field.name() == "message" {
+            self.message = Some(value.to_string());
+        }
     }
 }

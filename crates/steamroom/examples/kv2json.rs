@@ -1,4 +1,7 @@
-use std::io::{self, Read};
+use std::io::Read;
+use std::io::{
+    self,
+};
 use std::path::PathBuf;
 
 fn main() {
@@ -60,8 +63,8 @@ fn convert(data: &[u8]) -> Result<String, String> {
     let s = std::str::from_utf8(text).map_err(|e| format!("invalid UTF-8: {e}"))?;
 
     let wrapped = format!("\"root\"\n{{\n{s}\n}}");
-    let kv = steamroom::types::KeyValue::from_text(&wrapped)
-        .map_err(|e| format!("text KV: {e}"))?;
+    let kv =
+        steamroom::types::KeyValue::from_text(&wrapped).map_err(|e| format!("text KV: {e}"))?;
     serde_json::to_string_pretty(&kv).map_err(|e| format!("json: {e}"))
 }
 

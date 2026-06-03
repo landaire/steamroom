@@ -573,7 +573,11 @@ impl DepotJob {
                 // Drop the bad output so a retry re-fetches every chunk instead
                 // of reusing the corrupt data again.
                 let _ = std::fs::remove_file(output_path);
-                return Err(format!("{}: assembled file failed SHA-1 verification", file.filename).into());
+                return Err(format!(
+                    "{}: assembled file failed SHA-1 verification",
+                    file.filename
+                )
+                .into());
             }
         }
 

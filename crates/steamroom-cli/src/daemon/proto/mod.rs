@@ -9,17 +9,34 @@ mod response;
 mod status;
 
 pub use event::Event;
-pub use frame::{Frame, PROTO_VERSION};
+pub use frame::Frame;
+pub use frame::PROTO_VERSION;
 pub use params::*;
 pub use request::Request;
-pub use response::{ErrorKind, Response};
-pub use status::{JobRecord, StatusSnapshot};
+pub use response::ErrorKind;
+pub use response::Response;
+pub use status::JobRecord;
+pub use status::StatusSnapshot;
 
-use rkyv::{Archive, Deserialize, Serialize};
+use rkyv::Archive;
+use rkyv::Deserialize;
+use rkyv::Serialize;
 
 /// Monotonically increasing identifier minted by the daemon. Stable for
 /// the daemon's lifetime; zero is reserved as "not a job".
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 pub struct JobId(pub u64);
 
@@ -31,7 +48,18 @@ impl std::fmt::Display for JobId {
 
 /// Discriminator for what kind of work a job represents. Used in
 /// `StatusSnapshot` rendering and the TUI's queue/active panes.
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 pub enum JobKind {
     Download,
@@ -80,7 +108,13 @@ impl From<OutputFormat> for crate::cli::OutputFormat {
 /// daemon's tracing events through their own subscriber.
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[rkyv(derive(Debug))]
-pub enum LogLevel { Error, Warn, Info, Debug, Trace }
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
 
 impl From<tracing::Level> for LogLevel {
     fn from(l: tracing::Level) -> Self {
@@ -132,7 +166,10 @@ mod tests {
 
     #[test]
     fn frame_round_trips_response_jobaccepted() {
-        let f = Frame::Response(Response::JobAccepted { job_id: JobId(7), position: 0 });
+        let f = Frame::Response(Response::JobAccepted {
+            job_id: JobId(7),
+            position: 0,
+        });
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&f).unwrap();
         let back = rkyv::from_bytes::<Frame, rkyv::rancor::Error>(&bytes).unwrap();
         match back {
@@ -158,12 +195,21 @@ mod tests {
 
     #[test]
     fn event_job_id_routes_correctly() {
-        let scoped = Event::Stdout { job_id: JobId(9), line: "x".into() };
+        let scoped = Event::Stdout {
+            job_id: JobId(9),
+            line: "x".into(),
+        };
         assert_eq!(scoped.job_id(), Some(JobId(9)));
-        let qc = Event::QueueChanged { snapshot: StatusSnapshot {
-            daemon_pid: 1, daemon_started_at: 0, account: None,
-            active: None, queue: vec![], recent: vec![],
-        }};
+        let qc = Event::QueueChanged {
+            snapshot: StatusSnapshot {
+                daemon_pid: 1,
+                daemon_started_at: 0,
+                account: None,
+                active: None,
+                queue: vec![],
+                recent: vec![],
+            },
+        };
         assert_eq!(qc.job_id(), None);
     }
 }

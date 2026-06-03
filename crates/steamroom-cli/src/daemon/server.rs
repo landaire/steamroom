@@ -4,8 +4,10 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{Mutex, broadcast};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use tokio::sync::Mutex;
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 /// How long a graceful `daemon stop` waits for the active job before
@@ -13,9 +15,14 @@ use tokio_util::sync::CancellationToken;
 /// behavior so a runaway job can't pin the daemon indefinitely.
 const GRACEFUL_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
-use crate::daemon::proto::{
-    Event, JobId, JobKind, JobRecord, LogLevel, ProgressUpdate, Request, StatusSnapshot,
-};
+use crate::daemon::proto::Event;
+use crate::daemon::proto::JobId;
+use crate::daemon::proto::JobKind;
+use crate::daemon::proto::JobRecord;
+use crate::daemon::proto::LogLevel;
+use crate::daemon::proto::ProgressUpdate;
+use crate::daemon::proto::Request;
+use crate::daemon::proto::StatusSnapshot;
 
 /// One unit of work waiting to run. The `request` carries the parameters;
 /// `priority` is also reflected here so the queue can rebalance on
@@ -132,9 +139,9 @@ impl DaemonState {
         // active lock is released before we take the queue lock.
         let active_token = {
             let guard = self.active.lock().await;
-            guard.as_ref().and_then(|r| {
-                (r.record.job_id == job_id).then(|| r.cancel.clone())
-            })
+            guard
+                .as_ref()
+                .and_then(|r| (r.record.job_id == job_id).then(|| r.cancel.clone()))
         };
         if let Some(token) = active_token {
             token.cancel();
@@ -146,7 +153,10 @@ impl DaemonState {
             return Err(JobNotFound);
         };
         let removed = q.remove(idx).expect("index just found");
-        let _ = self.events.send(Event::JobFinished { job_id: removed.job_id, exit_code: 130 });
+        let _ = self.events.send(Event::JobFinished {
+            job_id: removed.job_id,
+            exit_code: 130,
+        });
         let snap = self.snapshot_inner(&q, None).await;
         let _ = self.events.send(Event::QueueChanged { snapshot: snap });
         Ok(())
@@ -187,7 +197,10 @@ impl DaemonState {
     /// Look up a recently-finished job by id. Used by `stream_events` to
     /// recover the terminal exit code after a broadcast lag.
     pub async fn recent_exit_code(&self, job_id: JobId) -> Option<i32> {
-        self.recent.lock().await.iter()
+        self.recent
+            .lock()
+            .await
+            .iter()
             .find(|r| r.job_id == job_id)
             .and_then(|r| r.exit_code)
     }
@@ -216,12 +229,21 @@ pub struct RingBuffer<T> {
 }
 
 impl<T> RingBuffer<T> {
-    pub fn new(cap: usize) -> Self { Self { cap, items: VecDeque::with_capacity(cap) } }
+    pub fn new(cap: usize) -> Self {
+        Self {
+            cap,
+            items: VecDeque::with_capacity(cap),
+        }
+    }
     pub fn push(&mut self, v: T) {
-        if self.items.len() == self.cap { self.items.pop_front(); }
+        if self.items.len() == self.cap {
+            self.items.pop_front();
+        }
         self.items.push_back(v);
     }
-    pub fn iter(&self) -> impl Iterator<Item = &T> { self.items.iter() }
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.items.iter()
+    }
 }
 
 /// Per-job ring of `Event`s used to replay history when `daemon attach`
@@ -236,7 +258,11 @@ pub struct ReplayBuffer {
 
 impl ReplayBuffer {
     pub fn new(cap_jobs: usize, cap_per_job: usize) -> Self {
-        Self { entries: VecDeque::with_capacity(cap_jobs), cap_jobs, cap_per_job }
+        Self {
+            entries: VecDeque::with_capacity(cap_jobs),
+            cap_jobs,
+            cap_per_job,
+        }
     }
 
     /// Begin a new job's history. Drops the oldest tracked job if at
@@ -249,7 +275,8 @@ impl ReplayBuffer {
         if self.entries.len() >= self.cap_jobs {
             self.entries.pop_front();
         }
-        self.entries.push_back((job_id, VecDeque::with_capacity(64)));
+        self.entries
+            .push_back((job_id, VecDeque::with_capacity(64)));
     }
 
     /// Append an event to the named job's ring. Silently ignored if
@@ -303,159 +330,9 @@ pub fn spawn_replay_collector(state: Arc<DaemonState>) -> tokio::task::JoinHandl
     tokio::spawn(replay_collector_loop(state, rx))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::daemon::proto::{InfoParams, OutputFormat};
-
-    fn ev_stdout(job_id: JobId, line: &str) -> Event {
-        Event::Stdout { job_id, line: line.into() }
-    }
-
-    #[test]
-    fn replay_buffer_evicts_oldest_job_when_full() {
-        let mut rb = ReplayBuffer::new(2, 10);
-        rb.start_job(JobId(1));
-        rb.start_job(JobId(2));
-        rb.start_job(JobId(3)); // evicts JobId(1)
-        assert!(rb.events_for(JobId(1)).is_none());
-        assert!(rb.events_for(JobId(2)).is_some());
-        assert!(rb.events_for(JobId(3)).is_some());
-    }
-
-    #[test]
-    fn replay_buffer_caps_events_per_job() {
-        let mut rb = ReplayBuffer::new(4, 3);
-        rb.start_job(JobId(1));
-        for i in 0..5 {
-            rb.append(JobId(1), ev_stdout(JobId(1), &format!("line {i}")));
-        }
-        let events = rb.events_for(JobId(1)).expect("present");
-        assert_eq!(events.len(), 3);
-        // Oldest two were dropped; events 2,3,4 remain.
-        match &events[0] {
-            Event::Stdout { line, .. } => assert_eq!(line, "line 2"),
-            _ => panic!("expected Stdout"),
-        }
-    }
-
-    fn fake_queued(state: &DaemonState, priority: bool) -> QueuedJob {
-        QueuedJob {
-            job_id: state.allocate_job_id(),
-            kind: JobKind::Info,
-            request: Request::Info {
-                args: InfoParams { app: 1, format: Some(OutputFormat::Plain), os: None, show_all: false },
-                priority,
-            },
-            priority,
-            submitted_at: 0,
-            cancel: CancellationToken::new(),
-            args_summary: "fake".into(),
-        }
-    }
-
-    #[tokio::test]
-    async fn enqueue_returns_position_zero_for_empty_queue() {
-        let s = DaemonState::new(None, 1, 0);
-        let pos = s.enqueue(fake_queued(&s, false)).await;
-        assert_eq!(pos, 0);
-    }
-
-    #[tokio::test]
-    async fn priority_jumps_non_priority() {
-        let s = DaemonState::new(None, 1, 0);
-        let _ = s.enqueue(fake_queued(&s, false)).await;
-        let _ = s.enqueue(fake_queued(&s, false)).await;
-        let prio_pos = s.enqueue(fake_queued(&s, true)).await;
-        assert_eq!(prio_pos, 0, "first priority should land at the head");
-
-        let snap = s.snapshot().await;
-        let kinds: Vec<bool> = snap.queue.iter().map(|j| j.priority).collect();
-        assert_eq!(kinds, vec![true, false, false]);
-    }
-
-    #[tokio::test]
-    async fn cancel_queued_removes_and_emits_finished() {
-        let s = DaemonState::new(None, 1, 0);
-        let mut rx = s.events.subscribe();
-        let _ = s.enqueue(fake_queued(&s, false)).await;
-        let snap = s.snapshot().await;
-        let target = snap.queue[0].job_id;
-        s.cancel(target).await.expect("ok");
-        let mut saw_finished = false;
-        while let Ok(ev) = rx.try_recv() {
-            if let Event::JobFinished { job_id, exit_code } = ev {
-                assert_eq!(job_id, target);
-                assert_eq!(exit_code, 130);
-                saw_finished = true;
-            }
-        }
-        assert!(saw_finished, "expected JobFinished after cancel");
-    }
-
-    #[tokio::test]
-    async fn toggle_priority_moves_across_boundary() {
-        let s = DaemonState::new(None, 1, 0);
-        let _ = s.enqueue(fake_queued(&s, true)).await;
-        let _ = s.enqueue(fake_queued(&s, false)).await;
-        let target = s.snapshot().await.queue[1].job_id;
-        s.toggle_priority(target).await.expect("ok");
-        let kinds: Vec<bool> = s.snapshot().await.queue.iter().map(|j| j.priority).collect();
-        assert_eq!(kinds, vec![true, true]);
-    }
-
-    use tokio::io::duplex;
-
-    #[tokio::test]
-    async fn status_request_round_trips() {
-        let s = DaemonState::new(Some("acct".into()), 42, 1000);
-        let (mut client, server) = duplex(64 * 1024);
-        let server_state = s.clone();
-        let server_task = tokio::spawn(async move {
-            handle_connection(server_state, server).await;
-        });
-        crate::daemon::framing::write_frame(&mut client, &Frame::Request(Request::Status)).await.unwrap();
-        let resp = crate::daemon::framing::read_frame(&mut client).await.unwrap();
-        match resp {
-            Frame::Response(Response::Status(snap)) => {
-                assert_eq!(snap.daemon_pid, 42);
-                assert_eq!(snap.account.as_deref(), Some("acct"));
-            }
-            other => panic!("wrong: {other:?}"),
-        }
-        server_task.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn cancel_active_job_releases_active_lock_promptly() {
-        // Construct a DaemonState with a fake active job.
-        let s = DaemonState::new(None, 1, 0);
-        let active_cancel = CancellationToken::new();
-        let record = JobRecord {
-            job_id: JobId(99),
-            kind: JobKind::Info,
-            args_summary: "fake".into(),
-            priority: false,
-            submitted_at: 0,
-            started_at: Some(0),
-            finished_at: None,
-            exit_code: None,
-            progress: None,
-        };
-        *s.active.lock().await = Some(RunningJob { record, cancel: active_cancel.clone() });
-
-        // Cancel should return quickly (no lock held across the queue lock).
-        let res = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            s.cancel(JobId(99)),
-        ).await;
-        assert!(res.is_ok(), "cancel timed out -- deadlock?");
-        assert!(active_cancel.is_cancelled());
-    }
-}
-
 use crate::sink::JobSink;
-use steamroom::client::{LoggedIn, SteamClient};
+use steamroom::client::LoggedIn;
+use steamroom::client::SteamClient;
 
 /// Daemon-side JobSink that translates every call into an Event and
 /// broadcasts it. Cheap to construct per job.
@@ -466,17 +343,15 @@ pub struct BroadcastSink {
 
 impl JobSink for BroadcastSink {
     fn stdout_line(&self, line: &str) {
-        let _ = self.events.send(Event::Stdout { job_id: self.job_id, line: line.to_string() });
+        let _ = self.events.send(Event::Stdout {
+            job_id: self.job_id,
+            line: line.to_string(),
+        });
     }
     fn progress(&self, update: ProgressUpdate) {
-        let _ = self.events.send(Event::Progress { job_id: self.job_id, update });
-    }
-    fn log(&self, level: LogLevel, target: &str, message: &str) {
-        let _ = self.events.send(Event::Log {
-            job_id: Some(self.job_id),
-            level,
-            target: target.to_string(),
-            message: message.to_string(),
+        let _ = self.events.send(Event::Progress {
+            job_id: self.job_id,
+            update,
         });
     }
 }
@@ -516,7 +391,8 @@ fn unix_now() -> u64 {
 /// the SteamClient and force a fresh login on the next job.
 fn is_disconnected(err: &crate::errors::CliError) -> bool {
     use crate::errors::CliError;
-    use steamroom::error::{ConnectionError, Error as SteamError};
+    use steamroom::error::ConnectionError;
+    use steamroom::error::Error as SteamError;
 
     if matches!(
         err,
@@ -537,17 +413,17 @@ fn is_disconnected(err: &crate::errors::CliError) -> bool {
     // every subsequent job fails instead of reauthenticating.
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
     while let Some(e) = source {
-        if let Some(io) = e.downcast_ref::<std::io::Error>() {
-            if matches!(
+        if let Some(io) = e.downcast_ref::<std::io::Error>()
+            && matches!(
                 io.kind(),
                 std::io::ErrorKind::ConnectionReset
                     | std::io::ErrorKind::BrokenPipe
                     | std::io::ErrorKind::UnexpectedEof
                     | std::io::ErrorKind::NotConnected
                     | std::io::ErrorKind::ConnectionAborted
-            ) {
-                return true;
-            }
+            )
+        {
+            return true;
         }
         source = e.source();
     }
@@ -559,7 +435,9 @@ fn is_disconnected(err: &crate::errors::CliError) -> bool {
 /// --username foo`; None for fully-lazy daemons). Falls back to the
 /// user's saved-token detection and finally anonymous, mirroring direct
 /// mode's `connect_and_login`.
-async fn lazy_login(preferred_user: Option<&str>) -> Result<SteamClient<LoggedIn>, crate::errors::CliError> {
+async fn lazy_login(
+    preferred_user: Option<&str>,
+) -> Result<SteamClient<LoggedIn>, crate::errors::CliError> {
     use crate::cli::AuthOptions;
     let auth = AuthOptions {
         username: preferred_user.map(|s| s.to_string()),
@@ -584,7 +462,10 @@ pub async fn worker_loop(
     let mut client = initial_client;
     while let Some(job) = wait_for_next_job(&state).await {
         let started_at = unix_now();
-        let sink = BroadcastSink { job_id: job.job_id, events: state.events.clone() };
+        let sink = BroadcastSink {
+            job_id: job.job_id,
+            events: state.events.clone(),
+        };
         let record = JobRecord {
             job_id: job.job_id,
             kind: job.kind,
@@ -598,7 +479,10 @@ pub async fn worker_loop(
         };
         {
             let mut active = state.active.lock().await;
-            *active = Some(RunningJob { record: record.clone(), cancel: job.cancel.clone() });
+            *active = Some(RunningJob {
+                record: record.clone(),
+                cancel: job.cancel.clone(),
+            });
         }
         let _ = state.events.send(Event::JobStarted {
             job_id: job.job_id,
@@ -649,7 +533,10 @@ pub async fn worker_loop(
         use tracing::Instrument;
         let dispatch_fut = dispatch(job.request, active_client, sink.clone(), job.cancel.clone())
             .instrument(tracing::info_span!("job", job_id = job.job_id.0));
-        let dispatch_result = match std::panic::AssertUnwindSafe(dispatch_fut).catch_unwind().await {
+        let dispatch_result = match std::panic::AssertUnwindSafe(dispatch_fut)
+            .catch_unwind()
+            .await
+        {
             Ok(res) => res,
             Err(payload) => {
                 let msg = if let Some(s) = payload.downcast_ref::<&str>() {
@@ -665,7 +552,9 @@ pub async fn worker_loop(
                     target: "daemon::worker".into(),
                     message: format!("job panicked: {msg}"),
                 });
-                Err(crate::errors::CliError::Io(std::io::Error::other("job panicked")))
+                Err(crate::errors::CliError::Io(std::io::Error::other(
+                    "job panicked",
+                )))
             }
         };
         let exit_code = match dispatch_result {
@@ -701,7 +590,10 @@ pub async fn worker_loop(
         finished.finished_at = Some(unix_now());
         finished.exit_code = Some(exit_code);
         state.recent.lock().await.push(finished);
-        let _ = state.events.send(Event::JobFinished { job_id: job.job_id, exit_code });
+        let _ = state.events.send(Event::JobFinished {
+            job_id: job.job_id,
+            exit_code,
+        });
         // active cleared, recent grew -- refresh subscribed clients.
         state.broadcast_snapshot().await;
     }
@@ -761,10 +653,14 @@ async fn dispatch(
     }
 }
 
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
 
-use crate::daemon::framing::{read_frame, write_frame};
-use crate::daemon::proto::{ErrorKind, Frame, Response};
+use crate::daemon::framing::read_frame;
+use crate::daemon::framing::write_frame;
+use crate::daemon::proto::ErrorKind;
+use crate::daemon::proto::Frame;
+use crate::daemon::proto::Response;
 
 /// Handle a single client connection. Reads exactly one Request, then
 /// either replies with a single Response and closes (control RPCs), or
@@ -777,17 +673,25 @@ where
     let req = match read_frame(&mut stream).await {
         Ok(Frame::Request(r)) => r,
         Ok(other) => {
-            let _ = write_frame(&mut stream, &Frame::Response(Response::Error {
-                kind: ErrorKind::InvalidRequest,
-                message: format!("expected Request, got {other:?}"),
-            })).await;
+            let _ = write_frame(
+                &mut stream,
+                &Frame::Response(Response::Error {
+                    kind: ErrorKind::InvalidRequest,
+                    message: format!("expected Request, got {other:?}"),
+                }),
+            )
+            .await;
             return;
         }
         Err(e) => {
-            let _ = write_frame(&mut stream, &Frame::Response(Response::Error {
-                kind: ErrorKind::InvalidRequest,
-                message: e.to_string(),
-            })).await;
+            let _ = write_frame(
+                &mut stream,
+                &Frame::Response(Response::Error {
+                    kind: ErrorKind::InvalidRequest,
+                    message: e.to_string(),
+                }),
+            )
+            .await;
             return;
         }
     };
@@ -798,8 +702,8 @@ where
             let _ = write_frame(&mut stream, &Frame::Response(Response::Status(snap))).await;
         }
         Request::Stop { force } => {
-            state.accepting.cancel();           // refuse new submissions
-            state.queue_notify.notify_one();    // unstick worker if idle
+            state.accepting.cancel(); // refuse new submissions
+            state.queue_notify.notify_one(); // unstick worker if idle
             if force {
                 // Hard stop: cancel active job and tell all subscribers.
                 if let Some(running) = state.active.lock().await.as_ref() {
@@ -839,14 +743,20 @@ where
         Request::Cancel { job_id } => {
             let resp = match state.cancel(job_id).await {
                 Ok(()) => Response::Ack,
-                Err(_) => Response::Error { kind: ErrorKind::JobNotFound, message: format!("{job_id}") },
+                Err(_) => Response::Error {
+                    kind: ErrorKind::JobNotFound,
+                    message: format!("{job_id}"),
+                },
             };
             let _ = write_frame(&mut stream, &Frame::Response(resp)).await;
         }
         Request::TogglePriority { job_id } => {
             let resp = match state.toggle_priority(job_id).await {
                 Ok(()) => Response::Ack,
-                Err(_) => Response::Error { kind: ErrorKind::JobNotFound, message: format!("{job_id}") },
+                Err(_) => Response::Error {
+                    kind: ErrorKind::JobNotFound,
+                    message: format!("{job_id}"),
+                },
             };
             let _ = write_frame(&mut stream, &Frame::Response(resp)).await;
         }
@@ -855,8 +765,13 @@ where
             stream_events(state.clone(), &mut stream, None, rx).await;
         }
         Request::Attach { job_id } => {
-            let active_match = state.active.lock().await.as_ref()
-                .map(|r| r.record.job_id == job_id).unwrap_or(false);
+            let active_match = state
+                .active
+                .lock()
+                .await
+                .as_ref()
+                .map(|r| r.record.job_id == job_id)
+                .unwrap_or(false);
             let queued = state.queue.lock().await.iter().any(|j| j.job_id == job_id);
 
             if !active_match && !queued {
@@ -874,10 +789,14 @@ where
                     }
                     let _ = write_frame(&mut stream, &Frame::EndOfStream { exit_code }).await;
                 } else {
-                    let _ = write_frame(&mut stream, &Frame::Response(Response::Error {
-                        kind: ErrorKind::JobNotFound,
-                        message: format!("{job_id}"),
-                    })).await;
+                    let _ = write_frame(
+                        &mut stream,
+                        &Frame::Response(Response::Error {
+                            kind: ErrorKind::JobNotFound,
+                            message: format!("{job_id}"),
+                        }),
+                    )
+                    .await;
                 }
                 return;
             }
@@ -896,16 +815,18 @@ where
         }
         // Job submissions.
         other => {
-            let priority = matches!(&other,
+            let priority = matches!(
+                &other,
                 Request::Download { priority: true, .. }
-                | Request::Info { priority: true, .. }
-                | Request::Files { priority: true, .. }
-                | Request::Manifests { priority: true, .. }
-                | Request::Diff { priority: true, .. }
-                | Request::Packages { priority: true, .. }
-                | Request::SaveManifest { priority: true, .. }
-                | Request::Workshop { priority: true, .. }
-                | Request::LocalInfo { priority: true, .. });
+                    | Request::Info { priority: true, .. }
+                    | Request::Files { priority: true, .. }
+                    | Request::Manifests { priority: true, .. }
+                    | Request::Diff { priority: true, .. }
+                    | Request::Packages { priority: true, .. }
+                    | Request::SaveManifest { priority: true, .. }
+                    | Request::Workshop { priority: true, .. }
+                    | Request::LocalInfo { priority: true, .. }
+            );
             let kind = job_kind_of(&other);
             let args_summary = summarize(&other);
             let job_id = state.allocate_job_id();
@@ -922,7 +843,11 @@ where
             // Subscribe BEFORE enqueue so we don't miss JobStarted.
             let rx = state.events.subscribe();
             let position = state.enqueue(job).await;
-            let _ = write_frame(&mut stream, &Frame::Response(Response::JobAccepted { job_id, position })).await;
+            let _ = write_frame(
+                &mut stream,
+                &Frame::Response(Response::JobAccepted { job_id, position }),
+            )
+            .await;
             stream_events(state.clone(), &mut stream, Some(job_id), rx).await;
         }
     }
@@ -933,8 +858,7 @@ async fn stream_events<S>(
     stream: &mut S,
     filter: Option<JobId>,
     mut rx: tokio::sync::broadcast::Receiver<Event>,
-)
-where
+) where
     S: AsyncWrite + Unpin,
 {
     loop {
@@ -1001,15 +925,193 @@ fn job_kind_of(r: &Request) -> JobKind {
 
 fn summarize(r: &Request) -> String {
     match r {
-        Request::Download { args, .. } => format!("download app={} depot={:?}", args.app, args.depot),
+        Request::Download { args, .. } => {
+            format!("download app={} depot={:?}", args.app, args.depot)
+        }
         Request::Info { args, .. } => format!("info app={}", args.app),
         Request::Files { args, .. } => format!("files app={:?}", args.app),
         Request::Manifests { args, .. } => format!("manifests app={}", args.app),
-        Request::Diff { args, .. } => format!("diff depot={} from={} to={}", args.depot, args.from, args.to),
+        Request::Diff { args, .. } => format!(
+            "diff depot={} from={} to={}",
+            args.depot, args.from, args.to
+        ),
         Request::Packages { args, .. } => format!("packages count={}", args.packages.len()),
-        Request::SaveManifest { args, .. } => format!("save-manifest app={} depot={}", args.app, args.depot),
+        Request::SaveManifest { args, .. } => {
+            format!("save-manifest app={} depot={}", args.app, args.depot)
+        }
         Request::Workshop { args, .. } => format!("workshop item={}", args.item),
         Request::LocalInfo { .. } => "local-info".to_string(),
         _ => "(control)".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::proto::InfoParams;
+    use crate::daemon::proto::OutputFormat;
+
+    fn ev_stdout(job_id: JobId, line: &str) -> Event {
+        Event::Stdout {
+            job_id,
+            line: line.into(),
+        }
+    }
+
+    #[test]
+    fn replay_buffer_evicts_oldest_job_when_full() {
+        let mut rb = ReplayBuffer::new(2, 10);
+        rb.start_job(JobId(1));
+        rb.start_job(JobId(2));
+        rb.start_job(JobId(3)); // evicts JobId(1)
+        assert!(rb.events_for(JobId(1)).is_none());
+        assert!(rb.events_for(JobId(2)).is_some());
+        assert!(rb.events_for(JobId(3)).is_some());
+    }
+
+    #[test]
+    fn replay_buffer_caps_events_per_job() {
+        let mut rb = ReplayBuffer::new(4, 3);
+        rb.start_job(JobId(1));
+        for i in 0..5 {
+            rb.append(JobId(1), ev_stdout(JobId(1), &format!("line {i}")));
+        }
+        let events = rb.events_for(JobId(1)).expect("present");
+        assert_eq!(events.len(), 3);
+        // Oldest two were dropped; events 2,3,4 remain.
+        match &events[0] {
+            Event::Stdout { line, .. } => assert_eq!(line, "line 2"),
+            _ => panic!("expected Stdout"),
+        }
+    }
+
+    fn fake_queued(state: &DaemonState, priority: bool) -> QueuedJob {
+        QueuedJob {
+            job_id: state.allocate_job_id(),
+            kind: JobKind::Info,
+            request: Request::Info {
+                args: InfoParams {
+                    app: 1,
+                    format: Some(OutputFormat::Plain),
+                    os: None,
+                    show_all: false,
+                },
+                priority,
+            },
+            priority,
+            submitted_at: 0,
+            cancel: CancellationToken::new(),
+            args_summary: "fake".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_returns_position_zero_for_empty_queue() {
+        let s = DaemonState::new(None, 1, 0);
+        let pos = s.enqueue(fake_queued(&s, false)).await;
+        assert_eq!(pos, 0);
+    }
+
+    #[tokio::test]
+    async fn priority_jumps_non_priority() {
+        let s = DaemonState::new(None, 1, 0);
+        let _ = s.enqueue(fake_queued(&s, false)).await;
+        let _ = s.enqueue(fake_queued(&s, false)).await;
+        let prio_pos = s.enqueue(fake_queued(&s, true)).await;
+        assert_eq!(prio_pos, 0, "first priority should land at the head");
+
+        let snap = s.snapshot().await;
+        let kinds: Vec<bool> = snap.queue.iter().map(|j| j.priority).collect();
+        assert_eq!(kinds, vec![true, false, false]);
+    }
+
+    #[tokio::test]
+    async fn cancel_queued_removes_and_emits_finished() {
+        let s = DaemonState::new(None, 1, 0);
+        let mut rx = s.events.subscribe();
+        let _ = s.enqueue(fake_queued(&s, false)).await;
+        let snap = s.snapshot().await;
+        let target = snap.queue[0].job_id;
+        s.cancel(target).await.expect("ok");
+        let mut saw_finished = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let Event::JobFinished { job_id, exit_code } = ev {
+                assert_eq!(job_id, target);
+                assert_eq!(exit_code, 130);
+                saw_finished = true;
+            }
+        }
+        assert!(saw_finished, "expected JobFinished after cancel");
+    }
+
+    #[tokio::test]
+    async fn toggle_priority_moves_across_boundary() {
+        let s = DaemonState::new(None, 1, 0);
+        let _ = s.enqueue(fake_queued(&s, true)).await;
+        let _ = s.enqueue(fake_queued(&s, false)).await;
+        let target = s.snapshot().await.queue[1].job_id;
+        s.toggle_priority(target).await.expect("ok");
+        let kinds: Vec<bool> = s
+            .snapshot()
+            .await
+            .queue
+            .iter()
+            .map(|j| j.priority)
+            .collect();
+        assert_eq!(kinds, vec![true, true]);
+    }
+
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn status_request_round_trips() {
+        let s = DaemonState::new(Some("acct".into()), 42, 1000);
+        let (mut client, server) = duplex(64 * 1024);
+        let server_state = s.clone();
+        let server_task = tokio::spawn(async move {
+            handle_connection(server_state, server).await;
+        });
+        crate::daemon::framing::write_frame(&mut client, &Frame::Request(Request::Status))
+            .await
+            .unwrap();
+        let resp = crate::daemon::framing::read_frame(&mut client)
+            .await
+            .unwrap();
+        match resp {
+            Frame::Response(Response::Status(snap)) => {
+                assert_eq!(snap.daemon_pid, 42);
+                assert_eq!(snap.account.as_deref(), Some("acct"));
+            }
+            other => panic!("wrong: {other:?}"),
+        }
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_active_job_releases_active_lock_promptly() {
+        // Construct a DaemonState with a fake active job.
+        let s = DaemonState::new(None, 1, 0);
+        let active_cancel = CancellationToken::new();
+        let record = JobRecord {
+            job_id: JobId(99),
+            kind: JobKind::Info,
+            args_summary: "fake".into(),
+            priority: false,
+            submitted_at: 0,
+            started_at: Some(0),
+            finished_at: None,
+            exit_code: None,
+            progress: None,
+        };
+        *s.active.lock().await = Some(RunningJob {
+            record,
+            cancel: active_cancel.clone(),
+        });
+
+        // Cancel should return quickly (no lock held across the queue lock).
+        let res =
+            tokio::time::timeout(std::time::Duration::from_millis(100), s.cancel(JobId(99))).await;
+        assert!(res.is_ok(), "cancel timed out -- deadlock?");
+        assert!(active_cancel.is_cancelled());
     }
 }

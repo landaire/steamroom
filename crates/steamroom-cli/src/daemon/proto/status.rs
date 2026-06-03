@@ -1,5 +1,9 @@
-use rkyv::{Archive, Deserialize, Serialize};
-use super::{JobId, JobKind, ProgressUpdate};
+use super::JobId;
+use super::JobKind;
+use super::ProgressUpdate;
+use rkyv::Archive;
+use rkyv::Deserialize;
+use rkyv::Serialize;
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[rkyv(derive(Debug))]

@@ -9,10 +9,13 @@
 //! The version is checked before deserialization so mismatched daemons
 //! and clients fail with a clear error rather than rkyv validation noise.
 
-use rkyv::{rancor, util::AlignedVec};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use rkyv::rancor;
+use rkyv::util::AlignedVec;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 
-use crate::daemon::proto::{Frame, PROTO_VERSION};
+use crate::daemon::proto::Frame;
+use crate::daemon::proto::PROTO_VERSION;
 use crate::errors::CliError;
 
 pub const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
@@ -47,8 +50,12 @@ where
     }
     // len_usize <= MAX_FRAME_BYTES (u32-sized), so the cast is lossless.
     let len: u32 = len_usize as u32;
-    w.write_all(&PROTO_VERSION.to_le_bytes()).await.map_err(CliError::Io)?;
-    w.write_all(&len.to_le_bytes()).await.map_err(CliError::Io)?;
+    w.write_all(&PROTO_VERSION.to_le_bytes())
+        .await
+        .map_err(CliError::Io)?;
+    w.write_all(&len.to_le_bytes())
+        .await
+        .map_err(CliError::Io)?;
     w.write_all(&bytes).await.map_err(CliError::Io)?;
     w.flush().await.map_err(CliError::Io)?;
     Ok(())
@@ -72,7 +79,10 @@ where
     read_exact_or_closed(r, &mut ver_buf).await?;
     let peer = u16::from_le_bytes(ver_buf);
     if peer != PROTO_VERSION {
-        return Err(CliError::ProtocolVersionMismatch { peer, ours: PROTO_VERSION });
+        return Err(CliError::ProtocolVersionMismatch {
+            peer,
+            ours: PROTO_VERSION,
+        });
     }
 
     let mut len_buf = [0u8; 4];
@@ -96,7 +106,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::proto::{Event, JobId, LogLevel, Response};
+    use crate::daemon::proto::Event;
+    use crate::daemon::proto::JobId;
+    use crate::daemon::proto::LogLevel;
+    use crate::daemon::proto::Response;
     use tokio::io::duplex;
 
     #[tokio::test]
@@ -130,7 +143,9 @@ mod tests {
     async fn rejects_oversized_length() {
         let (mut a, mut b) = duplex(64);
         a.write_all(&PROTO_VERSION.to_le_bytes()).await.unwrap();
-        a.write_all(&(MAX_FRAME_BYTES + 1).to_le_bytes()).await.unwrap();
+        a.write_all(&(MAX_FRAME_BYTES + 1).to_le_bytes())
+            .await
+            .unwrap();
         a.flush().await.unwrap();
         let err = read_frame(&mut b).await.unwrap_err();
         assert!(matches!(err, CliError::FrameTooLarge { .. }));

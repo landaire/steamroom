@@ -5,16 +5,28 @@
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::traits::tokio::Stream as _;
 
-use crate::cli::{Cli, DaemonSub, OutputFormat as CliOutputFormat};
-use crate::daemon::framing::{read_frame, write_frame};
+use crate::cli::Cli;
+use crate::cli::DaemonSub;
+use crate::cli::OutputFormat as CliOutputFormat;
+use crate::daemon::framing::read_frame;
+use crate::daemon::framing::write_frame;
 use crate::daemon::ipc::socket_name;
-use crate::daemon::proto::{Event, Frame, JobId, JobRecord, LogLevel, Request, Response, StatusSnapshot};
+use crate::daemon::proto::Event;
+use crate::daemon::proto::Frame;
+use crate::daemon::proto::JobId;
+use crate::daemon::proto::JobRecord;
+use crate::daemon::proto::LogLevel;
+use crate::daemon::proto::Request;
+use crate::daemon::proto::Response;
+use crate::daemon::proto::StatusSnapshot;
 use crate::errors::CliError;
 
 pub async fn connect() -> Result<Stream, CliError> {
     let name = socket_name()?;
     Stream::connect(name).await.map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => CliError::NoDaemonRunning,
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+            CliError::NoDaemonRunning
+        }
         _ => CliError::Io(e),
     })
 }
@@ -41,7 +53,11 @@ pub async fn dispatch_use_daemon(cli: Cli) -> Result<(), CliError> {
         Frame::Response(Response::Error { kind, message }) => {
             return Err(CliError::DaemonError(format!("{kind:?}: {message}")));
         }
-        other => return Err(CliError::MalformedFrame(format!("expected JobAccepted, got {other:?}"))),
+        other => {
+            return Err(CliError::MalformedFrame(format!(
+                "expected JobAccepted, got {other:?}"
+            )));
+        }
     };
 
     if detach {
@@ -65,7 +81,11 @@ struct AttachRenderer {
 
 impl AttachRenderer {
     fn new(quiet: bool, no_progress: bool) -> Self {
-        Self { bar: None, quiet, no_progress }
+        Self {
+            bar: None,
+            quiet,
+            no_progress,
+        }
     }
 
     fn handle(&mut self, ev: Event) {
@@ -75,7 +95,12 @@ impl AttachRenderer {
                     println!("{line}");
                 }
             }
-            Event::Log { level, target, message, .. } => emit_log(level, &target, &message),
+            Event::Log {
+                level,
+                target,
+                message,
+                ..
+            } => emit_log(level, &target, &message),
             Event::Progress { update, .. } => {
                 if self.no_progress {
                     return;
@@ -208,7 +233,9 @@ async fn stop_daemon(force: bool) -> Result<(), CliError> {
         Frame::Response(Response::Error { kind, message }) => {
             Err(CliError::DaemonError(format!("{kind:?}: {message}")))
         }
-        other => Err(CliError::MalformedFrame(format!("expected Stopping, got {other:?}"))),
+        other => Err(CliError::MalformedFrame(format!(
+            "expected Stopping, got {other:?}"
+        ))),
     }
 }
 
@@ -227,7 +254,11 @@ async fn print_status_once(format: Option<CliOutputFormat>) -> Result<(), CliErr
         Frame::Response(Response::Error { kind, message }) => {
             return Err(CliError::DaemonError(format!("{kind:?}: {message}")));
         }
-        other => return Err(CliError::MalformedFrame(format!("expected Status, got {other:?}"))),
+        other => {
+            return Err(CliError::MalformedFrame(format!(
+                "expected Status, got {other:?}"
+            )));
+        }
     };
     match format {
         Some(CliOutputFormat::Json) => print_status_json(&snap),
@@ -245,7 +276,10 @@ fn print_status_json(snap: &StatusSnapshot) {
         "queue": snap.queue.iter().map(record_to_json).collect::<Vec<_>>(),
         "recent": snap.recent.iter().map(record_to_json).collect::<Vec<_>>(),
     });
-    println!("{}", serde_json::to_string_pretty(&json).expect("snapshot is JSON-clean"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json).expect("snapshot is JSON-clean")
+    );
 }
 
 fn record_to_json(r: &JobRecord) -> serde_json::Value {
@@ -263,12 +297,18 @@ fn record_to_json(r: &JobRecord) -> serde_json::Value {
 
 fn print_status_table(snap: &StatusSnapshot) {
     println!("daemon pid : {}", snap.daemon_pid);
-    println!("account    : {}", snap.account.as_deref().unwrap_or("(none)"));
+    println!(
+        "account    : {}",
+        snap.account.as_deref().unwrap_or("(none)")
+    );
     println!();
     match &snap.active {
         Some(active) => {
             println!("Active:");
-            println!("  {} ({:?}) {}", active.job_id, active.kind, active.args_summary);
+            println!(
+                "  {} ({:?}) {}",
+                active.job_id, active.kind, active.args_summary
+            );
         }
         None => println!("Active: (idle)"),
     }

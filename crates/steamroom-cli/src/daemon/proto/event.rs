@@ -1,16 +1,41 @@
-use rkyv::{Archive, Deserialize, Serialize};
+use super::JobId;
+use super::JobKind;
+use super::LogLevel;
+use super::ProgressUpdate;
 use super::status::StatusSnapshot;
-use super::{JobId, JobKind, LogLevel, ProgressUpdate};
+use rkyv::Archive;
+use rkyv::Deserialize;
+use rkyv::Serialize;
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 #[rkyv(derive(Debug))]
 pub enum Event {
-    JobStarted { job_id: JobId, kind: JobKind, args_summary: String },
-    JobFinished { job_id: JobId, exit_code: i32 },
-    Log { job_id: Option<JobId>, level: LogLevel, target: String, message: String },
-    Progress { job_id: JobId, update: ProgressUpdate },
-    Stdout { job_id: JobId, line: String },
-    QueueChanged { snapshot: StatusSnapshot },
+    JobStarted {
+        job_id: JobId,
+        kind: JobKind,
+        args_summary: String,
+    },
+    JobFinished {
+        job_id: JobId,
+        exit_code: i32,
+    },
+    Log {
+        job_id: Option<JobId>,
+        level: LogLevel,
+        target: String,
+        message: String,
+    },
+    Progress {
+        job_id: JobId,
+        update: ProgressUpdate,
+    },
+    Stdout {
+        job_id: JobId,
+        line: String,
+    },
+    QueueChanged {
+        snapshot: StatusSnapshot,
+    },
 }
 
 impl Event {

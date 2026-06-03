@@ -70,7 +70,9 @@ pub enum CliError {
     #[error("Steam returned no CDN servers")]
     NoCdnServers,
 
-    #[error("--use-daemon: {0} are not supported via the daemon; pass them to --daemon at launch instead")]
+    #[error(
+        "--use-daemon: {0} are not supported via the daemon; pass them to --daemon at launch instead"
+    )]
     DaemonRejectedFlag(&'static str),
 
     #[error("--priority is only valid with --use-daemon")]
@@ -82,7 +84,9 @@ pub enum CliError {
     #[error("--daemon and --use-daemon are mutually exclusive")]
     DaemonModeConflict,
 
-    #[error("daemon RPC: incompatible wire-protocol version (peer={peer}, ours={ours}); restart the daemon")]
+    #[error(
+        "daemon RPC: incompatible wire-protocol version (peer={peer}, ours={ours}); restart the daemon"
+    )]
     ProtocolVersionMismatch { peer: u16, ours: u16 },
 
     #[error("daemon RPC: frame exceeds {limit_bytes} byte cap (got {len_bytes})")]

@@ -2,8 +2,10 @@
 //! These are rkyv-archivable: `PathBuf` becomes `String`, `Regex` becomes
 //! a raw pattern string, clap enums become their wire mirrors.
 
-use rkyv::{Archive, Deserialize, Serialize};
 use super::OutputFormat;
+use rkyv::Archive;
+use rkyv::Deserialize;
+use rkyv::Serialize;
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 #[rkyv(derive(Debug))]
@@ -135,7 +137,9 @@ impl From<crate::cli::DownloadArgs> for DownloadParams {
             all_languages: a.all_languages,
             lancache: a.lancache,
             // Saturate at u32::MAX: real CDN parallelism caps are far below this.
-            max_downloads: a.max_downloads.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+            max_downloads: a
+                .max_downloads
+                .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
             branch: a.branch,
             branch_password: a.branch_password,
             local_keys: a.local_keys,
@@ -148,7 +152,12 @@ impl From<crate::cli::DownloadArgs> for DownloadParams {
 
 impl From<crate::cli::InfoArgs> for InfoParams {
     fn from(a: crate::cli::InfoArgs) -> Self {
-        Self { app: a.app, format: a.format.map(Into::into), os: a.os, show_all: a.show_all }
+        Self {
+            app: a.app,
+            format: a.format.map(Into::into),
+            os: a.os,
+            show_all: a.show_all,
+        }
     }
 }
 
@@ -196,7 +205,10 @@ impl From<crate::cli::DiffArgs> for DiffParams {
 
 impl From<crate::cli::PackagesArgs> for PackagesParams {
     fn from(a: crate::cli::PackagesArgs) -> Self {
-        Self { packages: a.packages, format: a.format.map(Into::into) }
+        Self {
+            packages: a.packages,
+            format: a.format.map(Into::into),
+        }
     }
 }
 
@@ -214,13 +226,21 @@ impl From<crate::cli::SaveManifestArgs> for SaveManifestParams {
 
 impl From<crate::cli::WorkshopArgs> for WorkshopParams {
     fn from(a: crate::cli::WorkshopArgs) -> Self {
-        Self { app: a.app, item: a.item, output: a.output.map(pathbuf_to_string) }
+        Self {
+            app: a.app,
+            item: a.item,
+            output: a.output.map(pathbuf_to_string),
+        }
     }
 }
 
 impl From<crate::cli::LocalInfoArgs> for LocalInfoParams {
     fn from(a: crate::cli::LocalInfoArgs) -> Self {
-        Self { format: a.format.map(Into::into), user: a.user, users: a.users }
+        Self {
+            format: a.format.map(Into::into),
+            user: a.user,
+            users: a.users,
+        }
     }
 }
 
@@ -389,7 +409,10 @@ mod tests {
 
     #[test]
     fn packages_params_round_trip_with_vec() {
-        let p = PackagesParams { packages: vec![1, 2, 3], format: Some(OutputFormat::Json) };
+        let p = PackagesParams {
+            packages: vec![1, 2, 3],
+            format: Some(OutputFormat::Json),
+        };
         let bytes = rkyv::to_bytes::<rancor::Error>(&p).unwrap();
         let back = rkyv::from_bytes::<PackagesParams, rancor::Error>(&bytes).unwrap();
         assert_eq!(back.packages, vec![1, 2, 3]);

@@ -1,6 +1,8 @@
-use rkyv::{Archive, Deserialize, Serialize};
-use super::status::StatusSnapshot;
 use super::JobId;
+use super::status::StatusSnapshot;
+use rkyv::Archive;
+use rkyv::Deserialize;
+use rkyv::Serialize;
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[rkyv(derive(Debug))]

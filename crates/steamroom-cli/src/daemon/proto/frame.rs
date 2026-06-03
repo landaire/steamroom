@@ -1,5 +1,9 @@
-use rkyv::{Archive, Deserialize, Serialize};
-use super::{Event, Request, Response};
+use super::Event;
+use super::Request;
+use super::Response;
+use rkyv::Archive;
+use rkyv::Deserialize;
+use rkyv::Serialize;
 
 /// The single rkyv-archived top-level type that flows over the socket.
 /// Length-prefixed framing wraps these (see `daemon::framing`).
@@ -11,7 +15,9 @@ pub enum Frame {
     Event(Event),
     /// Closes a streaming reply. `exit_code` is the process-style exit
     /// code the attached CLI should propagate to its own caller.
-    EndOfStream { exit_code: i32 },
+    EndOfStream {
+        exit_code: i32,
+    },
 }
 
 /// Wire-format version. Bump on any breaking change to a `*Params`,

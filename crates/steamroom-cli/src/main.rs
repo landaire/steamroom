@@ -72,14 +72,18 @@ fn main() {
         report_and_exit(result, false);
     }
 
-    let interactive =
-        !cli.non_interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let interactive = !cli.non_interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
 
     // `daemon start`: authenticate in the foreground (tokio is allowed
     // here), then drop the runtime fully before forking. Tokio worker
     // threads holding glibc locks at fork() would deadlock the post-fork
     // process, so the runtime must be torn down first.
-    if matches!(cli.command, Command::Daemon(DaemonArgs { command: DaemonSub::Start })) {
+    if matches!(
+        cli.command,
+        Command::Daemon(DaemonArgs {
+            command: DaemonSub::Start
+        })
+    ) {
         commands::shared::init_interactive(interactive);
         let rt = build_runtime();
         let auth_result =
@@ -98,8 +102,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        match daemon::lifecycle::detach_and_exec_resume(&username, &daemon::lifecycle::log_path())
-        {
+        match daemon::lifecycle::detach_and_exec_resume(&username, &daemon::lifecycle::log_path()) {
             Ok(()) => std::process::exit(0),
             Err(e) => {
                 eprintln!("Error: {e}");

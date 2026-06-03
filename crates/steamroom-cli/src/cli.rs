@@ -575,7 +575,12 @@ impl Cli {
         // `daemon start` and `--use-daemon` together are nonsensical:
         // start launches a daemon, --use-daemon talks to one.
         if self.use_daemon
-            && matches!(self.command, Command::Daemon(DaemonArgs { command: DaemonSub::Start }))
+            && matches!(
+                self.command,
+                Command::Daemon(DaemonArgs {
+                    command: DaemonSub::Start
+                })
+            )
         {
             return Err(CliError::DaemonModeConflict);
         }

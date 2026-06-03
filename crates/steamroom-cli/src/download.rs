@@ -25,7 +25,10 @@ pub fn spawn_progress_renderer(
     })
 }
 
-async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, sink: Option<Arc<dyn JobSink>>) {
+async fn run_with_bars(
+    rx: &mut mpsc::UnboundedReceiver<DownloadEvent>,
+    sink: Option<Arc<dyn JobSink>>,
+) {
     let mp = MultiProgress::new();
 
     let total_bar = mp.add(ProgressBar::hidden());
@@ -73,7 +76,11 @@ async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, sink: Op
                 file_bar.set_message(filename);
                 if let Some(ref s) = sink {
                     let elapsed = start_time.elapsed().as_secs_f64();
-                    let rate = if elapsed > 0.0 { bytes_done as f64 / elapsed } else { 0.0 };
+                    let rate = if elapsed > 0.0 {
+                        bytes_done as f64 / elapsed
+                    } else {
+                        0.0
+                    };
                     let remaining = bytes_total.saturating_sub(bytes_done) as f64;
                     let eta = if rate > 0.0 { remaining / rate } else { 0.0 };
                     s.progress(ProgressUpdate {
@@ -98,7 +105,11 @@ async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, sink: Op
                     let now = Instant::now();
                     if now.duration_since(last_sink_send) >= std::time::Duration::from_millis(100) {
                         let elapsed = start_time.elapsed().as_secs_f64();
-                        let rate = if elapsed > 0.0 { bytes_done as f64 / elapsed } else { 0.0 };
+                        let rate = if elapsed > 0.0 {
+                            bytes_done as f64 / elapsed
+                        } else {
+                            0.0
+                        };
                         let remaining = bytes_total.saturating_sub(bytes_done) as f64;
                         let eta = if rate > 0.0 { remaining / rate } else { 0.0 };
                         s.progress(ProgressUpdate {
@@ -125,7 +136,10 @@ async fn run_with_bars(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, sink: Op
     file_bar.finish_and_clear();
 }
 
-async fn run_quiet(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, sink: Option<Arc<dyn JobSink>>) {
+async fn run_quiet(
+    rx: &mut mpsc::UnboundedReceiver<DownloadEvent>,
+    sink: Option<Arc<dyn JobSink>>,
+) {
     let start_time = Instant::now();
     let mut bytes_done: u64 = 0;
     let mut bytes_total: u64 = 0;
@@ -135,7 +149,10 @@ async fn run_quiet(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, sink: Option
 
     while let Some(event) = rx.recv().await {
         match event {
-            DownloadEvent::DownloadStarted { total_bytes, total_files } => {
+            DownloadEvent::DownloadStarted {
+                total_bytes,
+                total_files,
+            } => {
                 bytes_total = total_bytes;
                 files_total = total_files as u32;
             }
@@ -149,7 +166,11 @@ async fn run_quiet(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, sink: Option
                 tracing::info!("[{pct:.1}%] {filename}");
                 if let Some(ref s) = sink {
                     let elapsed = start_time.elapsed().as_secs_f64();
-                    let rate = if elapsed > 0.0 { bytes_done as f64 / elapsed } else { 0.0 };
+                    let rate = if elapsed > 0.0 {
+                        bytes_done as f64 / elapsed
+                    } else {
+                        0.0
+                    };
                     let remaining = bytes_total.saturating_sub(bytes_done) as f64;
                     let eta = if rate > 0.0 { remaining / rate } else { 0.0 };
                     s.progress(ProgressUpdate {
@@ -169,7 +190,11 @@ async fn run_quiet(rx: &mut mpsc::UnboundedReceiver<DownloadEvent>, sink: Option
                     let now = Instant::now();
                     if now.duration_since(last_sink_send) >= std::time::Duration::from_millis(100) {
                         let elapsed = start_time.elapsed().as_secs_f64();
-                        let rate = if elapsed > 0.0 { bytes_done as f64 / elapsed } else { 0.0 };
+                        let rate = if elapsed > 0.0 {
+                            bytes_done as f64 / elapsed
+                        } else {
+                            0.0
+                        };
                         let remaining = bytes_total.saturating_sub(bytes_done) as f64;
                         let eta = if rate > 0.0 { remaining / rate } else { 0.0 };
                         s.progress(ProgressUpdate {

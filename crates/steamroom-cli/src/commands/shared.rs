@@ -39,8 +39,12 @@ pub fn is_interactive() -> bool {
 
 /// Crates whose tracing output is first-party. Everything else is
 /// silenced by [`log_filter`] unless `RUST_LOG` opts it back in.
-const FIRST_PARTY_CRATES: [&str; 4] =
-    ["steamroom", "steamroom_client", "steamroom_ffi", "steamroom_cli"];
+const FIRST_PARTY_CRATES: [&str; 4] = [
+    "steamroom",
+    "steamroom_client",
+    "steamroom_ffi",
+    "steamroom_cli",
+];
 
 /// Build the tracing filter layer. When `RUST_LOG` is set it is honored
 /// verbatim; otherwise logging is restricted to the first-party crates at

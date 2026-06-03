@@ -10,10 +10,10 @@
 //! waits on a pipe for the resumed child to report its PID, prints the
 //! info block, and exits 0.
 
-use std::path::PathBuf;
-use crate::errors::CliError;
 use crate::daemon::ipc::socket_name_string;
 use crate::daemon::server::DaemonState;
+use crate::errors::CliError;
+use std::path::PathBuf;
 
 /// PID file and log file live in a stable per-user cache dir so they
 /// can be found from any shell. `$TMPDIR` on macOS is session-specific
@@ -45,9 +45,13 @@ pub fn pid_file_path() -> PathBuf {
 }
 
 #[cfg(unix)]
-fn unix_uid() -> u32 { unsafe { libc::getuid() } }
+fn unix_uid() -> u32 {
+    unsafe { libc::getuid() }
+}
 #[cfg(not(unix))]
-fn unix_uid() -> u32 { 0 }
+fn unix_uid() -> u32 {
+    0
+}
 
 pub fn write_pid_file(pid: u32) -> Result<(), CliError> {
     let path = pid_file_path();
@@ -59,7 +63,9 @@ pub fn write_pid_file(pid: u32) -> Result<(), CliError> {
 
 pub fn read_pid_file() -> Result<u32, CliError> {
     let data = std::fs::read_to_string(pid_file_path()).map_err(CliError::Io)?;
-    data.trim().parse::<u32>().map_err(|e| CliError::MalformedFrame(format!("pid file: {e}")))
+    data.trim()
+        .parse::<u32>()
+        .map_err(|e| CliError::MalformedFrame(format!("pid file: {e}")))
 }
 
 pub fn remove_pid_file() {
@@ -94,7 +100,9 @@ pub fn recent_history_path() -> PathBuf {
 /// start with an empty history.
 pub async fn load_recent_history(state: &DaemonState) {
     let path = recent_history_path();
-    let Ok(data) = std::fs::read_to_string(&path) else { return; };
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        return;
+    };
     let Ok(records) = serde_json::from_str::<Vec<crate::daemon::proto::JobRecord>>(&data) else {
         tracing::warn!("recent history at {} is corrupt; ignoring", path.display());
         return;
@@ -141,7 +149,8 @@ pub async fn save_recent_history(state: &DaemonState) {
 /// `bind_listener` actually succeeded; on timeout it prints a failure
 /// pointing at the log instead of an unfounded success banner.
 pub fn detach_and_exec_resume(username: &str, log_path: &std::path::Path) -> Result<(), CliError> {
-    use std::process::{Command, Stdio};
+    use std::process::Command;
+    use std::process::Stdio;
 
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent).map_err(CliError::Io)?;
@@ -249,8 +258,10 @@ fn wait_for_socket(timeout: std::time::Duration) -> bool {
 use crate::cli::Cli;
 use crate::commands::shared;
 use crate::daemon::ipc;
-use crate::daemon::server::{handle_connection, worker_loop};
-use crate::daemon::tracing_layer::{JobIdAttachmentInstaller, JobScopedLogLayer};
+use crate::daemon::server::handle_connection;
+use crate::daemon::server::worker_loop;
+use crate::daemon::tracing_layer::JobIdAttachmentInstaller;
+use crate::daemon::tracing_layer::JobScopedLogLayer;
 
 /// Phase 1 of `daemon start`: preflight + foreground authentication.
 ///
@@ -269,10 +280,10 @@ pub async fn launch_daemon_authenticate(cli: &Cli) -> Result<Option<String>, Cli
         return Err(CliError::DaemonAlreadyRunning);
     }
     // Clear a stale PID file pointing at a dead process.
-    if let Ok(stale_pid) = read_pid_file() {
-        if !pid_is_alive(stale_pid) {
-            remove_pid_file();
-        }
+    if let Ok(stale_pid) = read_pid_file()
+        && !pid_is_alive(stale_pid)
+    {
+        remove_pid_file();
     }
 
     let auth = &cli.auth;
@@ -312,7 +323,9 @@ fn pid_is_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 #[cfg(not(unix))]
-fn pid_is_alive(_pid: u32) -> bool { true }
+fn pid_is_alive(_pid: u32) -> bool {
+    true
+}
 
 /// The actual long-lived daemon process, post-exec. Builds a fresh
 /// tokio runtime above this; this just runs the accept loop.
@@ -341,16 +354,20 @@ pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> 
 
     let pid = std::process::id();
     write_pid_file(pid)?;
-    let account_label = if username.is_empty() { None } else { Some(username.clone()) };
+    let account_label = if username.is_empty() {
+        None
+    } else {
+        Some(username.clone())
+    };
     let state = DaemonState::new(account_label, pid, unix_now_lifecycle());
 
     // Seed the recent ring from disk so `daemon status` and `daemon
     // attach` see jobs from prior daemon lifetimes.
     load_recent_history(&state).await;
 
+    use tracing_subscriber::filter::LevelFilter;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::filter::LevelFilter;
     // Log first-party crates only. Without a filter this logged every
     // h2/tcp/hyper TRACE line, which grew the daemon log to tens of GB and
     // filled the disk over a long run. Silencing third-party crates caps

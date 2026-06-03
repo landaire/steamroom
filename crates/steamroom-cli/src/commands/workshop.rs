@@ -27,7 +27,6 @@ pub async fn run_workshop(
     cancel: CancellationToken,
     show_progress: bool,
 ) -> Result<(), CliError> {
-
     info!("fetching workshop item {} details...", args.item);
     let req = steamroom::generated::CPublishedFileGetDetailsRequest {
         publishedfileids: vec![args.item],
@@ -107,7 +106,8 @@ pub async fn run_workshop(
 
     info!("downloading to {}", output_dir.display());
 
-    let progress_handle = direct_progress::spawn_progress_renderer(event_rx, show_progress, Some(sink.clone()));
+    let progress_handle =
+        direct_progress::spawn_progress_renderer(event_rx, show_progress, Some(sink.clone()));
 
     // Run the download inside a block so the future (and its inner event_tx)
     // drops before we await the progress renderer. This ensures the renderer
