@@ -140,10 +140,20 @@ pub async fn run_daemon_subcommand(sub: DaemonSub) -> Result<(), CliError> {
         DaemonSub::Status { text, format } => {
             // Any explicit format implies text mode -- the TUI doesn't
             // render JSON / plain / table choices, only its own widgets.
-            if text || format.is_some() {
+            // When built without the `tui` feature, fall back to a text
+            // snapshot regardless of which flags were passed.
+            #[cfg(feature = "tui")]
+            {
+                if text || format.is_some() {
+                    print_status_once(format).await
+                } else {
+                    crate::daemon::tui::run_tui().await
+                }
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                let _ = text; // both flags are honored as "print once" here
                 print_status_once(format).await
-            } else {
-                crate::daemon::tui::run_tui().await
             }
         }
     }

@@ -1,5 +1,4 @@
-//! Daemon mode for steamroom. See
-//! `docs/superpowers/specs/2026-06-02-daemon-mode-design.md`.
+//! Daemon mode for steamroom.
 
 pub mod client;
 pub mod framing;
@@ -8,4 +7,6 @@ pub mod lifecycle;
 pub mod proto;
 pub mod server;
 pub mod tracing_layer;
+
+#[cfg(feature = "tui")]
 pub mod tui;

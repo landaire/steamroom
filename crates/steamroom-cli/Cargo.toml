@@ -18,6 +18,13 @@ path = "src/main.rs"
 name = "bench-profile"
 path = "src/bin/bench_profile.rs"
 
+[features]
+default = ["tui"]
+# The ratatui dashboard for `daemon status`. Disable to skip the
+# ratatui + crossterm dependencies; `daemon status` falls back to the
+# `--text` snapshot output.
+tui = ["dep:ratatui", "dep:crossterm"]
+
 [dependencies]
 steamroom = { workspace = true }
 steamroom-client = { workspace = true }
@@ -38,13 +45,15 @@ reqwest = { workspace = true }
 zip = { workspace = true }
 dirs-next = { workspace = true }
 base64 = { workspace = true }
-crossterm = { workspace = true }
 interprocess = { workspace = true }
-ratatui = { workspace = true }
 rkyv = { workspace = true }
 tabled = { workspace = true }
 futures = { workspace = true }
 tokio-util = { workspace = true }
+
+# Gated behind the `tui` feature.
+crossterm = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
