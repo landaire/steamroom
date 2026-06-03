@@ -191,6 +191,8 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
             let client = commands::shared::connect_and_login(&cli.auth).await?;
             commands::workshop::run_workshop(args, client, sink, cancel, show_progress).await
         }
-        Command::Daemon(args) => daemon::client::run_daemon_subcommand(args.command).await,
+        Command::Daemon(args) => {
+            daemon::client::run_daemon_subcommand(args.command, cli.quiet, cli.no_progress).await
+        }
     }
 }

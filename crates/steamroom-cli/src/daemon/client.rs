@@ -21,6 +21,8 @@ pub async fn connect() -> Result<Stream, CliError> {
 
 pub async fn dispatch_use_daemon(cli: Cli) -> Result<(), CliError> {
     let detach = cli.detach;
+    let quiet = cli.quiet;
+    let no_progress = cli.no_progress;
     let request = cli.into_rpc_request()?;
     let mut stream = connect().await?;
     write_frame(&mut stream, &Frame::Request(request)).await?;
@@ -39,23 +41,37 @@ pub async fn dispatch_use_daemon(cli: Cli) -> Result<(), CliError> {
         return Ok(());
     }
 
-    attach_loop(&mut stream, job_id).await
+    attach_loop(&mut stream, job_id, quiet, no_progress).await
 }
 
+/// Render attached events to the user's terminal. `quiet` suppresses
+/// `Event::Stdout` lines (matching direct-mode `--quiet`). `no_progress`
+/// suppresses the indicatif progress bar (matching direct-mode
+/// `--no-progress`). `Event::Log` events are always forwarded through
+/// `tracing` so the user's `--debug` / `--quiet` filter applies.
 struct AttachRenderer {
     bar: Option<indicatif::ProgressBar>,
+    quiet: bool,
+    no_progress: bool,
 }
 
 impl AttachRenderer {
-    fn new() -> Self {
-        Self { bar: None }
+    fn new(quiet: bool, no_progress: bool) -> Self {
+        Self { bar: None, quiet, no_progress }
     }
 
     fn handle(&mut self, ev: Event) {
         match ev {
-            Event::Stdout { line, .. } => println!("{line}"),
+            Event::Stdout { line, .. } => {
+                if !self.quiet {
+                    println!("{line}");
+                }
+            }
             Event::Log { level, target, message, .. } => emit_log(level, &target, &message),
             Event::Progress { update, .. } => {
+                if self.no_progress {
+                    return;
+                }
                 let bar = self.bar.get_or_insert_with(|| {
                     let pb = indicatif::ProgressBar::new(update.bytes_total);
                     pb.set_style(
@@ -82,8 +98,13 @@ impl AttachRenderer {
 /// Stream events from a connection and render them as the direct CLI
 /// would. Returns when EndOfStream arrives, when Ctrl-C detaches, or
 /// when the socket closes cleanly.
-pub async fn attach_loop(stream: &mut Stream, job_id: JobId) -> Result<(), CliError> {
-    let mut renderer = AttachRenderer::new();
+pub async fn attach_loop(
+    stream: &mut Stream,
+    job_id: JobId,
+    quiet: bool,
+    no_progress: bool,
+) -> Result<(), CliError> {
+    let mut renderer = AttachRenderer::new(quiet, no_progress);
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
 
@@ -125,7 +146,11 @@ fn emit_log(level: LogLevel, target: &str, message: &str) {
 
 // -- Subcommand handlers (T20) ----------------------------------------
 
-pub async fn run_daemon_subcommand(sub: DaemonSub) -> Result<(), CliError> {
+pub async fn run_daemon_subcommand(
+    sub: DaemonSub,
+    quiet: bool,
+    no_progress: bool,
+) -> Result<(), CliError> {
     match sub {
         // `Start` is intercepted in main() before the tokio runtime is built,
         // because launching the daemon must fork after dropping the runtime.
@@ -136,7 +161,7 @@ pub async fn run_daemon_subcommand(sub: DaemonSub) -> Result<(), CliError> {
             Ok(())
         }
         DaemonSub::Stop { force } => stop_daemon(force).await,
-        DaemonSub::Attach { job_id } => attach_existing(JobId(job_id)).await,
+        DaemonSub::Attach { job_id } => attach_existing(JobId(job_id), quiet, no_progress).await,
         DaemonSub::Status { text, format } => {
             // Any explicit format implies text mode -- the TUI doesn't
             // render JSON / plain / table choices, only its own widgets.
@@ -179,10 +204,10 @@ async fn stop_daemon(force: bool) -> Result<(), CliError> {
     }
 }
 
-async fn attach_existing(job_id: JobId) -> Result<(), CliError> {
+async fn attach_existing(job_id: JobId, quiet: bool, no_progress: bool) -> Result<(), CliError> {
     let mut stream = connect().await?;
     write_frame(&mut stream, &Frame::Request(Request::Attach { job_id })).await?;
-    attach_loop(&mut stream, job_id).await
+    attach_loop(&mut stream, job_id, quiet, no_progress).await
 }
 
 async fn print_status_once(format: Option<CliOutputFormat>) -> Result<(), CliError> {

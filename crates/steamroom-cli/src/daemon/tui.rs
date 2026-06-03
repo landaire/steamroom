@@ -130,12 +130,17 @@ async fn main_loop(
         }
     });
 
+    // Set when the subscribe stream ends unexpectedly (daemon died or
+    // socket closed). Distinguishes "user quit cleanly" from "daemon
+    // went away" for the post-loop diagnostic.
+    let mut daemon_disconnected = false;
+
     loop {
         draw(terminal, &state)?;
         tokio::select! {
             ev = ev_rx.recv() => match ev {
                 Some(e) => apply_event(&mut state, e),
-                None => break,
+                None => { daemon_disconnected = true; break; }
             },
             key = key_rx.recv() => match key {
                 Some(CtEvent::Key(k)) => {
@@ -149,6 +154,14 @@ async fn main_loop(
 
     subscribe_task.abort();
     keys_task.abort();
+    if daemon_disconnected {
+        // Restore the terminal first so the warning isn't swallowed by
+        // the alt screen / raw mode cleanup the caller does after we
+        // return.
+        let _ = restore_terminal(terminal);
+        eprintln!("daemon disconnected");
+        return Err(CliError::NoDaemonRunning);
+    }
     Ok(())
 }
 
@@ -202,6 +215,11 @@ async fn handle_key(state: &mut TuiState, k: KeyEvent) -> Result<bool, CliError>
                 let id = j.job_id;
                 send_one(Request::Cancel { job_id: id }).await?;
             }
+        }
+        (KeyCode::Char('r'), _) => {
+            // Reset the queue cursor to the head. Useful after the
+            // queue has shrunk or shuffled and the selection drifted.
+            state.selected_queue_idx = 0;
         }
         _ => {}
     }
@@ -322,7 +340,7 @@ fn draw(
 
             // Footer.
             let footer =
-                Paragraph::new("q quit   up/down select   p toggle priority   x cancel")
+                Paragraph::new("q quit   up/down select   r reset   p toggle priority   x cancel")
                     .style(Style::default().add_modifier(Modifier::DIM));
             f.render_widget(footer, outer[2]);
         })
