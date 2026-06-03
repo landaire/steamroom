@@ -16,38 +16,38 @@ pub struct Cli {
     pub auth: AuthOptions,
 
     /// Enable debug logging
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub debug: bool,
 
     /// Show full error chains on failure
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub raw_errors: bool,
 
     /// Steam CDN cell ID to prefer
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub cell_id: Option<u32>,
 
     /// Capture network traffic to a file for replay
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub capture: Option<std::path::PathBuf>,
 
     /// Disable progress bars
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub no_progress: bool,
 
     /// Suppress all output except errors
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     pub quiet: bool,
 
     /// Never prompt; fail loudly if interactive auth is required. Also
     /// implied automatically when stdin is not a TTY.
-    #[arg(long, env = "STEAMROOM_NON_INTERACTIVE")]
+    #[arg(long, env = "STEAMROOM_NON_INTERACTIVE", global = true)]
     pub non_interactive: bool,
 
     /// Send this command to the running daemon instead of executing
     /// directly. Pair with any subcommand. Start a daemon with
     /// `steamroom daemon start`.
-    #[arg(long = "use-daemon")]
+    #[arg(long = "use-daemon", global = true)]
     pub use_daemon: bool,
 
     /// Resume daemon execution after fork+exec. Set by the parent
@@ -57,12 +57,12 @@ pub struct Cli {
 
     /// Push this request to the front of the daemon queue.
     /// Only valid with --use-daemon.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub priority: bool,
 
     /// Return immediately after the daemon accepts the job; do not
     /// stream progress. Only valid with --use-daemon.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub detach: bool,
 }
 
@@ -142,7 +142,6 @@ impl CompatCli {
                 local_keys: false,
                 non_atomic: false,
                 save_manifests: false,
-                capture: None,
                 bytes: false,
             }),
             auth: AuthOptions {
@@ -171,27 +170,27 @@ impl CompatCli {
 #[derive(Parser, Debug)]
 pub struct AuthOptions {
     /// Steam username (or set STEAM_USER)
-    #[arg(short, long, env = "STEAM_USER")]
+    #[arg(short, long, env = "STEAM_USER", global = true)]
     pub username: Option<String>,
 
     /// Steam password (or set STEAM_PASS)
-    #[arg(short, long, env = "STEAM_PASS")]
+    #[arg(short, long, env = "STEAM_PASS", global = true)]
     pub password: Option<String>,
 
     /// Login via QR code (scan with Steam mobile app)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub qr: bool,
 
     /// Use cached token from local Steam installation
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub use_steam_token: bool,
 
     /// Save login token for future use
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub remember_password: bool,
 
     /// Device name for Steam Guard (or set DD_DEVICE_NAME)
-    #[arg(long, env = "DD_DEVICE_NAME")]
+    #[arg(long, env = "DD_DEVICE_NAME", global = true)]
     pub device_name: Option<String>,
 }
 
@@ -330,9 +329,6 @@ pub struct DownloadArgs {
     /// Save raw and decompressed manifests alongside downloaded files
     #[arg(long)]
     pub save_manifests: bool,
-    /// Capture network traffic to a file
-    #[arg(long)]
-    pub capture: Option<std::path::PathBuf>,
     /// Show file sizes in raw bytes
     #[arg(long)]
     pub bytes: bool,
@@ -477,7 +473,7 @@ pub struct DiffArgs {
 #[derive(Parser, Debug)]
 pub struct PackagesArgs {
     /// Package (sub) IDs to query
-    #[arg(long = "package", required = true, num_args = 1..)]
+    #[arg(value_name = "PACKAGE", required = true, num_args = 1..)]
     pub packages: Vec<u32>,
     /// Output format
     #[arg(long, value_enum)]
@@ -519,15 +515,10 @@ impl Cli {
 
         let priority = self.priority;
         match self.command {
-            Command::Download(a) => {
-                if a.capture.is_some() {
-                    eprintln!("warning: --capture is ignored under --use-daemon");
-                }
-                Ok(Request::Download {
-                    args: crate::daemon::proto::DownloadParams::from(a),
-                    priority,
-                })
-            }
+            Command::Download(a) => Ok(Request::Download {
+                args: crate::daemon::proto::DownloadParams::from(a),
+                priority,
+            }),
             Command::Info(a) => Ok(Request::Info {
                 args: crate::daemon::proto::InfoParams::from(a),
                 priority,

@@ -117,8 +117,6 @@ fn pathbuf_to_string(p: std::path::PathBuf) -> String {
 }
 
 impl From<crate::cli::DownloadArgs> for DownloadParams {
-    // `a.capture` is intentionally dropped: --capture is rejected at parse
-    // time when --use-daemon is set, so this path only runs with capture=None.
     fn from(a: crate::cli::DownloadArgs) -> Self {
         Self {
             app: a.app,
@@ -268,7 +266,6 @@ impl From<DownloadParams> for crate::cli::DownloadArgs {
             local_keys: p.local_keys,
             non_atomic: p.non_atomic,
             save_manifests: p.save_manifests,
-            capture: None, // --capture is rejected at parse time under --use-daemon
             bytes: p.bytes,
         }
     }
