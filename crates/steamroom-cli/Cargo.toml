@@ -47,5 +47,4 @@ futures = { workspace = true }
 tokio-util = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true }
 libc = "0.2"

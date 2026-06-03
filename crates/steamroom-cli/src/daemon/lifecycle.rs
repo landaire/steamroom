@@ -72,115 +72,94 @@ pub fn log_path() -> PathBuf {
     cache_dir().join("daemon.log")
 }
 
-/// Foreground-then-detach launch on Unix.
+/// Spawn the daemon child detached from this process and probe the
+/// socket until it binds.
 ///
-/// Steps:
-/// 1. fork() -- parent waits on a pipe for the grandchild's PID, prints
-///    the info block, and exits 0.
-/// 2. Child setsid()s, fork()s again, then the intermediate exits 0.
-/// 3. Grandchild dup2's stdout/stderr to the log file, then exec's the
-///    same binary with `--daemon-resume <username>`. The resumed process
-///    rebuilds tokio, re-authenticates with the cached token, binds the
-///    socket, writes the PID file, and enters the accept loop.
-#[cfg(unix)]
+/// On Unix we use `pre_exec` to call `setsid` so the child becomes its
+/// own session leader (no controlling terminal). On Windows we set
+/// `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` so the child has no
+/// console attached and survives the parent's exit. Both platforms
+/// redirect the child's stdin/stdout/stderr to the daemon log file
+/// before spawn so the user sees nothing from the daemon on this
+/// terminal.
+///
+/// The parent does NOT wait on the spawned child. It instead polls the
+/// daemon socket via `wait_for_socket` to confirm `serve_resumed`'s
+/// `bind_listener` actually succeeded; on timeout it prints a failure
+/// pointing at the log instead of an unfounded success banner.
 pub fn detach_and_exec_resume(username: &str, log_path: &std::path::Path) -> Result<(), CliError> {
-    use nix::unistd::{fork, setsid, ForkResult, dup2, pipe, close, execv, read, write};
-    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
-    use std::ffi::CString;
+    use std::process::{Command, Stdio};
 
-    let (read_end, write_end) = pipe().map_err(|e| CliError::Io(std::io::Error::other(e)))?;
-
-    // Extract raw fds before forking so both child processes can safely
-    // reference them without Rust's ownership model fighting the fork.
-    // SAFETY: we own these fds and will not let the OwnedFd drop them
-    // after the fork -- each process closes the ends it does not use.
-    let read_fd = read_end.into_raw_fd();
-    let write_fd = write_end.into_raw_fd();
-
-    // SAFETY: fork doubles the process. The forked child observes everything
-    // the parent saw; we keep both branches small and free of shared mutable
-    // state across the fork.
-    match unsafe { fork().map_err(|e| CliError::Io(std::io::Error::other(e)))? } {
-        ForkResult::Parent { child: _ } => {
-            close(write_fd).ok();
-            let mut buf = [0u8; 16];
-            let n = read(read_fd, &mut buf)
-                .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
-            close(read_fd).ok();
-            let s = std::str::from_utf8(&buf[..n])
-                .map_err(|e| CliError::MalformedFrame(e.to_string()))?;
-            let pid: u32 = s.trim().parse()
-                .map_err(|e: std::num::ParseIntError| CliError::MalformedFrame(e.to_string()))?;
-
-            // The pipe only tells us the grandchild's PID, not whether
-            // `serve_resumed` got far enough to bind the socket. Probe
-            // the socket with Status retries before reporting success.
-            // If the grandchild fails (auth, bind, panic), this turns the
-            // parent's silent exit-0 into a clear error pointing at the
-            // log.
-            if !wait_for_socket(std::time::Duration::from_secs(5)) {
-                eprintln!("steamroom daemon (pid {pid}) failed to bind socket within 5s");
-                eprintln!("check the log for the failure:");
-                eprintln!("  {}", log_path.display());
-                std::process::exit(1);
-            }
-            println!("steamroom daemon started");
-            println!("  pid    : {pid}");
-            println!("  socket : {}", socket_name_string());
-            println!("  stop   : steamroom daemon stop    (or: kill {pid})");
-            println!("  logs   : {}", log_path.display());
-            std::process::exit(0);
-        }
-        ForkResult::Child => {
-            close(read_fd).ok();
-            setsid().map_err(|e| CliError::Io(std::io::Error::other(e)))?;
-            // SAFETY: same as the outer fork; child is small.
-            match unsafe { fork().map_err(|e| CliError::Io(std::io::Error::other(e)))? } {
-                ForkResult::Parent { child: grandchild } => {
-                    // Report grandchild PID to the original parent, then exit.
-                    let pid_str = format!("{}", grandchild.as_raw());
-                    // SAFETY: write_fd is valid; we created it above.
-                    let write_owned = unsafe {
-                        std::os::fd::OwnedFd::from_raw_fd(write_fd)
-                    };
-                    write(&write_owned, pid_str.as_bytes())
-                        .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
-                    std::process::exit(0);
-                }
-                ForkResult::Child => {
-                    close(write_fd).ok();
-                    if let Some(parent) = log_path.parent() {
-                        std::fs::create_dir_all(parent).map_err(CliError::Io)?;
-                    }
-                    let log = std::fs::OpenOptions::new().create(true).append(true)
-                        .open(log_path).map_err(CliError::Io)?;
-                    dup2(log.as_raw_fd(), 1).ok();
-                    dup2(log.as_raw_fd(), 2).ok();
-                    let exe = std::env::current_exe().map_err(CliError::Io)?;
-                    let arg0 = CString::new(exe.as_os_str().as_encoded_bytes()).unwrap();
-                    let arg1 = CString::new("--daemon-resume").unwrap();
-                    let arg2 = CString::new(username).unwrap();
-                    // `daemon start` is included only to satisfy clap's
-                    // subcommand requirement. `main()` checks
-                    // `cli.daemon_resume` first and routes to
-                    // `serve_resumed` before the subcommand handler runs.
-                    let arg3 = CString::new("daemon").unwrap();
-                    let arg4 = CString::new("start").unwrap();
-                    execv(&arg0, &[&arg0, &arg1, &arg2, &arg3, &arg4])
-                        .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
-                    unreachable!("execv either succeeds or fails");
-                }
-            }
-        }
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).map_err(CliError::Io)?;
     }
-}
+    let log_out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(CliError::Io)?;
+    let log_err = log_out.try_clone().map_err(CliError::Io)?;
 
-#[cfg(not(unix))]
-pub fn detach_and_exec_resume(_username: &str, _log_path: &std::path::Path) -> Result<(), CliError> {
-    Err(CliError::Io(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "background daemon mode is not yet supported on Windows; run --daemon in the foreground",
-    )))
+    let exe = std::env::current_exe().map_err(CliError::Io)?;
+    let mut cmd = Command::new(exe);
+    // `daemon start` is included only to satisfy clap's subcommand
+    // requirement. `main()` checks `cli.daemon_resume` first and routes
+    // to `serve_resumed` before the subcommand handler runs.
+    cmd.arg("--daemon-resume")
+        .arg(username)
+        .arg("daemon")
+        .arg("start");
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::from(log_out));
+    cmd.stderr(Stdio::from(log_err));
+
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `setsid` is async-signal-safe and has no Rust
+        // invariants to uphold. `pre_exec` runs after fork() and before
+        // execve() so this happens in the child only.
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // From winbase.h:
+        //   DETACHED_PROCESS          = 0x00000008
+        //   CREATE_NEW_PROCESS_GROUP  = 0x00000200
+        // Together: the child has no console attached, is in its own
+        // process group, and is unaffected by Ctrl-C delivered to the
+        // launching console.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+
+    let child = cmd.spawn().map_err(CliError::Io)?;
+    let pid = child.id();
+    // Detach: don't reap the child. On Unix it gets reparented to init
+    // when this process exits; on Windows the new process group keeps
+    // it alive independently.
+    std::mem::forget(child);
+
+    if !wait_for_socket(std::time::Duration::from_secs(5)) {
+        eprintln!("steamroom daemon (pid {pid}) failed to bind socket within 5s");
+        eprintln!("check the log for the failure:");
+        eprintln!("  {}", log_path.display());
+        std::process::exit(1);
+    }
+    println!("steamroom daemon started");
+    println!("  pid    : {pid}");
+    println!("  socket : {}", socket_name_string());
+    println!("  stop   : steamroom daemon stop    (or: kill {pid} on Unix; taskkill /PID {pid} /F on Windows)");
+    println!("  logs   : {}", log_path.display());
+    std::process::exit(0);
 }
 
 /// Poll the daemon socket until `Status` round-trips successfully or
