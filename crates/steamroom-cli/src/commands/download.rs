@@ -301,10 +301,8 @@ pub async fn run_download(
 
     let progress_handle = direct_progress::spawn_progress_renderer(event_rx, show_progress, Some(sink.clone()));
 
-    // Run the download inside a block so the future (and its inner event_tx)
-    // drops before we await the progress renderer. This ensures the renderer
-    // sees the channel close and runs finish_and_clear on both the success
-    // and cancellation paths.
+    // Run the download inside a block so the download future drops (releasing
+    // its borrow of `job`) when it finishes or is cancelled.
     let stats_result = {
         let download_fut = job.download(&manifest, std::sync::Arc::new(fetcher));
         tokio::pin!(download_fut);
@@ -313,7 +311,11 @@ pub async fn run_download(
             _ = cancel.cancelled() => None,
         }
     };
-    // download_fut's inner future has now dropped (block scope ended); event_tx is closed.
+    // `job` owns the event_sender. Drop it so the progress channel closes and
+    // the renderer task ends; otherwise `progress_handle.await` blocks forever
+    // (the renderer loops until every sender drops) and the job never reports
+    // completion to the client.
+    drop(job);
     let _ = progress_handle.await;
     let stats = match stats_result {
         Some(res) => res?,
