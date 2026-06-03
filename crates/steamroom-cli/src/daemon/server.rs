@@ -511,9 +511,58 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Single-job worker loop. Owns the authenticated SteamClient and runs
-/// it through every `run_*` dispatch.
-pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>) {
+/// True if the error suggests the underlying CM connection is gone
+/// rather than the request being malformed. Used by the worker to drop
+/// the SteamClient and force a fresh login on the next job.
+fn is_disconnected(err: &crate::errors::CliError) -> bool {
+    use crate::errors::CliError;
+    use steamroom::error::{ConnectionError, Error as SteamError};
+    match err {
+        CliError::Steam(SteamError::Connection(
+            ConnectionError::Disconnected
+            | ConnectionError::EncryptionFailed
+            | ConnectionError::DnsResolutionFailed,
+        )) => true,
+        CliError::Io(e) => matches!(
+            e.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::ConnectionAborted
+        ),
+        _ => false,
+    }
+}
+
+/// Lazily authenticate when the worker needs a client. `preferred_user`
+/// is the username the daemon was launched with (Some if `daemon start
+/// --username foo`; None for fully-lazy daemons). Falls back to the
+/// user's saved-token detection and finally anonymous, mirroring direct
+/// mode's `connect_and_login`.
+async fn lazy_login(preferred_user: Option<&str>) -> Result<SteamClient<LoggedIn>, crate::errors::CliError> {
+    use crate::cli::AuthOptions;
+    let auth = AuthOptions {
+        username: preferred_user.map(|s| s.to_string()),
+        password: None,
+        qr: false,
+        use_steam_token: false,
+        remember_password: false,
+        device_name: None,
+    };
+    crate::commands::shared::connect_and_login(&auth).await
+}
+
+/// Single-job worker loop. Holds the SteamClient lazily: it is acquired
+/// on the first job that needs it and recreated after a connection-loss
+/// error so subsequent jobs reauthenticate transparently. `preferred_user`
+/// is forwarded into the lazy login flow.
+pub async fn worker_loop(
+    state: Arc<DaemonState>,
+    initial_client: Option<SteamClient<LoggedIn>>,
+    preferred_user: Option<String>,
+) {
+    let mut client = initial_client;
     while let Some(job) = wait_for_next_job(&state).await {
         let started_at = unix_now();
         let sink = BroadcastSink { job_id: job.job_id, events: state.events.clone() };
@@ -544,9 +593,42 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
         state.broadcast_snapshot().await;
 
         let sink: Arc<dyn JobSink> = Arc::new(sink);
+        // Ensure we have a client. For local_info this is wasted work
+        // since the dispatch arm ignores the client, but the cost is
+        // bounded by lazy_login's network round-trip and only fires
+        // once per disconnect/restart.
+        let active_client = match &client {
+            Some(c) => c.clone(),
+            None => match lazy_login(preferred_user.as_deref()).await {
+                Ok(c) => {
+                    client = Some(c.clone());
+                    c
+                }
+                Err(e) => {
+                    let _ = state.events.send(Event::Log {
+                        job_id: Some(job.job_id),
+                        level: LogLevel::Error,
+                        target: "daemon::worker".into(),
+                        message: format!("login failed: {e}"),
+                    });
+                    let _ = state.events.send(Event::JobFinished {
+                        job_id: job.job_id,
+                        exit_code: 1,
+                    });
+                    let mut active = state.active.lock().await;
+                    *active = None;
+                    let mut finished = record;
+                    finished.finished_at = Some(unix_now());
+                    finished.exit_code = Some(1);
+                    state.recent.lock().await.push(finished);
+                    state.broadcast_snapshot().await;
+                    continue;
+                }
+            },
+        };
         use futures::future::FutureExt;
         use tracing::Instrument;
-        let dispatch_fut = dispatch(job.request, client.clone(), sink.clone(), job.cancel.clone())
+        let dispatch_fut = dispatch(job.request, active_client, sink.clone(), job.cancel.clone())
             .instrument(tracing::info_span!("job", job_id = job.job_id.0));
         let dispatch_result = match std::panic::AssertUnwindSafe(dispatch_fut).catch_unwind().await {
             Ok(res) => res,
@@ -571,6 +653,17 @@ pub async fn worker_loop(state: Arc<DaemonState>, client: SteamClient<LoggedIn>)
             Ok(()) => 0,
             Err(crate::errors::CliError::Cancelled) => 130,
             Err(e) => {
+                if is_disconnected(&e) {
+                    // CM connection looks dead. Drop the client; the next
+                    // job will trigger a lazy reauth.
+                    client = None;
+                    let _ = state.events.send(Event::Log {
+                        job_id: None,
+                        level: LogLevel::Warn,
+                        target: "daemon::worker".into(),
+                        message: "Steam connection lost; will reauthenticate on next job".into(),
+                    });
+                }
                 let _ = state.events.send(Event::Log {
                     job_id: Some(job.job_id),
                     level: LogLevel::Error,

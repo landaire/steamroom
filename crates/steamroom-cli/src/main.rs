@@ -87,7 +87,13 @@ fn main() {
             rt.block_on(async { daemon::lifecycle::launch_daemon_authenticate(&cli).await });
         drop(rt);
         let username = match auth_result {
-            Ok(u) => u,
+            // Eager auth: username from the prompt path is passed to the
+            // grandchild for refresh-token relogin.
+            Ok(Some(u)) => u,
+            // Lazy mode: no auth flags. Empty username signals to the
+            // grandchild that no eager re-login is needed; the worker
+            // will authenticate on the first job.
+            Ok(None) => String::new(),
             Err(e) => {
                 eprintln!("Error: {e}");
                 std::process::exit(1);

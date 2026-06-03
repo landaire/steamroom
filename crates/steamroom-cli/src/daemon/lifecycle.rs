@@ -195,36 +195,48 @@ use crate::daemon::ipc;
 use crate::daemon::server::{DaemonState, handle_connection, worker_loop};
 use crate::daemon::tracing_layer::{JobIdAttachmentInstaller, JobScopedLogLayer};
 
-/// Phase 1 of `--daemon`: authenticate in the foreground (Steam Guard
-/// prompts work here), save the refresh token via the existing path,
-/// return the username so main can fork+exec the resume child.
+/// Phase 1 of `daemon start`: preflight + foreground authentication.
 ///
-/// Returns the username that the resumed child will pass to
-/// `serve_resumed` as the account to log in with.
-pub async fn launch_daemon_authenticate(cli: &Cli) -> Result<String, CliError> {
-    // Fail fast if a daemon is already up. Avoids running the user
-    // through Steam Guard prompts only to have the grandchild's
-    // bind_listener reject and the parent's probe time out.
+/// Eager (`--username` or any other auth flag was passed): authenticate
+/// in the foreground so Steam Guard prompts can be answered on the
+/// launching terminal. Returns `Some(username)`; the resumed child
+/// re-authenticates non-interactively using the saved refresh token.
+///
+/// Lazy (no auth flags): skip launch-time login entirely. The worker
+/// authenticates on the first job that needs a Steam connection,
+/// falling back to auto-detected saved tokens or anonymous. Returns
+/// `None`.
+pub async fn launch_daemon_authenticate(cli: &Cli) -> Result<Option<String>, CliError> {
+    // Fail fast if a daemon is already up.
     if ipc::probe_peer().await.is_ok() {
         return Err(CliError::DaemonAlreadyRunning);
     }
-    // If a PID file references a dead process, remove it so we don't
-    // mislead `daemon info` after a successful restart.
+    // Clear a stale PID file pointing at a dead process.
     if let Ok(stale_pid) = read_pid_file() {
         if !pid_is_alive(stale_pid) {
             remove_pid_file();
         }
     }
 
-    let client = shared::connect_and_login(&cli.auth).await?;
-    let username = cli
-        .auth
+    let auth = &cli.auth;
+    let has_explicit_auth = auth.username.is_some()
+        || auth.password.is_some()
+        || auth.qr
+        || auth.use_steam_token
+        || auth.device_name.is_some();
+
+    if !has_explicit_auth {
+        return Ok(None);
+    }
+
+    let client = shared::connect_and_login(auth).await?;
+    let username = auth
         .username
         .clone()
         .or_else(|| shared::detect_steam_user().map(|(u, _)| u))
         .ok_or(CliError::InteractiveAuthRequired)?;
     drop(client);
-    Ok(username)
+    Ok(Some(username))
 }
 
 /// `kill(pid, 0)` returns 0 if the process exists and we have signal
@@ -247,23 +259,33 @@ fn pid_is_alive(_pid: u32) -> bool { true }
 
 /// The actual long-lived daemon process, post-exec. Builds a fresh
 /// tokio runtime above this; this just runs the accept loop.
+///
+/// `username` is empty for daemons launched without auth flags (lazy
+/// mode): the worker authenticates on first job. Non-empty means the
+/// parent did the interactive auth dance and saved a refresh token;
+/// we re-login non-interactively here.
 pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> {
-    // Re-authenticate using the refresh token saved by launch_daemon_authenticate.
-    let token = shared::load_saved_token(&username).ok_or(CliError::InteractiveAuthRequired)?;
-    let client = steamroom_client::login::LoginBuilder::new()
-        .device_name("steamroom")
-        .with_refresh_token(&username, &token)
-        .login()
-        .await?;
+    let (initial_client, preferred_user) = if username.is_empty() {
+        // Lazy mode: no eager login. The worker will authenticate on
+        // the first job, using whatever saved token / autodetect /
+        // anonymous path applies at that time.
+        (None, None)
+    } else {
+        let token = shared::load_saved_token(&username).ok_or(CliError::InteractiveAuthRequired)?;
+        let client = steamroom_client::login::LoginBuilder::new()
+            .device_name("steamroom")
+            .with_refresh_token(&username, &token)
+            .login()
+            .await?;
+        (Some(client), Some(username.clone()))
+    };
 
-    // Bind the socket BEFORE writing the PID file so the PID file's
-    // existence tracks the listener's lifetime. If bind_listener returns
-    // DaemonAlreadyRunning, we exit without touching the PID file.
     let listener = ipc::bind_listener().await?;
 
     let pid = std::process::id();
     write_pid_file(pid)?;
-    let state = DaemonState::new(Some(username.clone()), pid, unix_now_lifecycle());
+    let account_label = if username.is_empty() { None } else { Some(username.clone()) };
+    let state = DaemonState::new(account_label, pid, unix_now_lifecycle());
 
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -274,8 +296,10 @@ pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> 
         .try_init();
 
     let worker_state = state.clone();
+    let worker_client = initial_client;
+    let worker_user = preferred_user;
     let mut worker_task = Some(tokio::spawn(async move {
-        worker_loop(worker_state, client).await;
+        worker_loop(worker_state, worker_client, worker_user).await;
     }));
 
     // Collector that drains the broadcast channel into per-job replay
