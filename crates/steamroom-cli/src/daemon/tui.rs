@@ -217,10 +217,8 @@ async fn handle_key(state: &mut TuiState, k: KeyEvent) -> Result<bool, CliError>
         (KeyCode::Up, _) => {
             state.selected_queue_idx = state.selected_queue_idx.saturating_sub(1);
         }
-        (KeyCode::Down, _) => {
-            if state.selected_queue_idx + 1 < state.snapshot.queue.len() {
-                state.selected_queue_idx += 1;
-            }
+        (KeyCode::Down, _) if state.selected_queue_idx + 1 < state.snapshot.queue.len() => {
+            state.selected_queue_idx += 1;
         }
         (KeyCode::Char('p'), _) => {
             if let Some(j) = state.selected_job() {

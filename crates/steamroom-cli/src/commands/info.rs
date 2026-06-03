@@ -236,7 +236,7 @@ pub async fn run_info(
             }
 
             // Sort by most recently updated first
-            branch_entries.sort_by(|a, b| b.0.cmp(&a.0));
+            branch_entries.sort_by_key(|b| std::cmp::Reverse(b.0));
             let branch_rows: Vec<[String; 5]> =
                 branch_entries.into_iter().map(|(_, r)| r).collect();
 
