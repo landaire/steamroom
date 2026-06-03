@@ -55,30 +55,40 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            bin: steamroom
           - os: macos-latest
             target: aarch64-apple-darwin
-            bin: steamroom
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: steamroom.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release -p steamroom-cli
 
-      - name: Package
+      - name: Package (unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir dist
-          cp target/release/${{ matrix.bin }} dist/
+          cp target/release/steamroom README.md dist/
           cd dist && tar czf ../steamroom-${{ matrix.target }}.tar.gz *
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/steamroom.exe, README.md dist/
+          if (Test-Path target/release/steamroom.pdb) { Copy-Item target/release/steamroom.pdb dist/ }
+          Compress-Archive -Path dist/* -DestinationPath "steamroom-${{ matrix.target }}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: steamroom-${{ matrix.target }}
-          path: steamroom-${{ matrix.target }}.tar.gz
+          path: |
+            steamroom-${{ matrix.target }}.tar.gz
+            steamroom-${{ matrix.target }}.zip
+          if-no-files-found: ignore
 
   build-wheels:
     strategy:
@@ -126,5 +136,6 @@ jobs:
         with:
           files: |
             artifacts/*.tar.gz
+            artifacts/*.zip
             artifacts/*.whl
           generate_release_notes: true
