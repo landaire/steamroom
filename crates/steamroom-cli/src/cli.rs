@@ -240,17 +240,27 @@ pub enum DaemonSub {
     },
     /// Print queue, active job, and recent history. Default: TUI dashboard.
     Status {
-        /// One-shot text snapshot instead of the TUI.
+        /// Print a one-shot text snapshot to stdout instead of opening
+        /// the TUI.
         #[arg(long)]
-        once: bool,
-        /// Output format (implies --once when set to json).
+        text: bool,
+        /// Output format. Anything other than the default implies
+        /// `--text` (JSON in a TUI is not meaningful).
         #[arg(long, value_enum)]
         format: Option<OutputFormat>,
     },
-    /// Print PID, socket path, and stop command. Does not contact the daemon.
+    /// Print the daemon's PID, socket path, and stop command. Does not
+    /// contact the daemon, so it works even when the daemon is wedged.
     Info,
-    /// Attach to an existing job by id.
+    /// Reconnect to an in-flight or recently-finished job by its ID and
+    /// stream its events to this terminal. Use after `--use-daemon
+    /// --detach <job>` to come back and watch progress, or to resume an
+    /// attach session you exited with Ctrl-C. If the job has finished,
+    /// `attach` writes its exit code from the daemon's recent-jobs ring
+    /// and exits. If the ID is unknown, errors with `JobNotFound`.
     Attach {
+        /// The job ID printed by `--use-daemon --detach` or shown in
+        /// `daemon status`.
         job_id: u64,
     },
 }

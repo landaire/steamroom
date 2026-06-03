@@ -137,8 +137,10 @@ pub async fn run_daemon_subcommand(sub: DaemonSub) -> Result<(), CliError> {
         }
         DaemonSub::Stop { force } => stop_daemon(force).await,
         DaemonSub::Attach { job_id } => attach_existing(JobId(job_id)).await,
-        DaemonSub::Status { once, format } => {
-            if once || format == Some(CliOutputFormat::Json) {
+        DaemonSub::Status { text, format } => {
+            // Any explicit format implies text mode -- the TUI doesn't
+            // render JSON / plain / table choices, only its own widgets.
+            if text || format.is_some() {
                 print_status_once(format).await
             } else {
                 crate::daemon::tui::run_tui().await

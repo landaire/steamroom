@@ -250,8 +250,8 @@ steamroom --use-daemon --detach download --app 480 --depot 481
 
 # Observe the daemon.
 steamroom daemon status              # ratatui dashboard
-steamroom daemon status --once       # one-shot text snapshot
-steamroom daemon status --once --format json
+steamroom daemon status --text       # one-shot text snapshot
+steamroom daemon status --format json
 steamroom daemon info                # pid + socket + stop command (no RPC)
 
 # Stop.
