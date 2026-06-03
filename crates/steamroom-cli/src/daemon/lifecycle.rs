@@ -278,6 +278,13 @@ pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> 
         worker_loop(worker_state, client).await;
     }));
 
+    // Collector that drains the broadcast channel into per-job replay
+    // rings. Exits cleanly when the broadcast sender drops.
+    let replay_state = state.clone();
+    tokio::spawn(async move {
+        crate::daemon::server::replay_collector(replay_state).await;
+    });
+
     loop {
         // worker_task is always Some here; the None arm is unreachable but
         // avoids an unwrap().

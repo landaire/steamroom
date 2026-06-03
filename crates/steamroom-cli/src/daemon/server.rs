@@ -39,6 +39,12 @@ pub struct DaemonState {
     pub queue: Mutex<VecDeque<QueuedJob>>,
     pub active: Mutex<Option<RunningJob>>,
     pub recent: Mutex<RingBuffer<JobRecord>>,
+    /// Per-job event history for `attach <id>` to a finished job. The
+    /// collector task (spawned in `serve_resumed`) populates this from
+    /// the broadcast channel; the Attach handler dumps it before
+    /// EndOfStream. Bounded per-job and across jobs so a runaway
+    /// process can't OOM the daemon.
+    pub replay: Mutex<ReplayBuffer>,
     pub events: broadcast::Sender<Event>,
     pub next_job_id: AtomicU64,
     /// Set when Stop is received. The accept loop and worker_loop check
@@ -65,6 +71,7 @@ impl DaemonState {
             queue: Mutex::new(VecDeque::new()),
             active: Mutex::new(None),
             recent: Mutex::new(RingBuffer::new(32)),
+            replay: Mutex::new(ReplayBuffer::new(32, 200)),
             events,
             next_job_id: AtomicU64::new(1),
             accepting: CancellationToken::new(),
@@ -217,10 +224,111 @@ impl<T> RingBuffer<T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> { self.items.iter() }
 }
 
+/// Per-job ring of `Event`s used to replay history when `daemon attach`
+/// targets a finished or in-flight job. Bounded both in jobs tracked
+/// (oldest job dropped when full) and in events per job (oldest event
+/// per job dropped when full).
+pub struct ReplayBuffer {
+    entries: VecDeque<(JobId, VecDeque<Event>)>,
+    cap_jobs: usize,
+    cap_per_job: usize,
+}
+
+impl ReplayBuffer {
+    pub fn new(cap_jobs: usize, cap_per_job: usize) -> Self {
+        Self { entries: VecDeque::with_capacity(cap_jobs), cap_jobs, cap_per_job }
+    }
+
+    /// Begin a new job's history. Drops the oldest tracked job if at
+    /// capacity. Idempotent for repeated JobStarted events on the same
+    /// id (which shouldn't happen but we tolerate it).
+    pub fn start_job(&mut self, job_id: JobId) {
+        if self.entries.iter().any(|(id, _)| *id == job_id) {
+            return;
+        }
+        if self.entries.len() >= self.cap_jobs {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((job_id, VecDeque::with_capacity(64)));
+    }
+
+    /// Append an event to the named job's ring. Silently ignored if
+    /// the job's entry has been evicted.
+    pub fn append(&mut self, job_id: JobId, ev: Event) {
+        if let Some((_, evs)) = self.entries.iter_mut().rev().find(|(id, _)| *id == job_id) {
+            if evs.len() >= self.cap_per_job {
+                evs.pop_front();
+            }
+            evs.push_back(ev);
+        }
+    }
+
+    pub fn events_for(&self, job_id: JobId) -> Option<Vec<Event>> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|(id, _)| *id == job_id)
+            .map(|(_, evs)| evs.iter().cloned().collect())
+    }
+}
+
+/// Long-running task: subscribes to the broadcast channel and routes
+/// every per-job event into the replay buffer. Spawned once at daemon
+/// startup. Exits when the broadcast sender drops.
+pub async fn replay_collector(state: Arc<DaemonState>) {
+    let mut rx = state.events.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(ev) => {
+                if let Some(job_id) = ev.job_id() {
+                    let mut replay = state.replay.lock().await;
+                    if matches!(&ev, Event::JobStarted { .. }) {
+                        replay.start_job(job_id);
+                    }
+                    replay.append(job_id, ev);
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::daemon::proto::{InfoParams, OutputFormat};
+
+    fn ev_stdout(job_id: JobId, line: &str) -> Event {
+        Event::Stdout { job_id, line: line.into() }
+    }
+
+    #[test]
+    fn replay_buffer_evicts_oldest_job_when_full() {
+        let mut rb = ReplayBuffer::new(2, 10);
+        rb.start_job(JobId(1));
+        rb.start_job(JobId(2));
+        rb.start_job(JobId(3)); // evicts JobId(1)
+        assert!(rb.events_for(JobId(1)).is_none());
+        assert!(rb.events_for(JobId(2)).is_some());
+        assert!(rb.events_for(JobId(3)).is_some());
+    }
+
+    #[test]
+    fn replay_buffer_caps_events_per_job() {
+        let mut rb = ReplayBuffer::new(4, 3);
+        rb.start_job(JobId(1));
+        for i in 0..5 {
+            rb.append(JobId(1), ev_stdout(JobId(1), &format!("line {i}")));
+        }
+        let events = rb.events_for(JobId(1)).expect("present");
+        assert_eq!(events.len(), 3);
+        // Oldest two were dropped; events 2,3,4 remain.
+        match &events[0] {
+            Event::Stdout { line, .. } => assert_eq!(line, "line 2"),
+            _ => panic!("expected Stdout"),
+        }
+    }
 
     fn fake_queued(state: &DaemonState, priority: bool) -> QueuedJob {
         QueuedJob {
@@ -631,8 +739,18 @@ where
             let queued = state.queue.lock().await.iter().any(|j| j.job_id == job_id);
 
             if !active_match && !queued {
-                // Either finished or never existed.
+                // Either finished or never existed. If finished, replay
+                // the buffered events before EndOfStream so the user
+                // sees stdout/log/progress, not just an exit code.
                 if let Some(exit_code) = state.recent_exit_code(job_id).await {
+                    let events = state.replay.lock().await.events_for(job_id);
+                    if let Some(events) = events {
+                        for ev in events {
+                            if write_frame(&mut stream, &Frame::Event(ev)).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
                     let _ = write_frame(&mut stream, &Frame::EndOfStream { exit_code }).await;
                 } else {
                     let _ = write_frame(&mut stream, &Frame::Response(Response::Error {
@@ -641,6 +759,16 @@ where
                     })).await;
                 }
                 return;
+            }
+            // In-flight: replay everything we have so the user sees what
+            // happened before they attached, then continue live.
+            let replayed = state.replay.lock().await.events_for(job_id);
+            if let Some(events) = replayed {
+                for ev in events {
+                    if write_frame(&mut stream, &Frame::Event(ev)).await.is_err() {
+                        return;
+                    }
+                }
             }
             let rx = state.events.subscribe();
             stream_events(state.clone(), &mut stream, Some(job_id), rx).await;
