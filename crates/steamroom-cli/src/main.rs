@@ -41,20 +41,19 @@ fn main() {
     // leaving JobScopedLogLayer uninstalled.
     let is_daemon_resume = cli.daemon_resume.is_some();
     if !is_daemon_resume {
-        let default_filter = if cli.quiet {
-            "off"
-        } else if cli.debug {
-            "debug"
-        } else if cfg!(debug_assertions) {
-            "warn,steamroom=debug,steamroom_client=debug,steamroom_ffi=debug,steamroom_cli=debug"
+        use tracing_subscriber::filter::LevelFilter;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let level = if cli.quiet {
+            LevelFilter::OFF
+        } else if cli.debug || cfg!(debug_assertions) {
+            LevelFilter::DEBUG
         } else {
-            "warn"
+            LevelFilter::WARN
         };
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| default_filter.into()),
-            )
+        tracing_subscriber::registry()
+            .with(commands::shared::log_filter(level))
+            .with(tracing_subscriber::fmt::layer())
             .init();
     }
 

@@ -37,6 +37,36 @@ pub fn is_interactive() -> bool {
     INTERACTIVE.get().copied().unwrap_or(false)
 }
 
+/// Crates whose tracing output is first-party. Everything else is
+/// silenced by [`log_filter`] unless `RUST_LOG` opts it back in.
+const FIRST_PARTY_CRATES: [&str; 4] =
+    ["steamroom", "steamroom_client", "steamroom_ffi", "steamroom_cli"];
+
+/// Build the tracing filter layer. When `RUST_LOG` is set it is honored
+/// verbatim; otherwise logging is restricted to the first-party crates at
+/// `level` and every other crate (h2, hyper, reqwest, tokio, ...) is
+/// silenced. The default branch is a typed [`Targets`] filter rather than
+/// a parsed directive string. Boxed so both branches share one type at
+/// the call site.
+///
+/// [`Targets`]: tracing_subscriber::filter::Targets
+pub fn log_filter<S>(
+    level: tracing_subscriber::filter::LevelFilter,
+) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    use tracing_subscriber::Layer;
+    if let Ok(env) = tracing_subscriber::EnvFilter::try_from_default_env() {
+        return env.boxed();
+    }
+    let mut targets = tracing_subscriber::filter::Targets::new();
+    for krate in FIRST_PARTY_CRATES {
+        targets = targets.with_target(krate, level);
+    }
+    targets.boxed()
+}
+
 pub fn parse_app_kv(data: &[u8]) -> Result<KeyValue, CliError> {
     // PICS KV data can be binary KV or text
     // Binary KV starts with 0x00 tag

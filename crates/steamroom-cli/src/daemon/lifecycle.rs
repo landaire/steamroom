@@ -350,7 +350,13 @@ pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> 
 
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::filter::LevelFilter;
+    // Log first-party crates only. Without a filter this logged every
+    // h2/tcp/hyper TRACE line, which grew the daemon log to tens of GB and
+    // filled the disk over a long run. Silencing third-party crates caps
+    // that volume; honor RUST_LOG when the operator wants more.
     let _ = tracing_subscriber::registry()
+        .with(crate::commands::shared::log_filter(LevelFilter::INFO))
         .with(tracing_subscriber::fmt::layer())
         .with(JobIdAttachmentInstaller)
         .with(JobScopedLogLayer::new(state.events.clone()))
