@@ -2,6 +2,10 @@ target/
 .claude/
 .worktrees/
 
+# LLM-authored specs and plans stay out of source control.
+# AGENTS.md (engineering style rules) is checked in intentionally.
+docs/superpowers/
+
 # Test output directories
 test_output/
 test_auth/

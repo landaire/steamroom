@@ -3054,7 +3054,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "steamroom"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "adler",
  "aes 0.9.0",
@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "steamroom-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "clap",
@@ -3128,7 +3128,7 @@ dependencies = [
 
 [[package]]
 name = "steamroom-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "bytes",
