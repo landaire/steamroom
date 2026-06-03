@@ -517,22 +517,41 @@ fn unix_now() -> u64 {
 fn is_disconnected(err: &crate::errors::CliError) -> bool {
     use crate::errors::CliError;
     use steamroom::error::{ConnectionError, Error as SteamError};
-    match err {
+
+    if matches!(
+        err,
         CliError::Steam(SteamError::Connection(
             ConnectionError::Disconnected
-            | ConnectionError::EncryptionFailed
-            | ConnectionError::DnsResolutionFailed,
-        )) => true,
-        CliError::Io(e) => matches!(
-            e.kind(),
-            std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::BrokenPipe
-                | std::io::ErrorKind::UnexpectedEof
-                | std::io::ErrorKind::NotConnected
-                | std::io::ErrorKind::ConnectionAborted
-        ),
-        _ => false,
+                | ConnectionError::EncryptionFailed
+                | ConnectionError::DnsResolutionFailed,
+        ))
+    ) {
+        return true;
     }
+
+    // A dropped CM/CDN socket (e.g. Steam closing an idle connection) surfaces
+    // as an io::Error wrapped at varying depths: CliError::Io, SteamError::Io,
+    // or ConnectionError::Io. Matching one layer misses the others, so walk the
+    // whole source chain and treat any connection-flavored io::Error as a
+    // disconnect. Without this the worker keeps reusing the dead client and
+    // every subsequent job fails instead of reauthenticating.
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = source {
+        if let Some(io) = e.downcast_ref::<std::io::Error>() {
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::ConnectionAborted
+            ) {
+                return true;
+            }
+        }
+        source = e.source();
+    }
+    false
 }
 
 /// Lazily authenticate when the worker needs a client. `preferred_user`
