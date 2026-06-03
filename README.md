@@ -204,8 +204,8 @@ steamroom diff --app 480 --depot 481 --from 3183503801510301321 --to 82718163154
 Query Steam package (sub) details by ID.
 
 ```bash
-steamroom packages --package 17906
-steamroom packages --package 17906 --package 29197 --format json
+steamroom packages 17906
+steamroom packages 17906 29197 --format json
 ```
 
 ### `workshop`
@@ -229,53 +229,50 @@ steamroom local-info --user myaccount
 
 ## Daemon mode
 
-`steamroom` can run as a background daemon that holds an authenticated Steam session
-and services subsequent CLI invocations over a local socket. The daemon authenticates
-once at launch and reuses the connection across many requests, which avoids the per-command
-CM discovery + handshake + logon round trip.
+`steamroom` can run as a background daemon that holds an authenticated Steam session and
+services CLI invocations over a local socket. Reusing the session avoids the per-command
+CM discovery, handshake, and logon round trip, so repeated commands run faster.
+
+The daemon authenticates either at launch, when `daemon start` is given auth flags, or
+lazily on its first job, when started without them (using an auto-detected saved token, or
+anonymous). It serves one account for its lifetime; to switch accounts, stop and restart
+it. It reconnects if the CM connection drops.
 
 ```bash
-# Start a daemon in the background. Authenticates once; prints PID and stop hint.
+# Start a daemon. With auth flags it logs in now; without them it logs in
+# lazily on the first job.
 steamroom --username myaccount daemon start
+steamroom daemon start
 
-# Route subsequent commands through the running daemon.
+# Route commands through the daemon. If none is running, --use-daemon
+# starts one in lazy auth mode first.
 steamroom --use-daemon info --app 730
 steamroom --use-daemon download --app 480 --depot 481 -o spacewar/
 
 # Jump the queue.
 steamroom --use-daemon --priority info --app 730
 
-# Submit without waiting. Reattach later with `daemon attach`.
+# Submit without waiting, then reattach by job id.
 steamroom --use-daemon --detach download --app 480 --depot 481
+steamroom daemon attach <job-id>
 
-# Observe the daemon.
+# Observe.
 steamroom daemon status              # ratatui dashboard
 steamroom daemon status --text       # one-shot text snapshot
 steamroom daemon status --format json
-steamroom daemon info                # pid + socket + stop command (no RPC)
+steamroom daemon info                # pid, socket, and stop command
 
 # Stop.
 steamroom daemon stop
 steamroom daemon stop --force        # cancel the active job too
 ```
 
-The daemon serves exactly one account: the one it authenticated as at launch. To switch
-accounts, stop and restart the daemon. The daemon binds a per-user socket
-(`/tmp/steamroom-<uid>.sock` on macOS, abstract `steamroom-<uid>` on Linux) and writes
-its PID to `$XDG_RUNTIME_DIR/steamroom.pid` (or `$TMPDIR/steamroom-<uid>.pid`).
-`steamroom daemon info` reads both without contacting the daemon, which is useful when
-diagnosing a wedged process.
+Job history persists across restarts, so `daemon status` and `daemon attach` can see jobs
+from earlier daemon runs.
 
-Limitations in this release:
-- Background mode (`daemon start`'s fork+exec) is Unix-only. On Windows, run the
-  daemon process in the foreground and background it manually.
-- The parent's success exit does not guarantee the daemon stayed up: if the resumed
-  child fails to bind the socket or re-authenticate from the cached refresh token, the
-  parent has already exited 0. Check `steamroom daemon info` and the log file at
-  `$TMPDIR/steamroom-<uid>.log` to confirm.
-- `--use-daemon` rejects `--username`, `--password`, `--qr`, `--use-steam-token`,
-  `--remember-password`, `--device-name`, and `--capture` at parse time. These flags
-  belong on `daemon start` at launch.
+Auth flags (`--username`, `--password`, `--qr`, `--use-steam-token`, `--remember-password`,
+`--device-name`) and `--capture` are ignored, with a warning, under `--use-daemon`; the
+daemon serves the account it authenticated as. Set them on `daemon start` instead.
 
 ## Authentication
 
