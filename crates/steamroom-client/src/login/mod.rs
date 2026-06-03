@@ -100,6 +100,9 @@ pub(crate) enum TransportConfig {
     Auto {
         prefer: Protocol,
         allow_fallback: bool,
+        /// When set, the chosen transport is wrapped in a
+        /// `RecordingTransport` recording into this handle.
+        recorder: Option<Recorder>,
     },
     /// Use a pre-built `Ready` client (capture/replay, custom transport). The
     /// caller is responsible for having driven `connect → encrypt → prepare`.
@@ -111,11 +114,14 @@ impl Default for TransportConfig {
         Self::Auto {
             prefer: Protocol::Tcp,
             allow_fallback: true,
+            recorder: None,
         }
     }
 }
 
 use steamroom::connection::CmServer;
+use steamroom::transport::recording::Recorder;
+use steamroom::transport::recording::RecordingTransport;
 use steamroom::transport::tcp::TcpTransport;
 use steamroom::transport::websocket::WebSocketTransport;
 
@@ -129,7 +135,8 @@ pub(crate) async fn establish_ready_client(
         TransportConfig::Auto {
             prefer,
             allow_fallback,
-        } => Ok(connect_auto(prefer, allow_fallback)
+            recorder,
+        } => Ok(connect_auto(prefer, allow_fallback, recorder.as_ref())
             .await?
             .prepare()
             .await?),
@@ -139,13 +146,14 @@ pub(crate) async fn establish_ready_client(
 async fn connect_auto(
     prefer: Protocol,
     allow_fallback: bool,
+    recorder: Option<&Recorder>,
 ) -> Result<SteamClient<Encrypted>, LoginError> {
     let servers = CmServer::fetch()
         .await
         .unwrap_or_else(|_| CmServer::defaults());
 
     if let Some(server) = servers.iter().find(|s| s.protocol == prefer) {
-        match try_connect(server).await {
+        match try_connect(server, recorder).await {
             Ok(client) => return Ok(client),
             Err(e) if !allow_fallback => return Err(e),
             Err(_) => {}
@@ -157,22 +165,37 @@ async fn connect_auto(
         Protocol::WebSocket => Protocol::Tcp,
     };
     if let Some(server) = servers.iter().find(|s| s.protocol == other) {
-        return try_connect(server).await;
+        return try_connect(server, recorder).await;
     }
 
     Err(LoginError::NoCmServers)
 }
 
-async fn try_connect(server: &CmServer) -> Result<SteamClient<Encrypted>, LoginError> {
+async fn try_connect(
+    server: &CmServer,
+    recorder: Option<&Recorder>,
+) -> Result<SteamClient<Encrypted>, LoginError> {
     match server.protocol {
         Protocol::Tcp => {
             let transport = TcpTransport::connect(server).await?;
-            let (client, _rx) = SteamClient::connect(transport).await?;
+            let (client, _rx) = match recorder {
+                Some(r) => {
+                    SteamClient::connect(RecordingTransport::with_recorder(transport, r.clone()))
+                        .await?
+                }
+                None => SteamClient::connect(transport).await?,
+            };
             Ok(client.encrypt().await?)
         }
         Protocol::WebSocket => {
             let transport = WebSocketTransport::connect(server).await?;
-            let (client, _rx) = SteamClient::connect_ws(transport).await?;
+            let (client, _rx) = match recorder {
+                Some(r) => {
+                    SteamClient::connect_ws(RecordingTransport::with_recorder(transport, r.clone()))
+                        .await?
+                }
+                None => SteamClient::connect_ws(transport).await?,
+            };
             Ok(client)
         }
     }
@@ -186,6 +209,7 @@ pub struct LoginBuilder {
     config: BuilderConfig,
     transport_prefer: Protocol,
     transport_allow_fallback: bool,
+    recorder: Option<Recorder>,
 }
 
 impl LoginBuilder {
@@ -194,6 +218,7 @@ impl LoginBuilder {
             config: BuilderConfig::default(),
             transport_prefer: Protocol::Tcp,
             transport_allow_fallback: true,
+            recorder: None,
         }
     }
 
@@ -227,10 +252,20 @@ impl LoginBuilder {
         self
     }
 
+    /// Record the session's received packets into `recorder`. The caller
+    /// keeps a clone to flush the capture once login and subsequent work
+    /// are done. Has no effect on the BYO-client (`PreparedLoginBuilder`)
+    /// path.
+    pub fn record(mut self, recorder: Recorder) -> Self {
+        self.recorder = Some(recorder);
+        self
+    }
+
     fn transport(&self) -> TransportConfig {
         TransportConfig::Auto {
             prefer: self.transport_prefer,
             allow_fallback: self.transport_allow_fallback,
+            recorder: self.recorder.clone(),
         }
     }
 

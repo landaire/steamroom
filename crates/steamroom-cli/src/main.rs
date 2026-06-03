@@ -157,7 +157,15 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
     let sink: Arc<dyn sink::JobSink> = Arc::new(StdoutSink::new());
     let cancel = CancellationToken::new();
 
-    match cli.command {
+    // --capture wraps the Steam transport in a recorder. The handle is
+    // flushed to the capture file after the command finishes, so it holds
+    // every server packet the command received.
+    let recorder = cli
+        .capture
+        .as_ref()
+        .map(|_| steamroom::transport::recording::Recorder::default());
+
+    let result = match cli.command {
         Command::LocalInfo(args) => {
             // No Steam connection required.
             commands::local_info::run_local_info(args, sink, cancel).await
@@ -165,42 +173,56 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
         Command::Files(args) => {
             // --manifest-file path needs no client; only fetch when we have to.
             let client = if args.manifest_file.is_none() {
-                Some(commands::shared::connect_and_login(&cli.auth).await?)
+                Some(commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?)
             } else {
                 None
             };
             commands::files::run_files(args, client, sink, cancel).await
         }
         Command::Info(args) => {
-            let client = commands::shared::connect_and_login(&cli.auth).await?;
+            let client = commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?;
             commands::info::run_info(args, client, sink, cancel).await
         }
         Command::Manifests(args) => {
-            let client = commands::shared::connect_and_login(&cli.auth).await?;
+            let client = commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?;
             commands::manifests::run_manifests(args, client, sink, cancel).await
         }
         Command::Diff(args) => {
-            let client = commands::shared::connect_and_login(&cli.auth).await?;
+            let client = commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?;
             commands::diff::run_diff(args, client, sink, cancel).await
         }
         Command::Packages(args) => {
-            let client = commands::shared::connect_and_login(&cli.auth).await?;
+            let client = commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?;
             commands::packages::run_packages(args, client, sink, cancel).await
         }
         Command::SaveManifest(args) => {
-            let client = commands::shared::connect_and_login(&cli.auth).await?;
+            let client = commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?;
             commands::save_manifest::run_save_manifest(args, client, sink, cancel).await
         }
         Command::Download(args) => {
-            let client = commands::shared::connect_and_login(&cli.auth).await?;
+            let client = commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?;
             commands::download::run_download(args, client, sink, cancel, show_progress).await
         }
         Command::Workshop(args) => {
-            let client = commands::shared::connect_and_login(&cli.auth).await?;
+            let client = commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?;
             commands::workshop::run_workshop(args, client, sink, cancel, show_progress).await
         }
         Command::Daemon(args) => {
             daemon::client::run_daemon_subcommand(args.command, cli.quiet, cli.no_progress).await
         }
+    };
+
+    if let (Some(path), Some(rec)) = (cli.capture.as_ref(), recorder.as_ref()) {
+        let capture = rec.flush().await;
+        match capture.save(path) {
+            Ok(()) => tracing::info!(
+                "wrote capture ({} packets) to {}",
+                capture.packets.len(),
+                path.display()
+            ),
+            Err(e) => tracing::warn!("failed to write capture to {}: {e}", path.display()),
+        }
     }
+
+    result
 }

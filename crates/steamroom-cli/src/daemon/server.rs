@@ -447,7 +447,7 @@ async fn lazy_login(
         remember_password: false,
         device_name: None,
     };
-    crate::commands::shared::connect_and_login(&auth).await
+    crate::commands::shared::connect_and_login(&auth, None).await
 }
 
 /// Single-job worker loop. Holds the SteamClient lazily: it is acquired

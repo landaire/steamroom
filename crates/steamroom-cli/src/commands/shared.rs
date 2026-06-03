@@ -343,9 +343,18 @@ pub async fn fetch_manifest(
     Ok(manifest)
 }
 
-pub async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedIn>, CliError> {
-    let builder =
-        LoginBuilder::new().device_name(auth.device_name.as_deref().unwrap_or("steamroom"));
+pub async fn connect_and_login(
+    auth: &AuthOptions,
+    recorder: Option<&steamroom::transport::recording::Recorder>,
+) -> Result<SteamClient<LoggedIn>, CliError> {
+    let make_builder = || {
+        let b = LoginBuilder::new().device_name(auth.device_name.as_deref().unwrap_or("steamroom"));
+        match recorder {
+            Some(r) => b.record(r.clone()),
+            None => b,
+        }
+    };
+    let builder = make_builder();
 
     // --use-steam-token: prefer local Steam install's cached token.
     if auth.use_steam_token {
@@ -383,8 +392,7 @@ pub async fn connect_and_login(auth: &AuthOptions) -> Result<SteamClient<LoggedI
         // missing or stale; a valid token is always the cheap path.
         if let Some(token) = load_saved_token(username) {
             info!("using saved refresh token for {username}");
-            let attempt = LoginBuilder::new()
-                .device_name(auth.device_name.as_deref().unwrap_or("steamroom"))
+            let attempt = make_builder()
                 .with_refresh_token(username, token)
                 .login()
                 .await;

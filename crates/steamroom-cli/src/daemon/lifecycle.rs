@@ -297,7 +297,7 @@ pub async fn launch_daemon_authenticate(cli: &Cli) -> Result<Option<String>, Cli
         return Ok(None);
     }
 
-    let client = shared::connect_and_login(auth).await?;
+    let client = shared::connect_and_login(auth, None).await?;
     let username = auth
         .username
         .clone()
