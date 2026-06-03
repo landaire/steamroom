@@ -13,6 +13,7 @@
 use std::path::PathBuf;
 use crate::errors::CliError;
 use crate::daemon::ipc::socket_name_string;
+use crate::daemon::server::DaemonState;
 
 /// PID file and log file live in a stable per-user cache dir so they
 /// can be found from any shell. `$TMPDIR` on macOS is session-specific
@@ -70,6 +71,48 @@ pub fn render_daemon_info() {
 
 pub fn log_path() -> PathBuf {
     cache_dir().join("daemon.log")
+}
+
+/// Path to the JSON file where the daemon persists its `recent` ring on
+/// shutdown and reloads on startup. Co-located with the PID and log.
+pub fn recent_history_path() -> PathBuf {
+    cache_dir().join("recent.json")
+}
+
+/// Load persisted recent-job history, if any, into the given state's
+/// ring. Silent on failure -- a missing or corrupt file just means we
+/// start with an empty history.
+pub async fn load_recent_history(state: &DaemonState) {
+    let path = recent_history_path();
+    let Ok(data) = std::fs::read_to_string(&path) else { return; };
+    let Ok(records) = serde_json::from_str::<Vec<crate::daemon::proto::JobRecord>>(&data) else {
+        tracing::warn!("recent history at {} is corrupt; ignoring", path.display());
+        return;
+    };
+    let mut recent = state.recent.lock().await;
+    for r in records {
+        recent.push(r);
+    }
+}
+
+/// Snapshot the recent ring to disk. Best-effort: any I/O failure is
+/// logged but does not block shutdown.
+pub async fn save_recent_history(state: &DaemonState) {
+    let path = recent_history_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let records: Vec<_> = state.recent.lock().await.iter().cloned().collect();
+    match serde_json::to_string(&records) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                tracing::warn!("failed to write recent history to {}: {e}", path.display());
+            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to serialize recent history: {e}");
+        }
+    }
 }
 
 /// Spawn the daemon child detached from this process and probe the
@@ -192,7 +235,7 @@ fn wait_for_socket(timeout: std::time::Duration) -> bool {
 use crate::cli::Cli;
 use crate::commands::shared;
 use crate::daemon::ipc;
-use crate::daemon::server::{DaemonState, handle_connection, worker_loop};
+use crate::daemon::server::{handle_connection, worker_loop};
 use crate::daemon::tracing_layer::{JobIdAttachmentInstaller, JobScopedLogLayer};
 
 /// Phase 1 of `daemon start`: preflight + foreground authentication.
@@ -287,6 +330,10 @@ pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> 
     let account_label = if username.is_empty() { None } else { Some(username.clone()) };
     let state = DaemonState::new(account_label, pid, unix_now_lifecycle());
 
+    // Seed the recent ring from disk so `daemon status` and `daemon
+    // attach` see jobs from prior daemon lifetimes.
+    load_recent_history(&state).await;
+
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     let _ = tracing_subscriber::registry()
@@ -350,6 +397,9 @@ pub async fn serve_resumed(username: String, _cli: Cli) -> Result<(), CliError> 
         h.abort();
         let _ = h.await;
     }
+    // Persist the recent ring so the next daemon launch shows job
+    // history across restarts.
+    save_recent_history(&state).await;
     remove_pid_file();
     Ok(())
 }

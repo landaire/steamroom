@@ -1,7 +1,7 @@
 use rkyv::{Archive, Deserialize, Serialize};
 use super::{JobId, JobKind, ProgressUpdate};
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct JobRecord {
     pub job_id: JobId,

@@ -19,7 +19,7 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 /// Monotonically increasing identifier minted by the daemon. Stable for
 /// the daemon's lifetime; zero is reserved as "not a job".
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct JobId(pub u64);
 
@@ -31,7 +31,7 @@ impl std::fmt::Display for JobId {
 
 /// Discriminator for what kind of work a job represents. Used in
 /// `StatusSnapshot` rendering and the TUI's queue/active panes.
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[rkyv(derive(Debug))]
 pub enum JobKind {
     Download,
@@ -95,7 +95,7 @@ impl From<tracing::Level> for LogLevel {
 }
 
 /// Per-job progress snapshot, emitted by the worker as `Event::Progress`.
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct ProgressUpdate {
     pub bytes_done: u64,

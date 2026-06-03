@@ -3101,6 +3101,7 @@ dependencies = [
  "rkyv",
  "rootcause",
  "rpassword",
+ "serde",
  "serde_json",
  "steamroom",
  "steamroom-client",
