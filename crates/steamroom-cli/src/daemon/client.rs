@@ -24,7 +24,15 @@ pub async fn dispatch_use_daemon(cli: Cli) -> Result<(), CliError> {
     let quiet = cli.quiet;
     let no_progress = cli.no_progress;
     let request = cli.into_rpc_request()?;
-    let mut stream = connect().await?;
+    let mut stream = match connect().await {
+        Ok(s) => s,
+        Err(CliError::NoDaemonRunning) => {
+            eprintln!("no daemon running; starting one in lazy auth mode...");
+            auto_spawn_daemon().await?;
+            connect().await?
+        }
+        Err(e) => return Err(e),
+    };
     write_frame(&mut stream, &Frame::Request(request)).await?;
 
     let resp = read_frame(&mut stream).await?;
@@ -280,4 +288,31 @@ fn print_status_table(snap: &StatusSnapshot) {
             println!("  {} ({:?}) {} {}", j.job_id, j.kind, j.args_summary, ec);
         }
     }
+}
+
+/// Auto-spawn a lazy-auth daemon when `--use-daemon` finds no running
+/// daemon. Runs `steamroom daemon start` as a subprocess; that process
+/// does its own fork+exec dance, probes the socket until bound, and
+/// exits 0. Returning Ok here guarantees the socket is up.
+async fn auto_spawn_daemon() -> Result<(), CliError> {
+    use std::process::Stdio;
+    let exe = std::env::current_exe().map_err(CliError::Io)?;
+    let status = tokio::process::Command::new(exe)
+        .args(["daemon", "start"])
+        .stdin(Stdio::null())
+        // The spawned `daemon start` would otherwise print its info
+        // banner to our stdout, which mixes with the user's --use-daemon
+        // output. Suppress both streams; the daemon log file has the
+        // same content.
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(CliError::Io)?;
+    if !status.success() {
+        return Err(CliError::DaemonError(format!(
+            "auto-spawn `daemon start` exited with status {status}"
+        )));
+    }
+    Ok(())
 }
