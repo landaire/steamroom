@@ -18,6 +18,7 @@ __private_fuzzing = []
 [dependencies]
 prost = { workspace = true }
 prost-types = { workspace = true }
+bitflags = { workspace = true }
 bytes = { workspace = true }
 byteorder = { workspace = true }
 aes = { workspace = true }

@@ -284,7 +284,7 @@ impl DepotJob {
             }
 
             let file_path = self.install_dir.join(file.normalized_path());
-            let flags = DepotFileFlags(file.flags);
+            let flags = DepotFileFlags::from_bits_retain(file.flags);
 
             if flags.is_directory() {
                 std::fs::create_dir_all(&file_path)?;

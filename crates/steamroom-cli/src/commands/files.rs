@@ -149,7 +149,7 @@ pub async fn run_files(
             .files
             .iter()
             .map(|f| {
-                let is_dir = steamroom::enums::DepotFileFlags(f.flags).is_directory();
+                let is_dir = steamroom::enums::DepotFileFlags::from_bits_retain(f.flags).is_directory();
                 let name = if is_dir {
                     format!("{}/", f.filename)
                 } else {

@@ -3078,6 +3078,7 @@ dependencies = [
  "aes 0.9.1",
  "async-channel",
  "base64",
+ "bitflags",
  "byteorder",
  "bytes",
  "cbc 0.2.1",

@@ -190,7 +190,7 @@ async fn do_list_files(
     for f in &manifest.files {
         names.push(f.filename.clone());
         sizes.push(f.size);
-        dirs.push(steamroom::enums::DepotFileFlags(f.flags).is_directory());
+        dirs.push(steamroom::enums::DepotFileFlags::from_bits_retain(f.flags).is_directory());
     }
 
     Ok(FileListInner { names, sizes, dirs })

@@ -161,26 +161,42 @@ pub enum ManifestMagic {
     V4,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct DepotFileFlags(pub u32);
+bitflags::bitflags! {
+    /// Per-file flags from a depot manifest (`FileMapping.flags`), i.e. Steam's
+    /// `EDepotFileFlag` bitfield.
+    ///
+    /// The bit values are not a plain sequence of powers of two starting at 1:
+    /// `Directory` is `0x40`, not `0x2`. They are taken from the Steam content
+    /// client rather than a third-party SDK. `Symlink` (`0x200`) is the bit an
+    /// assertion in `contentmanifest.cpp` tests (`m_unFlags & k_EDepotFileFlagSymlink`),
+    /// and `Directory` (`0x40`) matches the flag carried by real directory
+    /// entries in live manifests; the rest follow the same contiguous order.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub struct DepotFileFlags: u32 {
+        const USER_CONFIG = 0x1;
+        const VERSIONED_USER_CONFIG = 0x2;
+        const ENCRYPTED = 0x4;
+        const READ_ONLY = 0x8;
+        const HIDDEN = 0x10;
+        const EXECUTABLE = 0x20;
+        const DIRECTORY = 0x40;
+        const CUSTOM_EXECUTABLE = 0x80;
+        const INSTALL_SCRIPT = 0x100;
+        const SYMLINK = 0x200;
+    }
+}
 
 impl DepotFileFlags {
-    pub const NONE: Self = Self(0);
-    pub const EXECUTABLE: Self = Self(1);
-    pub const DIRECTORY: Self = Self(2);
-    pub const HIDDEN: Self = Self(4);
-    pub const READ_ONLY: Self = Self(8);
-
-    pub fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
     pub fn is_directory(self) -> bool {
         self.contains(Self::DIRECTORY)
     }
 
     pub fn is_executable(self) -> bool {
         self.contains(Self::EXECUTABLE)
+    }
+
+    pub fn is_symlink(self) -> bool {
+        self.contains(Self::SYMLINK)
     }
 }
 
@@ -310,5 +326,36 @@ impl std::fmt::Display for EPackageStatus {
             Self::Unavailable => write!(f, "Unavailable"),
             Self::Unknown(v) => write!(f, "Unknown ({v})"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The two bit values pinned to a primary source: Directory (0x40, observed
+    // on real directory entries) and Symlink (0x200, the bit Steam's own
+    // contentmanifest.cpp asserts). The contiguous layout follows from them.
+    #[test]
+    fn depot_file_flag_values_match_steam() {
+        assert_eq!(DepotFileFlags::DIRECTORY.bits(), 0x40);
+        assert_eq!(DepotFileFlags::SYMLINK.bits(), 0x200);
+        assert_eq!(DepotFileFlags::EXECUTABLE.bits(), 0x20);
+        assert_eq!(DepotFileFlags::READ_ONLY.bits(), 0x8);
+        assert_eq!(DepotFileFlags::HIDDEN.bits(), 0x10);
+    }
+
+    #[test]
+    fn directory_entry_is_recognized() {
+        // A manifest directory entry carries flag 0x40.
+        assert!(DepotFileFlags::from_bits_retain(0x40).is_directory());
+        assert!(!DepotFileFlags::from_bits_retain(0x40).is_executable());
+        // A plain file (no flags) is neither.
+        assert!(!DepotFileFlags::from_bits_retain(0).is_directory());
+        // An executable file carries flag 0x20, not the directory bit.
+        assert!(DepotFileFlags::from_bits_retain(0x20).is_executable());
+        assert!(!DepotFileFlags::from_bits_retain(0x20).is_directory());
+        // Unmodeled bits are preserved, not truncated.
+        assert!(DepotFileFlags::from_bits_retain(0x40 | 0x8000).is_directory());
     }
 }
