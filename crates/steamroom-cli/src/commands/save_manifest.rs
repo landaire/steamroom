@@ -76,10 +76,11 @@ pub async fn run_save_manifest(
     };
 
     let cdn = CdnClient::new().map_err(CliError::Steam)?;
+    let cdn_pool = steamroom::cdn::CdnServerPool::new(cdn_servers.clone());
     info!("downloading manifest...");
     let raw = cdn
-        .download_manifest(
-            cdn_server,
+        .download_manifest_pooled(
+            &cdn_pool,
             depot_id,
             manifest_id,
             request_code,

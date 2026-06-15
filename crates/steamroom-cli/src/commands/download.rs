@@ -169,8 +169,8 @@ pub async fn run_download(
     } else {
         info!("downloading manifest...");
         let raw = cdn
-            .download_manifest(
-                cdn_server,
+            .download_manifest_pooled(
+                &cdn_pool,
                 depot_id,
                 manifest_id,
                 request_code,

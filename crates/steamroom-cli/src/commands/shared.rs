@@ -330,10 +330,13 @@ pub async fn fetch_manifest(
         .unwrap_or(0);
 
     let cdn_servers = client.get_cdn_servers(CellId(0), Some(5)).await?;
-    let cdn_server = cdn_servers.first().ok_or(CliError::NoCdnServers)?;
+    if cdn_servers.is_empty() {
+        return Err(CliError::NoCdnServers);
+    }
+    let cdn_pool = steamroom::cdn::CdnServerPool::new(cdn_servers);
     let cdn = CdnClient::new().map_err(CliError::Steam)?;
     let manifest_data = cdn
-        .download_manifest(cdn_server, depot_id, manifest_id, request_code, None)
+        .download_manifest_pooled(&cdn_pool, depot_id, manifest_id, request_code, None)
         .await?;
     let manifest_bytes = decompress_manifest(&manifest_data)?;
     let mut manifest = DepotManifest::parse(&manifest_bytes)?;

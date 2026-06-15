@@ -169,10 +169,13 @@ async fn do_list_files(
     let cdn_servers = client
         .get_cdn_servers(steamroom::depot::CellId(0), Some(5))
         .await?;
-    let cdn_server = cdn_servers.first().ok_or("no cdn servers")?;
+    if cdn_servers.is_empty() {
+        return Err("no cdn servers".into());
+    }
+    let cdn_pool = steamroom::cdn::CdnServerPool::new(cdn_servers);
     let cdn = steamroom::cdn::CdnClient::new()?;
     let raw = cdn
-        .download_manifest(cdn_server, depot, manifest_id, request_code, None)
+        .download_manifest_pooled(&cdn_pool, depot, manifest_id, request_code, None)
         .await?;
 
     let bytes = decompress(&raw)?;
