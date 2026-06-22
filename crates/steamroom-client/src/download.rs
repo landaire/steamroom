@@ -363,9 +363,18 @@ impl DepotJob {
             }
 
             if file.size == 0 && file.chunks.is_empty() {
+                if self.verify && file_path.exists() {
+                    self.emit(DownloadEvent::FileSkipped {
+                        filename: filename.to_string(),
+                    });
+                    stats.files_skipped += 1;
+                    continue;
+                }
+
                 if let Some(parent) = file_path.parent() {
                     std::fs::create_dir_all(parent).map_err(|e| report(e).attach(attach_file()))?;
                 }
+                
                 std::fs::write(&file_path, []).map_err(|e| report(e).attach(attach_file()))?;
                 stats.files_completed += 1;
                 continue;
