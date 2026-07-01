@@ -370,6 +370,23 @@ impl DepotJob {
         }
     }
 
+    /// Make the on-disk file's attributes match the manifest flags. Currently
+    /// this is the unix executable bit (the only permission flag DepotDownloader
+    /// reflects); it runs on both the write and verify-skip paths so a repair
+    /// fixes a content-correct file whose flags drifted.
+    fn reconcile_flags(
+        &self,
+        flags: DepotFileFlags,
+        path: &Path,
+        filename: &str,
+        attach: impl Fn() -> String,
+    ) -> Result<(), DownloadReport> {
+        if sync_executable(path, flags.is_executable()).map_err(|e| report(e).attach(attach()))? {
+            tracing::debug!("reconciled executable bit on `{filename}`");
+        }
+        Ok(())
+    }
+
     pub async fn download<F: ChunkFetcher + 'static>(
         &self,
         manifest: &DepotManifest,
@@ -476,6 +493,9 @@ impl DepotJob {
                     && meta.is_file()
                     && meta.len() == 0
                 {
+                    // Content is correct; still reconcile the executable bit so
+                    // verify repairs a file whose flags drifted.
+                    self.reconcile_flags(flags, &file_path, filename, attach_file)?;
                     self.emit(DownloadEvent::FileSkipped {
                         filename: filename.to_string(),
                     });
@@ -494,6 +514,7 @@ impl DepotJob {
                 // `write` with an empty slice creates the file or truncates an
                 // existing one to zero length.
                 std::fs::write(&file_path, []).map_err(|e| report(e).attach(attach_file()))?;
+                self.reconcile_flags(flags, &file_path, filename, attach_file)?;
                 stats.files_completed += 1;
                 continue;
             }
@@ -505,6 +526,9 @@ impl DepotJob {
             // Check if file already matches the manifest (skip if up-to-date)
             let expected_size = file.size;
             if self.verify && file_matches(&file_path, expected_size, file.sha_content.as_ref()) {
+                // Content matches; reconcile the executable bit so verify also
+                // repairs a file whose flags no longer match the manifest.
+                self.reconcile_flags(flags, &file_path, filename, attach_file)?;
                 self.emit(DownloadEvent::FileSkipped {
                     filename: filename.to_string(),
                 });
@@ -547,6 +571,7 @@ impl DepotJob {
                     .map_err(|e| report(e).attach(attach_file()))?;
                 size
             };
+            self.reconcile_flags(flags, &file_path, filename, attach_file)?;
             stats.bytes_downloaded += file_size;
             stats.files_completed += 1;
 
@@ -1281,6 +1306,35 @@ fn remove_stale_symlink(path: &Path) -> io::Result<()> {
         Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(path),
         _ => Ok(()),
     }
+}
+
+/// Reconcile a regular file's unix executable bit with the manifest's
+/// `EXECUTABLE` flag: add the exec bits when the file should be executable and
+/// they are missing, strip them when it should not be and they are present.
+/// Returns whether a change was made. Directories and symlinks are left alone.
+/// A no-op on non-unix, matching DepotDownloader (Windows has no exec bit).
+#[cfg(unix)]
+fn sync_executable(path: &Path, want_exec: bool) -> io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() {
+        return Ok(false);
+    }
+    let mode = meta.permissions().mode();
+    let has_exec = mode & 0o111 != 0;
+    if want_exec == has_exec {
+        return Ok(false);
+    }
+    let new_mode = if want_exec { mode | 0o111 } else { mode & !0o111 };
+    let mut perms = meta.permissions();
+    perms.set_mode(new_mode);
+    std::fs::set_permissions(path, perms)?;
+    Ok(true)
+}
+
+#[cfg(not(unix))]
+fn sync_executable(_path: &Path, _want_exec: bool) -> io::Result<bool> {
+    Ok(false)
 }
 
 /// Collect all parent directories of a normalized path, joined to install_dir.

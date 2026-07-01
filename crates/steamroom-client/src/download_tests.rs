@@ -1546,6 +1546,122 @@ async fn evicted_cas_source_falls_back_to_fetch() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn executable_flag_sets_exec_bit_on_download() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let key = DepotKey([0xAA; 32]);
+    let data = b"#!/bin/sh\necho hello\n";
+
+    let mut chunks = HashMap::new();
+    chunks.insert(sha_id(data), enc(data, &key));
+
+    let mut f = file_with_chunks("run.sh", vec![chunk_at(data, 0)]);
+    f.flags = DepotFileFlags::EXECUTABLE.bits();
+    let manifest = DepotManifest::new(vec![f]);
+
+    let job = DepotJob::builder()
+        .depot_id(anon::SPACEWAR_DEPOT)
+        .depot_key(key)
+        .install_dir(install.to_path_buf())
+        .build()
+        .unwrap();
+
+    job.download(&manifest, Arc::new(MockFetcher { chunks }))
+        .await
+        .unwrap();
+
+    let mode = std::fs::metadata(install.join("run.sh"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert!(mode & 0o111 != 0, "expected exec bits, got mode {mode:o}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn verify_sets_missing_exec_bit_on_matching_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let data = b"#!/bin/sh\necho hello\n";
+
+    // Content already correct, but not marked executable on disk.
+    std::fs::write(install.join("run.sh"), data).unwrap();
+    std::fs::set_permissions(
+        install.join("run.sh"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    let mut f = file_with_chunks("run.sh", vec![chunk_at(data, 0)]);
+    f.flags = DepotFileFlags::EXECUTABLE.bits();
+    f.sha_content = Some(Sha1Hash::compute(data).0);
+    let manifest = DepotManifest::new(vec![f]);
+
+    let job = DepotJob::builder()
+        .depot_id(anon::SPACEWAR_DEPOT)
+        .depot_key(DepotKey([0; 32]))
+        .install_dir(install.to_path_buf())
+        .verify(true)
+        .build()
+        .unwrap();
+
+    let stats = job
+        .download(&manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
+
+    // Content matched, so the download is skipped, but the flag is repaired.
+    assert_eq!(stats.files_skipped, 1);
+    let mode = std::fs::metadata(install.join("run.sh"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert!(mode & 0o111 != 0, "verify should set exec bits, got {mode:o}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn verify_strips_exec_bit_when_not_flagged() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path();
+    let data = b"plain data file.";
+
+    std::fs::write(install.join("data.bin"), data).unwrap();
+    std::fs::set_permissions(
+        install.join("data.bin"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    // Not flagged executable: verify should make the file match the manifest.
+    let mut f = file_with_chunks("data.bin", vec![chunk_at(data, 0)]);
+    f.sha_content = Some(Sha1Hash::compute(data).0);
+    let manifest = DepotManifest::new(vec![f]);
+
+    let job = DepotJob::builder()
+        .depot_id(anon::SPACEWAR_DEPOT)
+        .depot_key(DepotKey([0; 32]))
+        .install_dir(install.to_path_buf())
+        .verify(true)
+        .build()
+        .unwrap();
+
+    job.download(&manifest, Arc::new(NullFetcher))
+        .await
+        .unwrap();
+
+    let mode = std::fs::metadata(install.join("data.bin"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o111, 0, "verify should strip exec bits, got {mode:o}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn stale_symlink_replaced_by_regular_empty_file() {
     // A path that was a symlink in the old version is now a regular empty file.
     // The link must be removed, not written through.
