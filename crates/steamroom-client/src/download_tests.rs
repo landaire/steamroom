@@ -1618,7 +1618,10 @@ async fn verify_sets_missing_exec_bit_on_matching_file() {
         .unwrap()
         .permissions()
         .mode();
-    assert!(mode & 0o111 != 0, "verify should set exec bits, got {mode:o}");
+    assert!(
+        mode & 0o111 != 0,
+        "verify should set exec bits, got {mode:o}"
+    );
 }
 
 #[cfg(unix)]
@@ -1657,7 +1660,11 @@ async fn verify_strips_exec_bit_when_not_flagged() {
         .unwrap()
         .permissions()
         .mode();
-    assert_eq!(mode & 0o111, 0, "verify should strip exec bits, got {mode:o}");
+    assert_eq!(
+        mode & 0o111,
+        0,
+        "verify should strip exec bits, got {mode:o}"
+    );
 }
 
 #[cfg(unix)]

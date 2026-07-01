@@ -1325,7 +1325,11 @@ fn sync_executable(path: &Path, want_exec: bool) -> io::Result<bool> {
     if want_exec == has_exec {
         return Ok(false);
     }
-    let new_mode = if want_exec { mode | 0o111 } else { mode & !0o111 };
+    let new_mode = if want_exec {
+        mode | 0o111
+    } else {
+        mode & !0o111
+    };
     let mut perms = meta.permissions();
     perms.set_mode(new_mode);
     std::fs::set_permissions(path, perms)?;
