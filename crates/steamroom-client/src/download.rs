@@ -527,7 +527,7 @@ impl DepotJob {
                 self.download_file_streaming(file, &file_path, None, &cas, &fetcher, &sem)
                     .await?
             } else {
-                let staging_dir = self.install_dir.join(".depotdownloader").join("staging");
+                let staging_dir = self.install_dir.join(".DepotDownloader").join("staging");
                 ensure_dir(&mut dir_cache, &staging_dir)
                     .map_err(|e| report(e).attach(attach_file()))?;
                 // Staging names flatten separators; two source paths could in

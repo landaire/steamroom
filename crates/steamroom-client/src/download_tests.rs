@@ -557,7 +557,7 @@ async fn resume_truncates_partial_chunk_data() {
 
     // Simulate an interrupted download: chunk A fully written + 5 garbage bytes
     // from a partially-written chunk B.
-    let staging_dir = install.join(".depotdownloader").join("staging");
+    let staging_dir = install.join(".DepotDownloader").join("staging");
     std::fs::create_dir_all(&staging_dir).unwrap();
     let staging_path = staging_dir.join("resume.bin");
     {
@@ -615,7 +615,7 @@ async fn resume_skips_fully_staged_chunks() {
     )]);
 
     // Pre-stage chunk A exactly (no partial data).
-    let staging_dir = install.join(".depotdownloader").join("staging");
+    let staging_dir = install.join(".DepotDownloader").join("staging");
     std::fs::create_dir_all(&staging_dir).unwrap();
     let staging_path = staging_dir.join("resume2.bin");
     std::fs::write(&staging_path, chunk_a_plain).unwrap();
@@ -974,7 +974,7 @@ async fn non_atomic_writes_directly_to_target() {
         plaintext
     );
     // No staging directory should exist in non-atomic mode.
-    assert!(!install.join(".depotdownloader").join("staging").exists());
+    assert!(!install.join(".DepotDownloader").join("staging").exists());
 }
 
 #[tokio::test]
@@ -1007,7 +1007,7 @@ async fn atomic_mode_uses_staging_then_renames() {
         std::fs::read(install.join("atomic.bin")).unwrap(),
         plaintext
     );
-    let staging = install.join(".depotdownloader").join("staging");
+    let staging = install.join(".DepotDownloader").join("staging");
     if staging.exists() {
         assert!(std::fs::read_dir(&staging).unwrap().next().is_none());
     }
@@ -1605,7 +1605,7 @@ async fn atomic_resume_reuses_staging_and_installed_file() {
     .unwrap();
 
     // Partial staging file: chunk a already written at offset 0.
-    let staging_dir = install.join(".depotdownloader").join("staging");
+    let staging_dir = install.join(".DepotDownloader").join("staging");
     std::fs::create_dir_all(&staging_dir).unwrap();
     std::fs::write(staging_dir.join("game.bin"), chunk_a).unwrap();
 

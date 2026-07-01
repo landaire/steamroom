@@ -18,9 +18,35 @@ pub struct DepotConfig {
     pub depots: HashMap<u32, DepotInfo>,
 }
 
+/// DepotDownloader's config directory name. We match its casing so an install
+/// is not split across a `.DepotDownloader` (DepotDownloader) and a differently
+/// cased directory on case-sensitive filesystems. We still keep our own
+/// `depot.json` / `manifests/` layout inside it, not DepotDownloader's format.
+const CONFIG_DIR: &str = ".DepotDownloader";
+/// Lowercase name written by older steamroom versions. Read as a fallback so a
+/// prior install is not orphaned. On case-insensitive filesystems this and
+/// [`CONFIG_DIR`] resolve to the same directory, so the distinction only
+/// matters on case-sensitive ones.
+const LEGACY_CONFIG_DIR: &str = ".depotdownloader";
+
 impl DepotConfig {
+    /// Directory to write config into (canonical casing).
     pub fn config_dir(install_dir: &Path) -> PathBuf {
-        install_dir.join(".depotdownloader")
+        install_dir.join(CONFIG_DIR)
+    }
+
+    /// Directory to read config from: the canonical one, falling back to a
+    /// legacy lowercase directory left by an older steamroom.
+    fn read_config_dir(install_dir: &Path) -> PathBuf {
+        let canonical = install_dir.join(CONFIG_DIR);
+        if canonical.exists() {
+            return canonical;
+        }
+        let legacy = install_dir.join(LEGACY_CONFIG_DIR);
+        if legacy.exists() {
+            return legacy;
+        }
+        canonical
     }
 
     pub fn config_path(install_dir: &Path) -> PathBuf {
@@ -32,7 +58,7 @@ impl DepotConfig {
     }
 
     pub fn load(install_dir: &Path) -> Self {
-        let path = Self::config_path(install_dir);
+        let path = Self::read_config_dir(install_dir).join("depot.json");
         std::fs::read_to_string(&path)
             .ok()
             .and_then(|data| serde_json::from_str(&data).ok())
@@ -130,7 +156,8 @@ impl DepotConfig {
         depot_id: DepotId,
         manifest_id: ManifestId,
     ) -> Option<Vec<u8>> {
-        let path = Self::manifests_dir(install_dir)
+        let path = Self::read_config_dir(install_dir)
+            .join("manifests")
             .join(format!("{}_{}.manifest", depot_id.0, manifest_id.0));
         std::fs::read(&path).ok()
     }

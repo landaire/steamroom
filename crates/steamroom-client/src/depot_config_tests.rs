@@ -44,7 +44,7 @@ fn manifest_raw_round_trip() {
 
     let path = dir
         .path()
-        .join(".depotdownloader")
+        .join(".DepotDownloader")
         .join("manifests")
         .join("481_111.zip");
     assert_eq!(std::fs::read(&path).unwrap(), data);

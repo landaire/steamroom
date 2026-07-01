@@ -185,7 +185,7 @@ pub fn resolve_depot_key(args: &FilesArgs) -> Result<DepotKey, CliError> {
     if let Some(ref manifest_path) = args.manifest_file
         && let Some(parent) = manifest_path.parent()
     {
-        // Check sibling depot.json (manifest might be in .depotdownloader/manifests/)
+        // Check sibling depot.json (manifest might be in .DepotDownloader/manifests/)
         for dir in [parent, &parent.join("../.."), &parent.join("..")] {
             let config = steamroom_client::depot_config::DepotConfig::load(dir);
             if let Some(depot_id) = args.depot
