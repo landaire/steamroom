@@ -17,6 +17,7 @@ use crate::commands::shared::fmt_size;
 use crate::download as direct_progress;
 use crate::errors::CliError;
 use crate::sink::JobSink;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use steamroom::cdn::CdnClient;
@@ -24,6 +25,7 @@ use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
 use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::*;
+use steamroom_client::download::OldChunkLoc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::info;
@@ -223,8 +225,9 @@ pub async fn run_download(
         );
     }
 
-    // Load old manifest for delta file removal
-    let old_manifest_files = match depot_config.get_installed(depot_id) {
+    // Load the previously-installed manifest, used both to remove files absent
+    // from the new manifest and to reuse unchanged chunks by content.
+    let old_manifest = match depot_config.get_installed(depot_id) {
         Some((old_id, old_key)) if old_id != manifest_id => {
             debug!("previous manifest: {old_id}, loading for delta");
             steamroom_client::depot_config::DepotConfig::load_manifest_decompressed(
@@ -237,12 +240,7 @@ pub async fn run_download(
                 if old.filenames_encrypted {
                     let _ = old.decrypt_filenames(&old_key);
                 }
-                Some(
-                    old.files
-                        .iter()
-                        .map(|f| f.normalized_path())
-                        .collect::<Vec<_>>(),
-                )
+                Some(old)
             })
         }
         _ => None,
@@ -261,9 +259,12 @@ pub async fn run_download(
         .non_atomic(args.non_atomic)
         .event_sender(event_tx);
 
-    if let Some(old_files) = old_manifest_files {
-        info!("delta update: will remove files not in new manifest");
-        builder = builder.old_manifest_files(old_files);
+    if let Some(old) = old_manifest {
+        info!("delta update: will remove files not in new manifest and reuse unchanged chunks");
+        let old_files = old.files.iter().map(|f| f.normalized_path()).collect();
+        builder = builder
+            .old_manifest_files(old_files)
+            .old_file_layouts(old_file_layouts(&old));
     }
 
     if let Some(max) = args.max_downloads {
@@ -350,4 +351,30 @@ pub async fn run_download(
     }
     info!("{summary}");
     Ok(())
+}
+
+/// Map each file in the previously-installed manifest to its chunk layout
+/// (identity + offset in the installed file) for content-addressed reuse.
+/// Offsets absent from the manifest fall back to a running cumulative sum,
+/// matching how the download pipeline positions chunks.
+fn old_file_layouts(old: &DepotManifest) -> HashMap<String, Vec<OldChunkLoc>> {
+    let mut map = HashMap::with_capacity(old.files.len());
+    for f in &old.files {
+        if f.chunks.is_empty() {
+            continue;
+        }
+        let mut locs = Vec::with_capacity(f.chunks.len());
+        let mut running: u64 = 0;
+        for c in &f.chunks {
+            let offset = c.offset.unwrap_or(running);
+            locs.push(OldChunkLoc {
+                id: c.id.clone(),
+                offset,
+                size: c.uncompressed_size,
+            });
+            running = offset + u64::from(c.uncompressed_size);
+        }
+        map.insert(f.normalized_path(), locs);
+    }
+    map
 }

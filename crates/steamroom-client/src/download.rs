@@ -59,6 +59,12 @@ pub enum DownloadError {
         actual: [u8; 20],
     },
 
+    #[error("chunk failed SHA-1 identity check")]
+    ChunkSha1Mismatch {
+        expected: [u8; 20],
+        actual: [u8; 20],
+    },
+
     #[error("background task: {0}")]
     Join(#[from] tokio::task::JoinError),
 
@@ -303,11 +309,59 @@ pub struct DepotJob {
     retry: RetryConfig,
     event_tx: Option<mpsc::UnboundedSender<DownloadEvent>>,
     old_manifest_files: Option<Vec<String>>,
+    old_file_layouts: Option<std::collections::HashMap<String, Vec<OldChunkLoc>>>,
+
+    /// Per-chunk reuse decisions tallied during a run. Test-only: it exists so
+    /// tests can assert *how* a file was assembled (fetched vs. reused vs.
+    /// copied off disk), which the resulting bytes alone cannot prove.
+    #[cfg(test)]
+    checkpoints: Arc<ReuseCheckpoints>,
+}
+
+/// Test-only tally proving which reuse branch each chunk took. See
+/// [`ChunkSource`]. Counts accumulate across every file in a single job.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ReuseCheckpoints {
+    pub in_place: std::sync::atomic::AtomicU64,
+    pub copy_reuse: std::sync::atomic::AtomicU64,
+    pub fetch: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(test)]
+impl ReuseCheckpoints {
+    fn record(&self, plan: &[ChunkSource]) {
+        use std::sync::atomic::Ordering::Relaxed;
+        for source in plan {
+            match source {
+                ChunkSource::InPlace => &self.in_place,
+                ChunkSource::CopyFrom { .. } => &self.copy_reuse,
+                ChunkSource::Fetch => &self.fetch,
+            }
+            .fetch_add(1, Relaxed);
+        }
+    }
+
+    pub fn snapshot(&self) -> (u64, u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.in_place.load(Relaxed),
+            self.copy_reuse.load(Relaxed),
+            self.fetch.load(Relaxed),
+        )
+    }
 }
 
 impl DepotJob {
     pub fn builder() -> DepotJobBuilder {
         DepotJobBuilder::default()
+    }
+
+    /// Handle to the test-only reuse tally. Grab it before `download` and read
+    /// [`ReuseCheckpoints::snapshot`] after to assert the exercised path.
+    #[cfg(test)]
+    pub(crate) fn checkpoints(&self) -> Arc<ReuseCheckpoints> {
+        self.checkpoints.clone()
     }
 
     fn emit(&self, event: DownloadEvent) {
@@ -341,6 +395,22 @@ impl DepotJob {
 
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(self.max_downloads));
 
+        // Content-addressed store over the previously-installed files, so an
+        // unchanged chunk is copied off disk from whichever old file holds it
+        // rather than refetched. Empty when there is no prior install.
+        // No prior install means an empty store: every chunk is then fetched or
+        // reused positionally, which is the correct behavior.
+        let cas = self
+            .old_file_layouts
+            .as_ref()
+            .map(build_cas)
+            .unwrap_or_default();
+
+        // Directories are created lazily on first use and remembered, so a
+        // manifest with thousands of files sharing a handful of directories
+        // issues one `create_dir_all` per directory rather than per file.
+        let mut dir_cache: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
         for file in &manifest.files {
             let filename = &file.filename;
 
@@ -358,12 +428,54 @@ impl DepotJob {
             let attach_file = || format!("file `{}` (size {} bytes)", file.filename, file.size);
 
             if flags.is_directory() {
-                std::fs::create_dir_all(&file_path).map_err(|e| report(e).attach(attach_file()))?;
+                // Explicit directory entries (including empty ones) are always
+                // materialized so the tree matches the manifest exactly.
+                ensure_dir(&mut dir_cache, &file_path)
+                    .map_err(|e| report(e).attach(attach_file()))?;
+                continue;
+            }
+
+            // Symlinks carry `size == 0` and no chunks, so they must be handled
+            // before the empty-file branch below -- otherwise they would be
+            // written out as empty regular files instead of links.
+            if flags.is_symlink() || file.link_target.is_some() {
+                if let Some(parent) = file_path.parent() {
+                    ensure_dir(&mut dir_cache, parent)
+                        .map_err(|e| report(e).attach(attach_file()))?;
+                }
+                match create_symlink(&file_path, file.link_target.as_deref())
+                    .map_err(|e| report(e).attach(attach_file()))?
+                {
+                    true => {
+                        stats.files_completed += 1;
+                        self.emit(DownloadEvent::FileCompleted {
+                            filename: filename.to_string(),
+                        });
+                    }
+                    false => {
+                        tracing::debug!(
+                            "skipping symlink `{filename}` (no target or unsupported platform)"
+                        );
+                        stats.files_skipped += 1;
+                        self.emit(DownloadEvent::FileSkipped {
+                            filename: filename.to_string(),
+                        });
+                    }
+                }
                 continue;
             }
 
             if file.size == 0 && file.chunks.is_empty() {
-                if self.verify && file_path.exists() {
+                // Skip only when the target is already a regular, empty file.
+                // `symlink_metadata` does not follow links, so a stale symlink
+                // here is not mistaken for the empty file it may point at. A
+                // non-empty file, a symlink, or a directory in its place all
+                // fall through to be rewritten.
+                if self.verify
+                    && let Ok(meta) = std::fs::symlink_metadata(&file_path)
+                    && meta.is_file()
+                    && meta.len() == 0
+                {
                     self.emit(DownloadEvent::FileSkipped {
                         filename: filename.to_string(),
                     });
@@ -372,21 +484,22 @@ impl DepotJob {
                 }
 
                 if let Some(parent) = file_path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| report(e).attach(attach_file()))?;
+                    ensure_dir(&mut dir_cache, parent)
+                        .map_err(|e| report(e).attach(attach_file()))?;
                 }
-                
+
+                // Drop a stale symlink first; otherwise `write` would follow it
+                // and truncate the link target instead of replacing the entry.
+                remove_stale_symlink(&file_path).map_err(|e| report(e).attach(attach_file()))?;
+                // `write` with an empty slice creates the file or truncates an
+                // existing one to zero length.
                 std::fs::write(&file_path, []).map_err(|e| report(e).attach(attach_file()))?;
                 stats.files_completed += 1;
                 continue;
             }
 
-            if file.link_target.is_some() {
-                // Symlinks — skip for now
-                continue;
-            }
-
             if let Some(parent) = file_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| report(e).attach(attach_file()))?;
+                ensure_dir(&mut dir_cache, parent).map_err(|e| report(e).attach(attach_file()))?;
             }
 
             // Check if file already matches the manifest (skip if up-to-date)
@@ -405,16 +518,29 @@ impl DepotJob {
             });
 
             let file_size = if self.non_atomic {
-                self.download_file_streaming(file, &file_path, &fetcher, &sem)
+                // Written in place: the file itself is both output and reuse
+                // source, so unchanged chunks stay put and are never refetched.
+                // A stale symlink here must go first, or the open would follow
+                // it and write through to the link target. A regular file is
+                // kept so its chunks can be reused in place.
+                remove_stale_symlink(&file_path).map_err(|e| report(e).attach(attach_file()))?;
+                self.download_file_streaming(file, &file_path, None, &cas, &fetcher, &sem)
                     .await?
             } else {
                 let staging_dir = self.install_dir.join(".depotdownloader").join("staging");
-                std::fs::create_dir_all(&staging_dir)
+                ensure_dir(&mut dir_cache, &staging_dir)
                     .map_err(|e| report(e).attach(attach_file()))?;
+                // Staging names flatten separators; two source paths could in
+                // principle collide here, but files are processed sequentially
+                // and each staging file is renamed away before the next starts,
+                // so only one is ever live at a time.
                 let staging_path = staging_dir.join(filename.replace(['/', '\\'], "_"));
 
+                // Stage a fresh copy, but seed unchanged chunks from the
+                // currently-installed file so only changed chunks are fetched.
+                let reuse_from = file_path.exists().then_some(file_path.as_path());
                 let size = self
-                    .download_file_streaming(file, &staging_path, &fetcher, &sem)
+                    .download_file_streaming(file, &staging_path, reuse_from, &cas, &fetcher, &sem)
                     .await?;
 
                 replace_file(&staging_path, &file_path)
@@ -488,10 +614,13 @@ impl DepotJob {
     ///
     /// Pre-allocates the output file via `set_len(file.size)`, then writes each
     /// chunk at its known offset as soon as it has been fetched, decrypted, and
-    /// decompressed. Reusable chunks (existing bytes whose Adler-32 already
-    /// matches the manifest) are left in place; only differing chunks hit the
-    /// network. Out-of-order completions are fine because writes are positional
-    /// (`pwrite` / `seek_write`).
+    /// decompressed. Out-of-order completions are fine because writes are
+    /// positional (`pwrite` / `seek_write`).
+    ///
+    /// A chunk avoids the network when a copy of its bytes already exists on
+    /// disk (see [`plan_reuse`]): in the output itself, in this file's installed
+    /// copy, or anywhere in the old install via the content-addressed store.
+    /// Only genuinely-changed chunks are fetched.
     ///
     /// Memory is bounded by `max_downloads * (encrypted + decompressed chunk
     /// size)` plus one reusable scratch buffer. The full file is never resident.
@@ -499,6 +628,8 @@ impl DepotJob {
         &self,
         file: &ManifestFile,
         output_path: &Path,
+        reuse_from: Option<&Path>,
+        cas: &Cas,
         fetcher: &std::sync::Arc<F>,
         sem: &std::sync::Arc<tokio::sync::Semaphore>,
     ) -> Result<u64, DownloadReport> {
@@ -541,28 +672,97 @@ impl DepotJob {
             .map_err(|e| report(e).attach(attach_file_ctx()))?;
         let out = Arc::new(out);
 
-        let reuse = compute_reuse_mask(&out, &file.chunks, &offsets, original_len)
-            .map_err(|r| r.attach(attach_file_ctx()))?;
+        let (plan, sources) = plan_reuse(
+            &out,
+            original_len,
+            &ReuseSources {
+                reuse_from,
+                output_path,
+                install_dir: &self.install_dir,
+                cas,
+            },
+            &file.chunks,
+            &offsets,
+        )
+        .map_err(|r| r.attach(attach_file_ctx()))?;
 
-        let reused = reuse.iter().filter(|&&r| r).count();
+        #[cfg(test)]
+        self.checkpoints.record(&plan);
+
+        let copy_from_disk = plan
+            .iter()
+            .filter(|s| matches!(s, ChunkSource::CopyFrom { .. }))
+            .count();
+        let reused = plan.iter().filter(|s| **s != ChunkSource::Fetch).count();
         let to_fetch = n - reused;
         if reused > 0 {
             tracing::debug!(
-                "{}: reusing {reused}/{n} chunks, fetching {to_fetch}",
+                "{}: reusing {reused}/{n} chunks ({copy_from_disk} copied from disk), fetching {to_fetch}",
                 &file.filename,
             );
         }
+        // In-place chunks are already correct; surface their bytes to progress
+        // now. Copied chunks report from the copy task so the byte counter
+        // tracks the actual work as it happens.
         for (i, chunk_meta) in file.chunks.iter().enumerate() {
-            if reuse[i] {
+            if plan[i] == ChunkSource::InPlace {
                 self.emit(DownloadEvent::ChunkCompleted {
                     bytes: u64::from(chunk_meta.uncompressed_size),
                 });
             }
         }
 
-        let mut fetch_handles = Vec::with_capacity(to_fetch);
+        let mut fetch_handles = Vec::with_capacity(to_fetch + usize::from(copy_from_disk > 0));
+
+        // Copy reusable chunks off local disk into the output in one blocking
+        // pass, concurrently with the network fetches below.
+        if copy_from_disk > 0 {
+            // (source index into `sources`, read offset, write offset, size).
+            // Read and write offsets differ when an update moved the chunk.
+            let ops: Vec<(usize, u64, u64, usize)> = file
+                .chunks
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| match plan[i] {
+                    ChunkSource::CopyFrom { source, src_offset } => {
+                        Some((source, src_offset, offsets[i], c.uncompressed_size as usize))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let sources = sources.clone();
+            let out = out.clone();
+            let event_tx = self.event_tx.clone();
+            let ctx = attach_file_ctx();
+            fetch_handles.push(tokio::spawn(async move {
+                tokio::task::spawn_blocking(move || -> Result<(), DownloadReport> {
+                    // `copy_from_disk > 0` gates this task, so `ops` is non-empty.
+                    let cap = ops
+                        .iter()
+                        .map(|(_, _, _, s)| *s)
+                        .max()
+                        .expect("copy_from_disk > 0 implies at least one op");
+                    let mut buf = vec![0u8; cap];
+                    for (source, src_off, dst_off, size) in ops {
+                        pread_exact(&sources[source], &mut buf[..size], src_off)
+                            .map_err(|e| report(e).attach(ctx.clone()))?;
+                        pwrite_all(&out, &buf[..size], dst_off)
+                            .map_err(|e| report(e).attach(ctx.clone()))?;
+                        if let Some(ref tx) = event_tx {
+                            let _ = tx.send(DownloadEvent::ChunkCompleted { bytes: size as u64 });
+                        }
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(report)?
+            }));
+        }
+        // Sources not consumed by the copy task are closed here.
+        drop(sources);
+
         for (i, chunk_meta) in file.chunks.iter().enumerate() {
-            if reuse[i] {
+            if plan[i] != ChunkSource::Fetch {
                 continue;
             }
             let chunk_id = chunk_meta.id.clone();
@@ -604,6 +804,21 @@ impl DepotJob {
                 tokio::task::spawn_blocking(move || -> Result<(), DownloadReport> {
                     let processed = chunk::process_chunk(&raw, &depot_key, expected_size, checksum)
                         .map_err(|e| report(e).attach(attach_chunk_in_blocking.clone()))?;
+                    // The chunk id is the SHA-1 of the uncompressed bytes, so
+                    // verify identity instead of trusting only the Adler-32 gate
+                    // in `process_chunk`. An all-zero id carries no identity to
+                    // check against; `process_chunk`'s size + checksum is then
+                    // all we have.
+                    if chunk_id != ChunkId([0u8; 20]) {
+                        let actual = sha1_of(&processed);
+                        if actual != chunk_id.0 {
+                            return Err(Report::new(DownloadError::ChunkSha1Mismatch {
+                                expected: chunk_id.0,
+                                actual,
+                            })
+                            .attach(attach_chunk_in_blocking.clone()));
+                        }
+                    }
                     let written = processed.len() as u64;
                     pwrite_all(out.as_ref(), &processed, chunk_offset)
                         .map_err(|e| report(e).attach(attach_chunk_in_blocking.clone()))?;
@@ -641,10 +856,12 @@ impl DepotJob {
             return Err(e.attach(attach_file_ctx()));
         }
 
-        // Stream-verify SHA-1 against the manifest. Reused chunks pass only the
-        // weak Adler-32 gate, so a torn or partial existing file can slip
-        // corrupt bytes through; without the whole-file check the bad package
-        // would be accepted silently and only surface at extraction time.
+        // Stream-verify the whole assembled file against the manifest SHA-1.
+        // Every individual chunk is already SHA-1-verified (reused chunks in
+        // `plan_reuse`, fetched chunks after decode, except chunks that carry no
+        // id and fall back to the Adler-32 gate). This end-to-end pass is the
+        // backstop for those id-less chunks and for assembly mistakes (a chunk
+        // written at the wrong offset) that per-chunk checks cannot see.
         if let Some(expected_sha) = file.sha_content.as_ref() {
             let file_size = file.size;
             let out_for_hash = out.clone();
@@ -688,43 +905,240 @@ const HASH_READ_BUFFER: usize = 1 << 20;
 /// the cap exists only as a guard against pathologically large manifests.
 const REUSE_BUFFER_CAP: usize = 4 << 20;
 
-/// Decide which chunks can be reused from the existing on-disk bytes.
+/// Where a chunk's bytes come from, decided by [`plan_reuse`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ChunkSource {
+    /// Already correct at the chunk's own offset in the output file; leave it.
+    InPlace,
+    /// Correct in an already-opened on-disk source (`source` indexes the pool
+    /// returned alongside the plan) at `src_offset`, which need not equal the
+    /// chunk's new offset. Copy those bytes into the output.
+    CopyFrom { source: usize, src_offset: u64 },
+    /// Must be downloaded.
+    Fetch,
+}
+
+/// A chunk of the previously-installed version of a file: its content identity
+/// and where those bytes live in that installed file. Used to reuse a chunk by
+/// content even when an update has shifted it to a different offset.
+#[derive(Clone, Debug)]
+pub struct OldChunkLoc {
+    pub id: ChunkId,
+    pub offset: u64,
+    pub size: u32,
+}
+
+/// Location of a chunk's bytes within the previously-installed depot: a path
+/// relative to the install dir, plus the offset and size in that file.
+#[derive(Clone, Debug)]
+struct CasLoc {
+    rel_path: String,
+    offset: u64,
+    size: u32,
+}
+
+/// Content-addressed store over the previously-installed files: chunk SHA-1 ->
+/// where a copy of those bytes lives on disk. Built once per download and
+/// consulted for every chunk, so an unchanged chunk is copied off local disk
+/// from whichever old file holds it, even a different file than the one being
+/// written. Every hit is SHA-verified before use, so a since-overwritten
+/// ("evicted") source simply fails verification and falls back to a fetch.
+type Cas = std::collections::HashMap<[u8; 20], CasLoc>;
+
+fn build_cas(layouts: &std::collections::HashMap<String, Vec<OldChunkLoc>>) -> Cas {
+    let mut cas = Cas::with_capacity(layouts.values().map(Vec::len).sum());
+    for (rel_path, locs) in layouts {
+        for loc in locs {
+            if loc.id == ChunkId([0u8; 20]) {
+                continue;
+            }
+            // First occurrence wins; any location holding the bytes is equally
+            // valid since reuse is verified by content, not position.
+            cas.entry(loc.id.0).or_insert_with(|| CasLoc {
+                rel_path: rel_path.clone(),
+                offset: loc.offset,
+                size: loc.size,
+            });
+        }
+    }
+    cas
+}
+
+/// Decide, per chunk, whether it can be sourced from local disk instead of the
+/// network. `out_len` is the output size before `set_len`, so chunks in the
+/// zero-extended tail are never reused in place; `reuse_src_len` bounds reads
+/// from the installed file.
 ///
-/// `original_len` is the file size before `set_len`, so chunks that fall in
-/// the zero-extended tail are never considered reusable.
-fn compute_reuse_mask(
-    file: &Arc<File>,
+/// Reuse is gated on the chunk's SHA-1 identity, not the weak Adler-32: the
+/// chunk id *is* the SHA-1 of its uncompressed bytes, so recomputing it over
+/// the candidate bytes is an exact content match with no collision risk. A
+/// chunk whose id is absent (all-zero) carries no verifiable identity and is
+/// always fetched rather than trusting a weaker signal.
+/// `size` bytes at `off` in `f` hash to `id`. Reads into `buf` (which must be
+/// at least `size` long). A read failure (past EOF, source gone) is a non-match.
+fn chunk_matches(f: &File, buf: &mut [u8], off: u64, id: &[u8; 20]) -> bool {
+    pread_exact(f, buf, off).is_ok() && &sha1_of(buf) == id
+}
+
+/// Decide, per chunk, whether it can be sourced from local disk, and open the
+/// source files needed to do so. Returns the plan plus a pool of opened files
+/// that [`ChunkSource::CopyFrom::source`] indexes into.
+///
+/// Reuse is gated on the chunk's SHA-1 identity, never a weak checksum: the
+/// chunk id is the SHA-1 of its uncompressed bytes, so recomputing it over the
+/// candidate bytes is an exact content match. A chunk with no identity
+/// (all-zero id) is always fetched.
+///
+/// Only the source files this one output needs are opened, then dropped when
+/// the returned pool is dropped; handles for the whole depot are never held at
+/// once. `reuse_from` is a positional fallback (the installed copy of this same
+/// file, for when no CAS layout exists); `cas` covers content-addressed reuse
+/// from anywhere in the old install, including other files and shifted offsets.
+/// The on-disk places [`plan_reuse`] may source chunk bytes from, besides the
+/// output itself.
+struct ReuseSources<'a> {
+    /// The installed copy of the file being written (positional fallback).
+    reuse_from: Option<&'a Path>,
+    /// The file being written; never read as a source (unsafe mid-write).
+    output_path: &'a Path,
+    /// Root the CAS's relative paths resolve against.
+    install_dir: &'a Path,
+    /// Content-addressed store over the whole previous install.
+    cas: &'a Cas,
+}
+
+fn plan_reuse(
+    out: &Arc<File>,
+    out_len: u64,
+    src: &ReuseSources<'_>,
     chunks: &[ManifestChunk],
     offsets: &[u64],
-    original_len: u64,
-) -> Result<Vec<bool>, DownloadReport> {
-    use steamroom::util::checksum::SteamAdler32;
-
-    let mut reuse = Vec::with_capacity(chunks.len());
+) -> Result<(Vec<ChunkSource>, Vec<Arc<File>>), DownloadReport> {
+    let ReuseSources {
+        reuse_from,
+        output_path,
+        install_dir,
+        cas,
+    } = *src;
     let cap = chunks
         .iter()
         .map(|c| c.uncompressed_size as usize)
         .max()
+        // Empty chunk list yields no buffer; the loop below is then a no-op.
         .unwrap_or(0)
         .min(REUSE_BUFFER_CAP);
     let mut buf = vec![0u8; cap];
+    let unidentified = [0u8; 20];
+
+    let mut plan = Vec::with_capacity(chunks.len());
+    let mut sources: Vec<Arc<File>> = Vec::new();
+    let mut by_path: std::collections::HashMap<PathBuf, usize> = std::collections::HashMap::new();
+
+    // Pre-open the installed copy of this file (positional fallback source),
+    // unless it is the file we are writing in place.
+    let target_src = reuse_from
+        .filter(|p| *p != output_path)
+        .and_then(|p| std::fs::File::open(p).ok())
+        .map(|f| {
+            let idx = sources.len();
+            sources.push(Arc::new(f));
+            idx
+        });
 
     for (chunk_meta, &offset) in chunks.iter().zip(offsets.iter()) {
         let size = chunk_meta.uncompressed_size as usize;
-        let end = offset.saturating_add(size as u64);
-        if size == 0 || end > original_len || size > buf.len() {
-            reuse.push(false);
+        // No bytes, no verifiable identity, or too large to buffer: fetch it.
+        if size == 0 || size > cap || chunk_meta.id.0 == unidentified {
+            plan.push(ChunkSource::Fetch);
             continue;
         }
-        match pread_exact(file, &mut buf[..size], offset) {
-            Ok(()) => {
-                let matches = SteamAdler32::compute(&buf[..size]).0 == chunk_meta.checksum;
-                reuse.push(matches);
-            }
-            Err(_) => reuse.push(false),
+        let id = &chunk_meta.id.0;
+        let end = offset.saturating_add(size as u64);
+
+        // 1. Already correct at its own offset in the output (resume, or a
+        //    non-atomic in-place update). `out_len` (length before `set_len`)
+        //    excludes the zero-extended tail of a grown file; on a shrunk file
+        //    the read is the guard, failing past the new EOF.
+        if end <= out_len && chunk_matches(out, &mut buf[..size], offset, id) {
+            plan.push(ChunkSource::InPlace);
+            continue;
         }
+
+        // 2. Positional fallback: same offset in this file's installed copy.
+        if let Some(ti) = target_src
+            && chunk_matches(&sources[ti], &mut buf[..size], offset, id)
+        {
+            plan.push(ChunkSource::CopyFrom {
+                source: ti,
+                src_offset: offset,
+            });
+            continue;
+        }
+
+        // 3. Content-addressed: the chunk lives somewhere in the old install,
+        //    possibly a different file or a shifted offset.
+        if let Some(loc) = cas.get(id)
+            && loc.size as usize == size
+        {
+            let abs = install_dir.join(&loc.rel_path);
+            // Never read the file we are writing in place; step 1 already
+            // covered its same-offset bytes and a mid-write read is unsafe.
+            if abs != output_path
+                && let Some(idx) = open_source(&abs, &mut sources, &mut by_path)
+                && chunk_matches(&sources[idx], &mut buf[..size], loc.offset, id)
+            {
+                plan.push(ChunkSource::CopyFrom {
+                    source: idx,
+                    src_offset: loc.offset,
+                });
+                continue;
+            }
+        }
+
+        plan.push(ChunkSource::Fetch);
     }
-    Ok(reuse)
+    Ok((plan, sources))
+}
+
+/// Upper bound on distinct reuse-source files opened for a single output file.
+/// A chunk that would need a source beyond this is fetched instead. Bounds file
+/// descriptors when one output's chunks are scattered across many old files,
+/// well below typical process limits while covering any realistic layout.
+const MAX_REUSE_SOURCES: usize = 512;
+
+/// Open `path` once, returning its index in `sources` (reusing an already-open
+/// handle for the same path). `None` if the file cannot be opened or the
+/// per-output source cap is reached; both cases just make the chunk a fetch.
+fn open_source(
+    path: &Path,
+    sources: &mut Vec<Arc<File>>,
+    by_path: &mut std::collections::HashMap<PathBuf, usize>,
+) -> Option<usize> {
+    if let Some(&i) = by_path.get(path) {
+        return Some(i);
+    }
+    if sources.len() >= MAX_REUSE_SOURCES {
+        return None;
+    }
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            // A source we cannot open just falls back to a fetch; surface it so
+            // a silent drop in reuse rate (e.g. hitting the fd limit) is visible.
+            tracing::debug!("reuse source {} unavailable: {e}", path.display());
+            return None;
+        }
+    };
+    let idx = sources.len();
+    sources.push(Arc::new(f));
+    by_path.insert(path.to_path_buf(), idx);
+    Some(idx)
+}
+
+/// SHA-1 of `data`, the identity a depot chunk is keyed by.
+fn sha1_of(data: &[u8]) -> [u8; 20] {
+    use sha1::Digest;
+    sha1::Sha1::digest(data).into()
 }
 
 async fn fetch_with_retry<F: ChunkFetcher>(
@@ -824,6 +1238,51 @@ fn pwrite_all(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     compile_error!("pwrite_all requires unix or windows");
 }
 
+/// `create_dir_all` for `dir`, skipping the syscall once a directory has
+/// already been created in this run.
+fn ensure_dir(cache: &mut std::collections::HashSet<PathBuf>, dir: &Path) -> io::Result<()> {
+    if !cache.contains(dir) {
+        std::fs::create_dir_all(dir)?;
+        cache.insert(dir.to_path_buf());
+    }
+    Ok(())
+}
+
+/// Create a symlink at `path` pointing at `target`, replacing any existing
+/// entry. Returns `Ok(false)` when there is no target to link to or the
+/// platform has no symlink support, so the caller can record it as skipped.
+#[cfg(unix)]
+fn create_symlink(path: &Path, target: Option<&str>) -> io::Result<bool> {
+    let Some(target) = target else {
+        return Ok(false);
+    };
+    // Remove a stale link/file first; `symlink` fails if the path exists.
+    // `symlink_metadata` does not follow links, so an existing symlink is
+    // removed rather than its target being inspected.
+    if std::fs::symlink_metadata(path).is_ok() {
+        std::fs::remove_file(path)?;
+    }
+    std::os::unix::fs::symlink(target, path)?;
+    Ok(true)
+}
+
+#[cfg(not(unix))]
+fn create_symlink(_path: &Path, _target: Option<&str>) -> io::Result<bool> {
+    // Windows symlink creation needs elevated privileges; treat as unsupported.
+    Ok(false)
+}
+
+/// Remove `path` only if it is currently a symlink, so a manifest entry that is
+/// now a regular file replaces the link rather than writing through it. Regular
+/// files are left in place (in-place chunk reuse depends on them) and
+/// directories are left for the write/open to fail against loudly.
+fn remove_stale_symlink(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(path),
+        _ => Ok(()),
+    }
+}
+
 /// Collect all parent directories of a normalized path, joined to install_dir.
 fn parent_dirs(install_dir: &Path, name: &str) -> Vec<PathBuf> {
     let mut dirs = vec![];
@@ -838,7 +1297,15 @@ fn parent_dirs(install_dir: &Path, name: &str) -> Vec<PathBuf> {
     dirs
 }
 
+/// Whole-file skip check for verify mode: true only when `path` provably holds
+/// the manifest's content. Without a content SHA there is no way to prove that,
+/// so this returns false and the file goes through the chunk pipeline, which
+/// verifies each chunk by its SHA-1 identity. A size-only match is never
+/// treated as sufficient.
 fn file_matches(path: &Path, expected_size: u64, sha_content: Option<&[u8; 20]>) -> bool {
+    let Some(expected_sha) = sha_content else {
+        return false;
+    };
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(_) => return false,
@@ -846,15 +1313,24 @@ fn file_matches(path: &Path, expected_size: u64, sha_content: Option<&[u8; 20]>)
     if meta.len() != expected_size {
         return false;
     }
-    if let Some(expected_sha) = sha_content {
-        if let Ok(data) = std::fs::read(path) {
-            let actual = steamroom::util::checksum::Sha1Hash::compute(&data);
-            return actual.0 == *expected_sha;
-        }
+    // Stream the hash so verifying a multi-GB file does not pull it all into
+    // memory at once.
+    use sha1::Digest;
+    use std::io::Read;
+    let Ok(mut f) = File::open(path) else {
         return false;
+    };
+    let mut hasher = sha1::Sha1::new();
+    let mut buf = vec![0u8; HASH_READ_BUFFER];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return false,
+        }
     }
-    // No SHA to verify — size match is good enough
-    true
+    let actual: [u8; 20] = hasher.finalize().into();
+    actual == *expected_sha
 }
 
 fn replace_file(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
@@ -895,6 +1371,7 @@ pub struct DepotJobBuilder {
     retry: Option<RetryConfig>,
     event_tx: Option<mpsc::UnboundedSender<DownloadEvent>>,
     old_manifest_files: Option<Vec<String>>,
+    old_file_layouts: Option<std::collections::HashMap<String, Vec<OldChunkLoc>>>,
 }
 
 impl DepotJobBuilder {
@@ -948,6 +1425,17 @@ impl DepotJobBuilder {
         self
     }
 
+    /// Chunk layout of each file in the previously-installed manifest, keyed by
+    /// normalized path. Enables content-addressed reuse: an unchanged chunk is
+    /// copied from the installed file even if an update shifted its offset.
+    pub fn old_file_layouts(
+        mut self,
+        layouts: std::collections::HashMap<String, Vec<OldChunkLoc>>,
+    ) -> Self {
+        self.old_file_layouts = Some(layouts);
+        self
+    }
+
     pub fn build(self) -> Result<DepotJob, BuildError> {
         Ok(DepotJob {
             depot_id: self.depot_id.ok_or(BuildError::MissingDepotId)?,
@@ -960,6 +1448,9 @@ impl DepotJobBuilder {
             retry: self.retry.unwrap_or_default(),
             event_tx: self.event_tx,
             old_manifest_files: self.old_manifest_files,
+            old_file_layouts: self.old_file_layouts,
+            #[cfg(test)]
+            checkpoints: Arc::new(ReuseCheckpoints::default()),
         })
     }
 }

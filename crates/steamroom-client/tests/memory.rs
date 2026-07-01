@@ -17,6 +17,7 @@ use steamroom::depot::DepotKey;
 use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::manifest::ManifestChunk;
 use steamroom::depot::manifest::ManifestFile;
+use steamroom::util::checksum::Sha1Hash;
 use steamroom::util::checksum::SteamAdler32;
 use steamroom_client::download::BoxError;
 use steamroom_client::download::ChunkFetcher;
@@ -70,9 +71,9 @@ fn build_depot(key: &DepotKey) -> (DepotManifest, MockFetcher) {
         plaintext.fill(fill);
         plaintext[0] = 0x01;
         plaintext[1] = 0x02;
-        let mut id_bytes = [0u8; 20];
-        id_bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
-        let chunk_id = ChunkId(id_bytes);
+        // The chunk id is the SHA-1 of its uncompressed bytes, matching how the
+        // download pipeline verifies chunk identity.
+        let chunk_id = ChunkId(Sha1Hash::compute(&plaintext).0);
         let checksum = SteamAdler32::compute(&plaintext);
         let encrypted = encrypt_chunk(&plaintext, key);
         chunks_map.insert(chunk_id.clone(), Bytes::from(encrypted));
@@ -98,6 +99,8 @@ async fn streaming_download_stays_under_heap_budget() {
     // memory is invisible.
     let (manifest, fetcher) = build_depot(&key);
 
+    // Spacewar's depot: a genuinely anonymous-access identifier, used here as a
+    // realistic fixture. No network access occurs; the fetcher is mocked.
     let job = DepotJob::builder()
         .depot_id(DepotId(481))
         .depot_key(key)
