@@ -23,6 +23,7 @@ pub struct CdnClient {
 
 impl CdnClient {
     pub fn new() -> Result<Self, Error> {
+        crate::tls::ensure_crypto_provider();
         let client = reqwest::Client::builder().build().map_err(Error::Http)?;
         Ok(Self {
             client,

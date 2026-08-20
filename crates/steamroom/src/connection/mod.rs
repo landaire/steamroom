@@ -64,6 +64,7 @@ struct CmServerEntry {
 
 pub async fn fetch_cm_servers() -> Result<Vec<CmServer>, Error> {
     let url = "https://api.steampowered.com/ISteamDirectory/GetCMListForConnect/v1/?cellid=0";
+    crate::tls::ensure_crypto_provider();
     let client = reqwest::Client::new();
     let resp: CmListResponse = client.get(url).send().await?.json().await?;
 

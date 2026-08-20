@@ -13,7 +13,8 @@ members = [
 prost = "0.14"
 prost-types = "0.14"
 prost-build = "0.14"
-reqwest = { version = "0.13", features = ["json", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "charset", "system-proxy", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 zstd = "0.13"
@@ -52,7 +53,7 @@ insta = { version = "1", features = ["toml"] }
 object = "0.39"
 protox = "0.9"
 dirs-next = "2"
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 futures = "0.3"
 futures-util = "0.3"
 async-channel = "2"
@@ -63,5 +64,5 @@ ratatui = "0.29"
 rkyv = { version = "0.8", features = ["bytecheck"] }
 tokio-util = "0.7"
 
-steamroom = { version = "0.3.0", path = "crates/steamroom" }
-steamroom-client = { version = "0.3.0", path = "crates/steamroom-client" }
+steamroom = { version = "0.4.0", path = "crates/steamroom" }
+steamroom-client = { version = "0.4.0", path = "crates/steamroom-client" }

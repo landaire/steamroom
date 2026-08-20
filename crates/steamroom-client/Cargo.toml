@@ -1,6 +1,6 @@
 [package]
 name = "steamroom-client"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "High-level Steam depot download orchestration and delta patching"
@@ -12,7 +12,12 @@ keywords = ["steam", "depot", "download", "delta", "patching"]
 categories = ["network-programming"]
 
 [features]
+default = ["ring"]
 serde = ["steamroom/serde"]
+
+# rustls crypto provider selection, forwarded to steamroom.
+ring = ["steamroom/ring"]
+aws-lc-rs = ["steamroom/aws-lc-rs"]
 
 [dependencies]
 steamroom = { workspace = true }

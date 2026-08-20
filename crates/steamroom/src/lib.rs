@@ -61,6 +61,8 @@ pub mod enums;
 pub mod error;
 /// Raw Steam protocol message IDs and header parsing.
 pub mod messages;
+/// Process-wide rustls crypto provider installation.
+pub mod tls;
 /// Transport implementations (TCP, WebSocket) and capture/replay for testing.
 pub mod transport;
 /// KeyValue format parsing, SteamID, GameID, and serde integration.

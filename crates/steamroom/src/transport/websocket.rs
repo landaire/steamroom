@@ -27,6 +27,7 @@ impl WebSocketTransport {
 
         let url = format!("wss://{host}:{port}/cmsocket/");
         tracing::debug!("websocket connecting to {url}");
+        crate::tls::ensure_crypto_provider();
 
         let (ws, _) = connect_async(&url).await.map_err(|e| {
             ConnectionError::Io(std::io::Error::new(

@@ -1,6 +1,6 @@
 [package]
 name = "steamroom"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Steam client protocol library for depots, manifests, and CDN"
@@ -12,8 +12,16 @@ keywords = ["steam", "valve", "depot", "cdn", "download"]
 categories = ["api-bindings", "network-programming"]
 
 [features]
+default = ["ring"]
 serde = []
 __private_fuzzing = []
+
+# rustls crypto provider selection. reqwest (rustls-no-provider) and
+# tokio-tungstenite build their ClientConfig from the process-default provider,
+# which the chosen feature both compiles in and installs at connection setup.
+# `ring` is pure Rust; `aws-lc-rs` links C and is harder to vendor.
+ring = ["rustls/ring"]
+aws-lc-rs = ["rustls/aws-lc-rs"]
 
 [dependencies]
 prost = { workspace = true }
@@ -47,6 +55,7 @@ async-channel = { workspace = true }
 
 # Runtime-specific: only needed for transport impls, not core library
 reqwest = { workspace = true }
+rustls = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 
