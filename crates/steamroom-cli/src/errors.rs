@@ -42,20 +42,11 @@ pub enum CliError {
     #[error("Steam returned no product info for app {0} (does the app exist?)")]
     NoProductInfo(u32),
 
-    #[error("app {0} has no metadata")]
-    NoKvData(u32),
-
     #[error("no depots found in app info")]
     NoDepots,
 
-    #[error("depot {0} was not found in the app info")]
-    DepotNotFound(u32),
-
     #[error("no manifest found for depot {depot} on branch \"{branch}\"")]
     ManifestNotFound { depot: u32, branch: String },
-
-    #[error("the manifest ID is not a valid number")]
-    InvalidManifestId,
 
     #[error("no cached decryption key for depot {0} in config.vdf")]
     NoLocalKey(u32),

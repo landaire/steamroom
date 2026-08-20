@@ -10,9 +10,7 @@
 
 use crate::cli::DownloadArgs;
 use crate::commands::shared::decompress_manifest;
-use crate::commands::shared::fetch_app_kv;
-use crate::commands::shared::find_first_depot;
-use crate::commands::shared::find_manifest_for_depot;
+use crate::commands::shared::fetch_app_details;
 use crate::commands::shared::fmt_size;
 use crate::download as direct_progress;
 use crate::errors::CliError;
@@ -42,15 +40,16 @@ pub async fn run_download(
 
     // Get access tokens
     info!("getting PICS access tokens for app {}", app_id);
-    let kv = fetch_app_kv(&client, app_id).await?;
+    let details = fetch_app_details(&client, app_id).await?;
 
     // Find depots
     let depot_id = if let Some(d) = args.depot {
         DepotId(d)
     } else {
-        // Find first depot from the KV data
-        let depots_kv = kv.get("depots").ok_or(CliError::NoDepots)?;
-        find_first_depot(depots_kv)?
+        details
+            .first_depot()
+            .map(|d| d.id)
+            .ok_or(CliError::NoDepots)?
     };
 
     let branch = args.branch.as_deref().unwrap_or("public");
@@ -64,15 +63,12 @@ pub async fn run_download(
         if let Some(hash) = steamroom_client::steam_creds::find_beta_hash(&config, app_id.0, branch)
         {
             info!("using cached beta hash for branch \"{branch}\"");
-            let token = kv
-                .get("depots")
-                .and_then(|d| d.get(&depot_id.0.to_string()))
-                .and_then(|d| d.get("manifests"))
-                .and_then(|d| d.get(branch))
-                .and_then(|d| d.get("gid"))
-                .and_then(|v| v.as_str());
+            let has_manifest = details
+                .depot(depot_id)
+                .and_then(|d| d.manifest(branch))
+                .is_some();
             // If we can't find the manifest in PICS, try requesting private beta access
-            if token.is_none() {
+            if !has_manifest {
                 let access_tokens = client.pics_get_access_tokens(&[app_id]).await?;
                 let access_token = access_tokens.first().map(|t| t.token).unwrap_or(0);
                 match client
@@ -98,8 +94,14 @@ pub async fn run_download(
     let manifest_id = if let Some(m) = args.manifest {
         ManifestId(m)
     } else {
-        let depots_kv = kv.get("depots").ok_or(CliError::NoDepots)?;
-        find_manifest_for_depot(depots_kv, depot_id, branch)?
+        details
+            .depot(depot_id)
+            .and_then(|d| d.manifest(branch))
+            .map(|m| m.manifest_id)
+            .ok_or(CliError::ManifestNotFound {
+                depot: depot_id.0,
+                branch: branch.to_string(),
+            })?
     };
 
     info!(

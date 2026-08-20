@@ -138,27 +138,12 @@ async fn do_list_files(
         });
     let infos = client.pics_get_product_info(&[token]).await?;
     let info = infos.into_iter().next().ok_or("no product info")?;
-    let kv_data = info.kv_data.ok_or("no kv data")?;
-
-    let kv = if kv_data.first() == Some(&0x00) {
-        steamroom::types::key_value::parse_binary_kv(&kv_data)?
-    } else {
-        let text = String::from_utf8_lossy(&kv_data);
-        steamroom::types::key_value::parse_text_kv(&text)?
-    };
-
-    let depots_kv = kv.get("depots").ok_or("no depots")?;
-    let depot_kv = depots_kv
-        .get(&depot.0.to_string())
-        .ok_or("depot not found")?;
-    let manifests = depot_kv.get("manifests").ok_or("no manifests")?;
-    let branch_kv = manifests.get(branch).ok_or("branch not found")?;
-    let gid_str = branch_kv
-        .get("gid")
-        .and_then(|g| g.as_str())
-        .or_else(|| branch_kv.as_str())
-        .ok_or("no manifest id")?;
-    let manifest_id = steamroom::depot::ManifestId(gid_str.parse()?);
+    let details = steamroom::apps::AppDetails::from_key_values(app, info.key_values()?);
+    let manifest_id = details
+        .depot(depot)
+        .and_then(|d| d.manifest(branch))
+        .map(|m| m.manifest_id)
+        .ok_or("manifest not found for depot/branch")?;
 
     let depot_key = client.get_depot_decryption_key(depot, app).await?;
     let request_code = client

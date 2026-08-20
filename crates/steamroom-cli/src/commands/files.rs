@@ -4,9 +4,7 @@
 use crate::cli::FilesArgs;
 use crate::cli::OutputFormat;
 use crate::commands::shared::decompress_manifest;
-use crate::commands::shared::fetch_app_kv;
-use crate::commands::shared::find_first_depot;
-use crate::commands::shared::find_manifest_for_depot;
+use crate::commands::shared::fetch_app_details;
 use crate::commands::shared::fmt_size;
 use crate::commands::shared::fmt_timestamp;
 use crate::commands::shared::resolve_depot_key;
@@ -53,21 +51,23 @@ pub async fn run_files(
             ))
         })?;
         let app_id = AppId(args.app.ok_or(CliError::NoDepots)?);
-        let kv = fetch_app_kv(&client, app_id).await?;
+        let details = fetch_app_details(&client, app_id).await?;
         let branch = args.branch.as_deref().unwrap_or("public");
 
         let depot_id = args
             .depot
             .map(DepotId)
-            .or_else(|| kv.get("depots").and_then(|d| find_first_depot(d).ok()))
+            .or_else(|| details.first_depot().map(|d| d.id))
             .ok_or(CliError::NoDepots)?;
 
         let manifest_id = args
             .manifest
             .map(ManifestId)
             .or_else(|| {
-                kv.get("depots")
-                    .and_then(|d| find_manifest_for_depot(d, depot_id, branch).ok())
+                details
+                    .depot(depot_id)
+                    .and_then(|d| d.manifest(branch))
+                    .map(|m| m.manifest_id)
             })
             .ok_or(CliError::ManifestNotFound {
                 depot: depot_id.0,

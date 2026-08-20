@@ -3,7 +3,6 @@
 use crate::cli::OutputFormat;
 use crate::cli::PackagesArgs;
 use crate::commands::shared::kv_to_json;
-use crate::commands::shared::parse_package_kv;
 use crate::errors::CliError;
 use crate::sink::JobSink;
 use std::sync::Arc;
@@ -30,10 +29,7 @@ pub async fn run_packages(
     for pkg in &packages {
         let pkg_id = pkg.package_id.map(|p| p.0).unwrap_or(0);
 
-        let kv = pkg
-            .kv_data
-            .as_ref()
-            .and_then(|data| parse_package_kv(data).ok());
+        let kv = pkg.key_values().ok();
 
         if args.format == Some(OutputFormat::Json) {
             let json = if let Some(ref kv) = kv {

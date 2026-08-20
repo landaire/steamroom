@@ -8,13 +8,13 @@ use crate::cli::AuthOptions;
 use crate::cli::FilesArgs;
 use crate::errors::CliError;
 use std::sync::OnceLock;
-use steamroom::apps::AccessToken;
+use steamroom::apps::AppDetails;
+use steamroom::apps::KvDecodeError;
 use steamroom::cdn::CdnClient;
 use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
 use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::*;
-use steamroom::types::key_value;
 use steamroom::types::key_value::KeyValue;
 use steamroom::types::key_value::KvValue;
 use steamroom_client::login::CredentialsLoginFlow;
@@ -71,28 +71,6 @@ where
     targets.boxed()
 }
 
-pub fn parse_app_kv(data: &[u8]) -> Result<KeyValue, CliError> {
-    // PICS KV data can be binary KV or text
-    // Binary KV starts with 0x00 tag
-    if data.first() == Some(&0x00) {
-        key_value::parse_binary_kv(data).map_err(CliError::Io)
-    } else {
-        // Try text parse, skip any leading null bytes
-        let text = String::from_utf8_lossy(data);
-        Ok(key_value::parse_text_kv(&text)?)
-    }
-}
-
-pub fn parse_package_kv(data: &[u8]) -> Result<KeyValue, CliError> {
-    // Package PICS data has a 4-byte header before the binary KV blob.
-    let kv_data = if data.len() > 4 && data[0] != 0x00 {
-        &data[4..]
-    } else {
-        data
-    };
-    parse_app_kv(kv_data)
-}
-
 pub fn kv_to_json(kv: &KeyValue) -> serde_json::Value {
     match &kv.value {
         KvValue::Children(map) => {
@@ -111,52 +89,6 @@ pub fn kv_to_json(kv: &KeyValue) -> serde_json::Value {
             .unwrap_or(serde_json::Value::Null),
         _ => serde_json::Value::Null,
     }
-}
-
-pub fn find_first_depot(depots_kv: &KeyValue) -> Result<DepotId, CliError> {
-    if let KvValue::Children(ref map) = depots_kv.value {
-        for key in map.keys() {
-            if let Ok(id) = key.parse::<u32>()
-                && id > 0
-            {
-                return Ok(DepotId(id));
-            }
-        }
-    }
-    Err(CliError::NoDepots)
-}
-
-pub fn find_manifest_for_depot(
-    depots_kv: &KeyValue,
-    depot_id: DepotId,
-    branch: &str,
-) -> Result<ManifestId, CliError> {
-    let depot_key = depot_id.0.to_string();
-    let depot = depots_kv
-        .get(&depot_key)
-        .ok_or(CliError::DepotNotFound(depot_id.0))?;
-
-    // Look in depots -> {depot_id} -> manifests -> {branch} -> gid
-    if let Some(manifests) = depot.get("manifests")
-        && let Some(branch_kv) = manifests.get(branch)
-    {
-        if let Some(gid) = branch_kv.get("gid")
-            && let Some(gid_str) = gid.as_str()
-        {
-            let id: u64 = gid_str.parse().map_err(|_| CliError::InvalidManifestId)?;
-            return Ok(ManifestId(id));
-        }
-        // Maybe branch_kv itself is a string (manifest ID directly)
-        if let Some(gid_str) = branch_kv.as_str() {
-            let id: u64 = gid_str.parse().map_err(|_| CliError::InvalidManifestId)?;
-            return Ok(ManifestId(id));
-        }
-    }
-
-    Err(CliError::ManifestNotFound {
-        depot: depot_id.0,
-        branch: branch.to_string(),
-    })
 }
 
 pub fn resolve_depot_key(args: &FilesArgs) -> Result<DepotKey, CliError> {
@@ -291,29 +223,21 @@ pub fn fmt_relative(epoch: u64) -> String {
     }
 }
 
-/// Look up an app's KV data via PICS using an already-authenticated client.
-///
-/// Previously this helper also built the client (took an `AuthOptions`);
-/// the refactor moved the connect/login step up to `async_main` so it can
-/// be reused across daemon requests, leaving this helper as a pure
-/// PICS-fetch + parse.
-pub async fn fetch_app_kv(
+/// Map a library app lookup failure to a friendlier CLI error, translating
+/// the "no KV payload" case into [`CliError::NoProductInfo`].
+fn map_app_lookup<T>(res: Result<T, steamroom::Error>, app_id: AppId) -> Result<T, CliError> {
+    res.map_err(|e| match e {
+        steamroom::Error::Kv(KvDecodeError::Missing) => CliError::NoProductInfo(app_id.0),
+        other => CliError::Steam(other),
+    })
+}
+
+/// Look up an app's structured [`AppDetails`] via PICS.
+pub async fn fetch_app_details(
     client: &SteamClient<LoggedIn>,
     app_id: AppId,
-) -> Result<KeyValue, CliError> {
-    let tokens = client.pics_get_access_tokens(&[app_id]).await?;
-    let token = tokens
-        .into_iter()
-        .next()
-        .unwrap_or(AccessToken { app_id, token: 0 });
-    let infos = client.pics_get_product_info(&[token]).await?;
-    let app_info = infos
-        .into_iter()
-        .next()
-        .ok_or(CliError::NoProductInfo(app_id.0))?;
-    let kv_data = app_info.kv_data.ok_or(CliError::NoKvData(app_id.0))?;
-    let kv = parse_app_kv(&kv_data)?;
-    Ok(kv)
+) -> Result<AppDetails, CliError> {
+    map_app_lookup(client.app_details(app_id).await, app_id)
 }
 
 pub async fn fetch_manifest(

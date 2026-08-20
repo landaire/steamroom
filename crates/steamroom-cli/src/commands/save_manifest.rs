@@ -3,12 +3,10 @@
 
 use crate::cli::SaveManifestArgs;
 use crate::commands::shared::decompress_manifest;
-use crate::commands::shared::find_manifest_for_depot;
-use crate::commands::shared::parse_app_kv;
+use crate::commands::shared::fetch_app_details;
 use crate::errors::CliError;
 use crate::sink::JobSink;
 use std::sync::Arc;
-use steamroom::apps::AccessToken;
 use steamroom::cdn::CdnClient;
 use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
@@ -30,20 +28,15 @@ pub async fn run_save_manifest(
     let manifest_id = if let Some(m) = args.manifest {
         ManifestId(m)
     } else {
-        let tokens = client.pics_get_access_tokens(&[app_id]).await?;
-        let token = tokens
-            .into_iter()
-            .next()
-            .unwrap_or(AccessToken { app_id, token: 0 });
-        let infos = client.pics_get_product_info(&[token]).await?;
-        let app_info = infos
-            .into_iter()
-            .next()
-            .ok_or(CliError::NoProductInfo(app_id.0))?;
-        let kv_data = app_info.kv_data.ok_or(CliError::NoKvData(app_id.0))?;
-        let kv = parse_app_kv(&kv_data)?;
-        let depots_kv = kv.get("depots").ok_or(CliError::NoDepots)?;
-        find_manifest_for_depot(depots_kv, depot_id, branch)?
+        let details = fetch_app_details(&client, app_id).await?;
+        details
+            .depot(depot_id)
+            .and_then(|d| d.manifest(branch))
+            .map(|m| m.manifest_id)
+            .ok_or(CliError::ManifestNotFound {
+                depot: depot_id.0,
+                branch: branch.to_string(),
+            })?
     };
 
     info!("depot={depot_id}, manifest={manifest_id}");
