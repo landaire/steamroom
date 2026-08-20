@@ -26,6 +26,9 @@ pub enum LoginError {
 
     #[error("no CM servers available")]
     NoCmServers,
+
+    #[error("Steam offered no confirmation method this client supports")]
+    NoSupportedConfirmation,
 }
 
 #[cfg(test)]

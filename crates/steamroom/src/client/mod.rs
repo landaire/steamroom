@@ -7,9 +7,11 @@ use self::msg::ClientMsg;
 use crate::apps::AccessToken;
 use crate::apps::AppInfo;
 use crate::apps::PackageInfo;
+use crate::auth::AuthClientId;
 use crate::auth::AuthSession;
 use crate::auth::AuthTokens;
 use crate::auth::GuardType;
+use crate::auth::PollInterval;
 use crate::auth::QrAuthSession;
 use crate::cdn::CdnServer;
 use crate::content::CdnAuthToken;
@@ -24,6 +26,7 @@ use crate::error::Error;
 use crate::generated;
 use crate::messages::header;
 use crate::messages::header::PacketHeader;
+use crate::types::SteamId;
 
 use crate::messages::EMsg;
 use crate::messages::RawEMsg;
@@ -431,15 +434,15 @@ impl SteamClient<Ready> {
             .await?;
         let r: generated::CAuthenticationBeginAuthSessionViaCredentialsResponse = resp.decode()?;
         Ok(AuthSession {
-            client_id: r.client_id,
+            client_id: r.client_id.map(AuthClientId::new),
             request_id: r.request_id,
-            poll_interval: r.interval,
+            poll_interval: r.interval.map(PollInterval::from_secs_f32),
             allowed_confirmations: r
                 .allowed_confirmations
                 .iter()
                 .filter_map(|c| guard_type_from_proto(c.confirmation_type))
                 .collect(),
-            steam_id: r.steamid,
+            steam_id: r.steamid.map(SteamId::new),
         })
     }
 
@@ -455,10 +458,10 @@ impl SteamClient<Ready> {
             .await?;
         let r: generated::CAuthenticationBeginAuthSessionViaQrResponse = resp.decode()?;
         Ok(QrAuthSession {
-            client_id: r.client_id,
+            client_id: r.client_id.map(AuthClientId::new),
             request_id: r.request_id,
             challenge_url: r.challenge_url,
-            poll_interval: r.interval,
+            poll_interval: r.interval.map(PollInterval::from_secs_f32),
             allowed_confirmations: r
                 .allowed_confirmations
                 .iter()
@@ -469,11 +472,11 @@ impl SteamClient<Ready> {
 
     pub async fn poll_auth_session(
         &self,
-        client_id: u64,
+        client_id: AuthClientId,
         request_id: &[u8],
     ) -> Result<Option<AuthTokens>, Error> {
         let req = generated::CAuthenticationPollAuthSessionStatusRequest {
-            client_id: Some(client_id),
+            client_id: Some(client_id.raw()),
             request_id: Some(request_id.to_vec()),
             ..Default::default()
         };
@@ -498,14 +501,14 @@ impl SteamClient<Ready> {
 
     pub async fn submit_steam_guard_code(
         &self,
-        client_id: u64,
-        steam_id: u64,
+        client_id: AuthClientId,
+        steam_id: SteamId,
         code: &str,
         code_type: GuardType,
     ) -> Result<(), Error> {
         let req = generated::CAuthenticationUpdateAuthSessionWithSteamGuardCodeRequest {
-            client_id: Some(client_id),
-            steamid: Some(steam_id),
+            client_id: Some(client_id.raw()),
+            steamid: Some(steam_id.raw()),
             code: Some(code.to_string()),
             code_type: Some(code_type.to_proto()),
         };
@@ -688,10 +691,10 @@ impl SteamClient<LoggedIn> {
     ) -> Result<crate::types::key_value::KeyValue, Error> {
         let tokens = self.pics_get_access_tokens(&[app_id]).await?;
         // A missing access token means the app is free / needs no token.
-        let token = tokens.into_iter().next().unwrap_or(AccessToken {
-            app_id,
-            token: 0,
-        });
+        let token = tokens
+            .into_iter()
+            .next()
+            .unwrap_or(AccessToken { app_id, token: 0 });
         let infos = self.pics_get_product_info(&[token]).await?;
         let info = infos
             .into_iter()
@@ -1109,5 +1112,7 @@ impl HasEResult for generated::CMsgClientPicsPrivateBetaResponse {
 }
 
 fn guard_type_from_proto(confirmation_type: Option<i32>) -> Option<GuardType> {
-    GuardType::from_proto(confirmation_type?)
+    // A confirmation entry with no type is meaningless and dropped; a present
+    // but unrecognized type is retained as GuardType::Unknown.
+    Some(GuardType::from_proto(confirmation_type?))
 }

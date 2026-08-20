@@ -7,10 +7,9 @@
 //! `docs/superpowers/specs/2026-05-24-login-builder-design.md`.
 
 mod credentials;
+pub use credentials::ConfirmationChallenge;
 pub use credentials::CredentialsLogin;
 pub use credentials::CredentialsLoginFlow;
-pub use credentials::GuardChallenge;
-pub use credentials::MobileChallenge;
 mod error;
 mod qr;
 pub use qr::QrLogin;

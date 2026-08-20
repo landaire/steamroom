@@ -6,10 +6,14 @@ use crate::login::establish_ready_client;
 use crate::login::terminal::ApprovedAuth;
 
 use base64::Engine;
+use steamroom::auth::AuthClientId;
+use steamroom::auth::AuthTokens;
 use steamroom::auth::GuardType;
+use steamroom::auth::PollInterval;
 use steamroom::client::Ready;
 use steamroom::client::SteamClient;
 use steamroom::generated::CAuthenticationBeginAuthSessionViaCredentialsRequest;
+use steamroom::types::SteamId;
 
 /// Configured credentials login. Call [`begin()`] to start the auth flow.
 ///
@@ -26,29 +30,26 @@ pub struct CredentialsLogin {
 pub enum CredentialsLoginFlow {
     /// No 2FA required. Call `ApprovedAuth::finish()` to complete the logon.
     Approved(ApprovedAuth),
-    /// Steam Guard code required. Call `GuardChallenge::submit_code()`.
-    NeedsGuardCode(GuardChallenge),
-    /// Mobile-app confirmation pending. Call
-    /// `MobileChallenge::wait_for_confirmation()`.
-    NeedsMobileConfirm(MobileChallenge),
+    /// 2FA required. The [`ConfirmationChallenge`] reports every method Steam
+    /// will accept; when both a code and an out-of-band confirmation are
+    /// offered the caller may drive them concurrently.
+    NeedsConfirmation(ConfirmationChallenge),
 }
 
-pub struct GuardChallenge {
-    pub(crate) client: SteamClient<Ready>,
-    pub(crate) config: BuilderConfig,
-    pub(crate) client_id: u64,
-    pub(crate) steam_id: u64,
-    pub(crate) request_id: Vec<u8>,
-    pub(crate) poll_interval: f32,
-    pub(crate) allowed_kinds: Vec<GuardType>,
-}
-
-pub struct MobileChallenge {
-    pub(crate) client: SteamClient<Ready>,
-    pub(crate) config: BuilderConfig,
-    pub(crate) client_id: u64,
-    pub(crate) request_id: Vec<u8>,
-    pub(crate) poll_interval: f32,
+/// A pending 2FA challenge. Steam may accept a Steam Guard code, an out-of-band
+/// confirmation (approve in the mobile app or via an email link), or both at
+/// once. `submit_code` and `wait_for_tokens` borrow `&self` so a caller can
+/// race code entry against a confirmation poll and let whichever the user
+/// completes first win.
+pub struct ConfirmationChallenge {
+    client: SteamClient<Ready>,
+    config: BuilderConfig,
+    client_id: AuthClientId,
+    steam_id: SteamId,
+    request_id: Vec<u8>,
+    poll_interval: PollInterval,
+    code_kinds: Vec<GuardType>,
+    confirmation_kinds: Vec<GuardType>,
 }
 
 impl CredentialsLogin {
@@ -109,7 +110,7 @@ impl CredentialsLogin {
         let steam_id = session
             .steam_id
             .ok_or(LoginError::MissingField("steamid"))?;
-        let poll_interval = session.poll_interval.unwrap_or(5.0);
+        let poll_interval = session.poll_interval.unwrap_or(PollInterval::DEFAULT);
 
         // Classify the next step.
         if session.allowed_confirmations.is_empty()
@@ -125,98 +126,133 @@ impl CredentialsLogin {
             }));
         }
 
-        let needs_code = session
+        // Partition the offered methods. Steam commonly offers a code AND
+        // mobile confirmation together; neither wins over the other here, both
+        // are surfaced so the caller can drive whichever the user picks.
+        let code_kinds: Vec<GuardType> = session
             .allowed_confirmations
             .iter()
-            .any(|g| matches!(g, GuardType::DeviceCode | GuardType::EmailCode));
+            .copied()
+            .filter(|g| g.is_code())
+            .collect();
+        let confirmation_kinds: Vec<GuardType> = session
+            .allowed_confirmations
+            .iter()
+            .copied()
+            .filter(|g| g.is_confirmation())
+            .collect();
 
-        if needs_code {
-            return Ok(CredentialsLoginFlow::NeedsGuardCode(GuardChallenge {
+        if code_kinds.is_empty() && confirmation_kinds.is_empty() {
+            // Only methods this client cannot drive (e.g. legacy machine auth).
+            return Err(LoginError::NoSupportedConfirmation);
+        }
+
+        Ok(CredentialsLoginFlow::NeedsConfirmation(
+            ConfirmationChallenge {
                 client,
                 config: self.config,
                 client_id,
                 steam_id,
                 request_id,
                 poll_interval,
-                allowed_kinds: session.allowed_confirmations,
-            }));
-        }
-
-        // Mobile confirmation (DeviceConfirmation only)
-        Ok(CredentialsLoginFlow::NeedsMobileConfirm(MobileChallenge {
-            client,
-            config: self.config,
-            client_id,
-            request_id,
-            poll_interval,
-        }))
+                code_kinds,
+                confirmation_kinds,
+            },
+        ))
     }
 }
 
-impl GuardChallenge {
-    /// Which kinds of Steam Guard code Steam is willing to accept.
-    pub fn allowed_kinds(&self) -> &[GuardType] {
-        &self.allowed_kinds
+impl ConfirmationChallenge {
+    /// Steam Guard code kinds Steam will accept via [`submit_code`]. Empty when
+    /// the only path forward is an out-of-band confirmation.
+    ///
+    /// [`submit_code`]: ConfirmationChallenge::submit_code
+    pub fn code_kinds(&self) -> &[GuardType] {
+        &self.code_kinds
     }
 
-    /// Submit a Steam Guard code, then poll for tokens.
+    /// Out-of-band confirmation kinds pending (mobile-app approval, email
+    /// link). Empty when the only path forward is entering a code.
+    pub fn confirmation_kinds(&self) -> &[GuardType] {
+        &self.confirmation_kinds
+    }
+
+    /// Whether a Steam Guard code may be submitted.
+    pub fn accepts_code(&self) -> bool {
+        !self.code_kinds.is_empty()
+    }
+
+    /// Whether the user can approve out of band (mobile app / email) instead
+    /// of, or concurrently with, entering a code.
+    pub fn accepts_confirmation(&self) -> bool {
+        !self.confirmation_kinds.is_empty()
+    }
+
+    /// Submit a Steam Guard code. `Ok(())` means Steam accepted it; retrieve
+    /// tokens with [`wait_for_tokens`]. `Err(LoginError::InvalidGuardCode)` is
+    /// recoverable: the challenge is untouched, so the caller can prompt for a
+    /// new code without restarting the RSA exchange.
     ///
-    /// On `LoginError::InvalidGuardCode`, the challenge is returned unchanged
-    /// so the caller can prompt for a new code without restarting the RSA
-    /// exchange. On any other error, the session is dead.
-    pub async fn submit_code(
-        self,
-        code: &str,
-        kind: GuardType,
-    ) -> Result<ApprovedAuth, (GuardChallenge, LoginError)> {
+    /// Borrows `&self` so it can run concurrently with [`wait_for_tokens`],
+    /// letting the caller race code entry against an out-of-band confirmation.
+    ///
+    /// [`wait_for_tokens`]: ConfirmationChallenge::wait_for_tokens
+    pub async fn submit_code(&self, code: &str, kind: GuardType) -> Result<(), LoginError> {
         match self
             .client
             .submit_steam_guard_code(self.client_id, self.steam_id, code, kind)
             .await
         {
-            Ok(()) => {}
+            Ok(()) => Ok(()),
             Err(steamroom::Error::Connection(
                 steamroom::error::ConnectionError::ServiceMethodFailed(
                     steamroom::enums::EResultError::TwoFactorCodeMismatch,
                 ),
-            )) => return Err((self, LoginError::InvalidGuardCode)),
-            Err(e) => return Err((self, LoginError::Transport(e))),
+            )) => Err(LoginError::InvalidGuardCode),
+            Err(e) => Err(LoginError::Transport(e)),
         }
+    }
 
-        match poll_until_tokens(
+    /// Poll `PollAuthSessionStatus` until the session is confirmed by any
+    /// accepted method (out-of-band approval, or a code accepted via
+    /// [`submit_code`]) and tokens are issued.
+    ///
+    /// Borrows `&self` so it can race [`submit_code`]; pair it with
+    /// [`into_approved`] to finish.
+    ///
+    /// [`submit_code`]: ConfirmationChallenge::submit_code
+    /// [`into_approved`]: ConfirmationChallenge::into_approved
+    pub async fn wait_for_tokens(&self) -> Result<AuthTokens, LoginError> {
+        poll_until_tokens(
             &self.client,
             self.client_id,
             &self.request_id,
             self.poll_interval,
         )
         .await
-        {
-            Ok(tokens) => Ok(ApprovedAuth {
-                client: self.client,
-                config: self.config,
-                tokens,
-            }),
-            Err(e) => Err((self, e)),
-        }
     }
-}
 
-impl MobileChallenge {
-    /// Poll `PollAuthSessionStatus` until the user approves on their mobile
-    /// app and tokens are returned.
-    pub async fn wait_for_confirmation(self) -> Result<ApprovedAuth, LoginError> {
-        let tokens = poll_until_tokens(
-            &self.client,
-            self.client_id,
-            &self.request_id,
-            self.poll_interval,
-        )
-        .await?;
-        Ok(ApprovedAuth {
+    /// Consume the challenge, wrapping issued tokens for the final logon.
+    pub fn into_approved(self, tokens: AuthTokens) -> ApprovedAuth {
+        ApprovedAuth {
             client: self.client,
             config: self.config,
             tokens,
-        })
+        }
+    }
+
+    /// Convenience for the confirmation-only path (no code entry): poll until
+    /// the user approves out of band, then return the approved handle.
+    /// Consumes `self`, so it cannot be combined with [`submit_code`]; for the
+    /// mixed case race [`wait_for_tokens`] against [`submit_code`] and finish
+    /// with [`into_approved`].
+    ///
+    /// [`submit_code`]: ConfirmationChallenge::submit_code
+    /// [`wait_for_tokens`]: ConfirmationChallenge::wait_for_tokens
+    /// [`into_approved`]: ConfirmationChallenge::into_approved
+    pub async fn wait_for_confirmation(self) -> Result<ApprovedAuth, LoginError> {
+        let tokens = self.wait_for_tokens().await?;
+        Ok(self.into_approved(tokens))
     }
 }
 
@@ -225,12 +261,12 @@ impl MobileChallenge {
 /// path in `begin()`.
 pub(crate) async fn poll_until_tokens(
     client: &SteamClient<Ready>,
-    client_id: u64,
+    client_id: AuthClientId,
     request_id: &[u8],
-    interval_secs: f32,
-) -> Result<steamroom::auth::AuthTokens, LoginError> {
+    interval: PollInterval,
+) -> Result<AuthTokens, LoginError> {
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs_f32(interval_secs)).await;
+        tokio::time::sleep(interval.as_duration()).await;
         if let Some(tokens) = client.poll_auth_session(client_id, request_id).await? {
             return Ok(tokens);
         }

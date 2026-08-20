@@ -17,6 +17,8 @@ use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::*;
 use steamroom::types::key_value::KeyValue;
 use steamroom::types::key_value::KvValue;
+use steamroom_client::login::AuthTokens;
+use steamroom_client::login::ConfirmationChallenge;
 use steamroom_client::login::CredentialsLoginFlow;
 use steamroom_client::login::GuardType;
 use steamroom_client::login::LoginBuilder;
@@ -449,32 +451,16 @@ pub async fn drive_credentials_flow(
 
         let approved = match flow {
             CredentialsLoginFlow::Approved(a) => a,
-            CredentialsLoginFlow::NeedsGuardCode(mut challenge) => {
+            CredentialsLoginFlow::NeedsConfirmation(challenge) => {
                 if !is_interactive() {
                     return Err(CliError::InteractiveAuthRequired);
                 }
-                loop {
-                    let prompt = guard_prompt(challenge.allowed_kinds());
-                    let kind = preferred_kind(challenge.allowed_kinds());
-                    let code = rpassword::prompt_password(prompt).unwrap_or_default();
-                    match challenge.submit_code(&code, kind).await {
-                        Ok(a) => break a,
-                        Err((c, LoginError::InvalidGuardCode)) => {
-                            eprintln!("Invalid Steam Guard code, try again.");
-                            challenge = c;
-                        }
-                        Err((_, e)) => return Err(e.into()),
-                    }
-                }
+                drive_confirmation(challenge).await?
             }
-            CredentialsLoginFlow::NeedsMobileConfirm(mobile) => {
-                if !is_interactive() {
-                    return Err(CliError::InteractiveAuthRequired);
-                }
-                info!("confirm login on your Steam mobile app...");
-                mobile.wait_for_confirmation().await?
-            }
-            _ => unreachable!("unexpected CredentialsLoginFlow variant"),
+            // CredentialsLoginFlow is #[non_exhaustive]; a variant added by a
+            // future library version is unsupported by this build rather than a
+            // panic.
+            _ => return Err(CliError::Login(LoginError::NoSupportedConfirmation)),
         };
 
         let tokens = approved.tokens();
@@ -486,6 +472,103 @@ pub async fn drive_credentials_flow(
     }
     // Three attempts exhausted.
     Err(CliError::Login(LoginError::InvalidPassword))
+}
+
+/// Complete a 2FA challenge. When Steam accepts both a code and an out-of-band
+/// confirmation, the two are driven concurrently so the user may either type a
+/// code or approve on their phone, whichever they do first.
+async fn drive_confirmation(
+    challenge: ConfirmationChallenge,
+) -> Result<steamroom_client::login::ApprovedAuth, CliError> {
+    match (challenge.accepts_code(), challenge.accepts_confirmation()) {
+        (true, true) => {
+            eprintln!(
+                "Approve the sign-in in your Steam mobile app, or type your Steam Guard code below."
+            );
+            let kind = preferred_kind(challenge.code_kinds());
+            let tokens = race_code_or_confirm(&challenge, kind).await?;
+            Ok(challenge.into_approved(tokens))
+        }
+        (true, false) => {
+            let kind = preferred_kind(challenge.code_kinds());
+            loop {
+                let prompt = guard_prompt(challenge.code_kinds());
+                let code = rpassword::prompt_password(prompt).unwrap_or_default();
+                match challenge.submit_code(code.trim(), kind).await {
+                    Ok(()) => break,
+                    Err(LoginError::InvalidGuardCode) => {
+                        eprintln!("Invalid Steam Guard code, try again.")
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            let tokens = challenge.wait_for_tokens().await?;
+            Ok(challenge.into_approved(tokens))
+        }
+        (false, true) => {
+            info!("confirm the sign-in in your Steam mobile app...");
+            Ok(challenge.wait_for_confirmation().await?)
+        }
+        // begin() rejects a challenge with no supported method before we get here.
+        (false, false) => Err(CliError::Login(LoginError::NoSupportedConfirmation)),
+    }
+}
+
+/// Poll for out-of-band confirmation while concurrently reading a Steam Guard
+/// code from stdin. Returns as soon as either path yields tokens. Codes are
+/// read in plaintext (they are not secret like a password) so the read stays
+/// async and cancellable, letting a mobile approval win the race.
+async fn race_code_or_confirm(
+    challenge: &ConfirmationChallenge,
+    kind: GuardType,
+) -> Result<AuthTokens, CliError> {
+    use std::io::Write;
+    use tokio::io::AsyncBufReadExt;
+
+    let prompt = guard_prompt(challenge.code_kinds());
+    let reprompt = || {
+        eprint!("{prompt}");
+        let _ = std::io::stderr().flush();
+    };
+
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    reprompt();
+
+    // One long-lived confirmation poll, kept alive across code attempts so its
+    // interval timer is never reset by keystrokes (which would starve the
+    // mobile-approval path). `biased` checks it first each iteration so a ready
+    // token is never dropped in favor of a simultaneously-ready stdin line. A
+    // submitted-and-accepted code surfaces through this same poll.
+    let poll = challenge.wait_for_tokens();
+    tokio::pin!(poll);
+
+    loop {
+        tokio::select! {
+            biased;
+            res = &mut poll => return res.map_err(Into::into),
+
+            line = lines.next_line() => {
+                let code = match line {
+                    Ok(Some(l)) => l.trim().to_string(),
+                    // stdin closed or errored: wait out the confirmation poll.
+                    Ok(None) | Err(_) => return (&mut poll).await.map_err(Into::into),
+                };
+                if code.is_empty() {
+                    reprompt();
+                    continue;
+                }
+                match challenge.submit_code(&code, kind).await {
+                    // Accepted: the live poll picks up the tokens on its next tick.
+                    Ok(()) => {}
+                    Err(LoginError::InvalidGuardCode) => {
+                        eprintln!("Invalid Steam Guard code, try again (or approve on your phone).");
+                        reprompt();
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+    }
 }
 
 pub fn guard_prompt(kinds: &[GuardType]) -> &'static str {

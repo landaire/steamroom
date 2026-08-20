@@ -6,7 +6,9 @@ use crate::login::error::LoginError;
 use crate::login::establish_ready_client;
 use crate::login::terminal::ApprovedAuth;
 
+use steamroom::auth::AuthClientId;
 use steamroom::auth::GuardType;
+use steamroom::auth::PollInterval;
 use steamroom::client::Ready;
 use steamroom::client::SteamClient;
 use steamroom::generated::CAuthenticationBeginAuthSessionViaQrRequest;
@@ -26,9 +28,9 @@ pub struct QrLoginFlow {
     client: SteamClient<Ready>,
     config: BuilderConfig,
     challenge_url: String,
-    client_id: u64,
+    client_id: AuthClientId,
     request_id: Vec<u8>,
-    poll_interval: f32,
+    poll_interval: PollInterval,
     allowed_kinds: Vec<GuardType>,
 }
 
@@ -61,7 +63,7 @@ impl QrLogin {
             request_id: session
                 .request_id
                 .ok_or(LoginError::MissingField("request_id"))?,
-            poll_interval: session.poll_interval.unwrap_or(5.0),
+            poll_interval: session.poll_interval.unwrap_or(PollInterval::DEFAULT),
             allowed_kinds: session.allowed_confirmations,
         })
     }
