@@ -678,6 +678,35 @@ impl SteamClient<LoggedIn> {
         }
     }
 
+    /// Fetch an app's PICS product info and decode it into a [`KeyValue`]
+    /// tree. Wraps the access-token + product-info round trip.
+    ///
+    /// [`KeyValue`]: crate::types::key_value::KeyValue
+    pub async fn app_key_values(
+        &self,
+        app_id: AppId,
+    ) -> Result<crate::types::key_value::KeyValue, Error> {
+        let tokens = self.pics_get_access_tokens(&[app_id]).await?;
+        // A missing access token means the app is free / needs no token.
+        let token = tokens.into_iter().next().unwrap_or(AccessToken {
+            app_id,
+            token: 0,
+        });
+        let infos = self.pics_get_product_info(&[token]).await?;
+        let info = infos
+            .into_iter()
+            .next()
+            .ok_or(crate::apps::KvDecodeError::Missing)?;
+        Ok(info.key_values()?)
+    }
+
+    /// Fetch an app's PICS product info and decode it into a typed
+    /// [`AppDetails`](crate::apps::AppDetails) (name, type, depots, branches).
+    pub async fn app_details(&self, app_id: AppId) -> Result<crate::apps::AppDetails, Error> {
+        let kv = self.app_key_values(app_id).await?;
+        Ok(crate::apps::AppDetails::from_key_values(app_id, kv))
+    }
+
     pub async fn pics_get_package_access_tokens(
         &self,
         package_ids: &[PackageId],

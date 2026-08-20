@@ -32,6 +32,9 @@ pub enum Error {
 
     #[error(transparent)]
     Parse(#[from] ParseError),
+
+    #[error("KV decode: {0}")]
+    Kv(#[from] crate::apps::KvDecodeError),
 }
 
 #[derive(Debug, thiserror::Error)]

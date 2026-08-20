@@ -15,6 +15,11 @@ pub struct AppId(pub u32);
 #[repr(transparent)]
 pub struct DepotId(pub u32);
 
+impl DepotId {
+    /// Steam's sentinel for "no depot"; never a real depot.
+    pub const INVALID: DepotId = DepotId(0);
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(transparent)]
