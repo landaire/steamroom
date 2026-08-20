@@ -1,7 +1,5 @@
+use std::io;
 use std::io::Read;
-use std::io::{
-    self,
-};
 use std::path::PathBuf;
 
 fn main() {
