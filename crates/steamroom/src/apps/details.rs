@@ -154,7 +154,10 @@ fn parse_depots(depots_kv: &KeyValue) -> Vec<Depot> {
 }
 
 fn parse_depot(id: DepotId, depot: &KeyValue) -> Depot {
-    let config = depot.get("config").map(parse_depot_config).unwrap_or_default();
+    let config = depot
+        .get("config")
+        .map(parse_depot_config)
+        .unwrap_or_default();
     let depot_from_app = kv_u64(depot.get("depotfromapp")).map(|v| AppId(v as u32));
     let shared_install = depot.get("sharedinstall").is_some();
     let manifests = depot
@@ -198,8 +201,7 @@ fn parse_depot_manifests(manifests: &KeyValue) -> Vec<DepotManifestInfo> {
             // A branch entry is either a subsection with `gid`/`size`/
             // `download`, or a bare string that is the manifest ID.
             let manifest_id = ManifestId(
-                kv_u64(entry.get("gid"))
-                    .or_else(|| entry.as_str().and_then(|s| s.parse().ok()))?,
+                kv_u64(entry.get("gid")).or_else(|| entry.as_str().and_then(|s| s.parse().ok()))?,
             );
             Some(DepotManifestInfo {
                 branch: branch.clone(),

@@ -28,13 +28,21 @@ pub async fn run_info(
     let details = fetch_app_details(&client, app_id).await?;
 
     if args.format == Some(OutputFormat::Json) {
-        sink.stdout_line(&serde_json::to_string_pretty(&kv_to_json(&details.key_values))?);
+        sink.stdout_line(&serde_json::to_string_pretty(&kv_to_json(
+            &details.key_values,
+        ))?);
         return Ok(());
     }
 
     sink.stdout_line(&format!("App ID:  {}", app_id));
-    sink.stdout_line(&format!("Name:    {}", details.name.as_deref().unwrap_or("(unknown)")));
-    sink.stdout_line(&format!("Type:    {}", details.app_type.as_deref().unwrap_or("(unknown)")));
+    sink.stdout_line(&format!(
+        "Name:    {}",
+        details.name.as_deref().unwrap_or("(unknown)")
+    ));
+    sink.stdout_line(&format!(
+        "Type:    {}",
+        details.app_type.as_deref().unwrap_or("(unknown)")
+    ));
 
     let branch_name = "public";
 
