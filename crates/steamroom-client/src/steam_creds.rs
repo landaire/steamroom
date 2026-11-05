@@ -89,26 +89,40 @@ pub fn list_users(steam_dir: &std::path::Path) -> Vec<LocalUser> {
     users
 }
 
-/// Detect the most recently logged-in Steam username from `loginusers.vdf`.
+/// Detect the active Steam username from `loginusers.vdf`.
 pub fn detect_username(steam_dir: &std::path::Path) -> Option<String> {
     let login_users =
         std::fs::read_to_string(steam_dir.join("config").join("loginusers.vdf")).ok()?;
     let kv = steamroom::types::key_value::parse_text_kv(&login_users).ok()?;
-    if let steamroom::types::key_value::KvValue::Children(ref users) = kv.value {
-        for user_kv in users.values() {
-            let most_recent = user_kv
-                .get("mostrecent")
-                .and_then(|v| v.as_str())
-                .unwrap_or("0");
-            if most_recent == "1" {
-                return user_kv
-                    .get("AccountName")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-            }
+    let steamroom::types::key_value::KvValue::Children(users) = &kv.value else {
+        return None;
+    };
+
+    for user_kv in users.values() {
+        if user_kv.get("mostrecent").and_then(|value| value.as_str()) == Some("1") {
+            return account_name(user_kv).map(ToOwned::to_owned);
         }
     }
-    None
+
+    for user_kv in users.values() {
+        if user_kv.get("AutoLogin").and_then(|value| value.as_str()) == Some("1") {
+            return account_name(user_kv).map(ToOwned::to_owned);
+        }
+    }
+
+    let mut account_names = users.values().filter_map(account_name);
+    let account_name = account_names.next()?;
+    if account_names.next().is_some() {
+        return None;
+    }
+
+    Some(account_name.to_string())
+}
+
+fn account_name(user: &steamroom::types::key_value::KeyValue) -> Option<&str> {
+    user.get("AccountName")
+        .and_then(|value| value.as_str())
+        .filter(|account_name| !account_name.is_empty())
 }
 
 /// Read the hex-encoded encrypted token blob from a `local.vdf` file.
@@ -564,5 +578,65 @@ mod windows {
         }
 
         Some(decrypted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn steam_directory(login_users: &str) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let config_directory = directory.path().join("config");
+        std::fs::create_dir(&config_directory).unwrap();
+        std::fs::write(config_directory.join("loginusers.vdf"), login_users).unwrap();
+        directory
+    }
+
+    #[test]
+    fn detects_auto_login_user_without_most_recent_field() {
+        let directory = steam_directory(
+            r#"
+            "users"
+            {
+                "76561198000000001"
+                {
+                    "AccountName" "account"
+                    "AutoLogin" "1"
+                }
+            }
+            "#,
+        );
+
+        assert_eq!(
+            detect_username(directory.path()).as_deref(),
+            Some("account")
+        );
+    }
+
+    #[test]
+    fn most_recent_user_precedes_auto_login_user() {
+        let directory = steam_directory(
+            r#"
+            "users"
+            {
+                "76561198000000001"
+                {
+                    "AccountName" "recent"
+                    "mostrecent" "1"
+                }
+                "76561198000000002"
+                {
+                    "AccountName" "automatic"
+                    "AutoLogin" "1"
+                }
+            }
+            "#,
+        );
+
+        assert_eq!(
+            detect_username(directory.path()).as_deref(),
+            Some("recent")
+        );
     }
 }
