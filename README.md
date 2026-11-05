@@ -29,6 +29,12 @@ cargo install --path crates/steamroom-cli
 ## Quick Start
 
 ```bash
+# Configure authentication interactively
+steamroom login
+
+# Use the login token from the local Steam installation on future runs
+steamroom login --use-steam-token
+
 # Download Spacewar (free game, no login required)
 steamroom download --app 480 --depot 481 -o spacewar/
 
@@ -37,12 +43,26 @@ steamroom --username myaccount download --app 440 -o tf2/
 
 # QR code login (scan with Steam mobile app)
 steamroom --username myaccount --qr download --app 440 -o tf2/
-
-# Use a saved token (auto-detected from ~/.depotdownloader/tokens.json)
-steamroom --username myaccount download --app 440 -o tf2/
 ```
 
 ## Commands
+
+### `login`
+
+Authenticate immediately and configure future authentication.
+
+```bash
+# Prompt for the login method, username, password, and token persistence
+steamroom login
+
+# Use the local Steam installation's login token on this and future runs
+steamroom login --use-steam-token
+
+# Log in with credentials and save the resulting refresh token
+steamroom login --username myaccount --remember-password
+```
+
+The save option stores the Steam refresh token returned after authentication. It never stores your Steam password.
 
 ### `download`
 
@@ -274,20 +294,27 @@ Auth flags (`--username`, `--password`, `--qr`, `--use-steam-token`, `--remember
 `--device-name`) and `--capture` are ignored, with a warning, under `--use-daemon`; the
 daemon serves the account it authenticated as. Set them on `daemon start` instead.
 
+An authenticated `daemon start` needs a repeatable login method so the detached process can reconnect. Pass `--remember-password` on the first credential login, or run `steamroom login` and save the refresh token before starting the daemon. A Steam login token selected with `steamroom login --use-steam-token` is reused and pinned to the daemon's account for its lifetime.
+
 ## Authentication
+
+Run `steamroom login` without authentication flags to choose between credentials and the local Steam installation's login token. Credential login prompts for the username, password, Steam Guard confirmation, and whether to save the resulting refresh token.
 
 steamroom supports multiple authentication methods:
 
-| Method         | Flag                        | Notes                                            |
+| Method         | Command or flag             | Notes                                            |
 | -------------- | --------------------------- | ------------------------------------------------ |
+| Interactive    | `steamroom login`           | Prompts for method, credentials, and token saving |
 | Anonymous      | (none)                      | Works for free games                             |
 | Password       | `--username X --password Y` | Prompts if password omitted                      |
 | Password + 2FA | `--username X`              | Prompts for guard code                           |
 | QR code        | `--username X --qr`         | Scan with Steam mobile app                       |
-| Saved token    | `--username X`              | Auto-loads from `~/.depotdownloader/tokens.json` |
-| Steam token    | `--use-steam-token`         | Reuses cached token from local Steam installation |
+| Saved token    | `--username X`              | Loads from `~/.depotdownloader/tokens.json`      |
+| Steam token    | `--use-steam-token`         | Reuses a token from the local Steam installation |
 
-Tokens are saved automatically after successful login and reused on subsequent runs.
+Credential and QR login save a refresh token only when `--remember-password` is present or you answer yes to the `steamroom login` save prompt. Steamroom never saves the account password.
+
+Selecting the Steam login token through `steamroom login` records that startup choice in `~/.depotdownloader/tokens.json`. Later commands use the local Steam token unless you provide another authentication method.
 
 ## Legacy Compatibility
 

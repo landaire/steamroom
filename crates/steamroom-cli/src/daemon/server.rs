@@ -430,34 +430,69 @@ fn is_disconnected(err: &crate::errors::CliError) -> bool {
     false
 }
 
-/// Lazily authenticate when the worker needs a client. `preferred_user`
-/// is the username the daemon was launched with (Some if `daemon start
-/// --username foo`; None for fully-lazy daemons). Falls back to the
-/// user's saved-token detection and finally anonymous, mirroring direct
-/// mode's `connect_and_login`.
-async fn lazy_login(
-    preferred_user: Option<&str>,
+/// Authentication selected when the daemon starts. The mode and account
+/// remain fixed across reconnects.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "method")]
+pub enum DaemonAuth {
+    Anonymous,
+    SavedToken { account_name: String },
+    SteamToken { account_name: String },
+}
+
+impl DaemonAuth {
+    pub fn account_name(&self) -> Option<&str> {
+        match self {
+            Self::Anonymous => None,
+            Self::SavedToken { account_name } | Self::SteamToken { account_name } => {
+                Some(account_name)
+            }
+        }
+    }
+}
+
+pub async fn daemon_login(
+    daemon_auth: &DaemonAuth,
 ) -> Result<SteamClient<LoggedIn>, crate::errors::CliError> {
     use crate::cli::AuthOptions;
-    let auth = AuthOptions {
-        username: preferred_user.map(|s| s.to_string()),
-        password: None,
-        qr: false,
-        use_steam_token: false,
-        remember_password: false,
-        device_name: None,
+
+    if matches!(daemon_auth, DaemonAuth::Anonymous) {
+        return Ok(steamroom_client::login::LoginBuilder::new()
+            .device_name("steamroom")
+            .anonymous()
+            .login()
+            .await?);
+    }
+
+    let auth = match daemon_auth {
+        DaemonAuth::Anonymous => unreachable!("anonymous login returned above"),
+        DaemonAuth::SavedToken { account_name } => AuthOptions {
+            username: Some(account_name.clone()),
+            password: None,
+            qr: false,
+            use_steam_token: false,
+            remember_password: false,
+            device_name: None,
+        },
+        DaemonAuth::SteamToken { account_name } => AuthOptions {
+            username: Some(account_name.clone()),
+            password: None,
+            qr: false,
+            use_steam_token: true,
+            remember_password: false,
+            device_name: None,
+        },
     };
     crate::commands::shared::connect_and_login(&auth, None).await
 }
 
 /// Single-job worker loop. Holds the SteamClient lazily: it is acquired
-/// on the first job that needs it and recreated after a connection-loss
-/// error so subsequent jobs reauthenticate transparently. `preferred_user`
-/// is forwarded into the lazy login flow.
+/// on the first job that needs it and recreated with the daemon's fixed
+/// authentication mode after a connection-loss error.
 pub async fn worker_loop(
     state: Arc<DaemonState>,
     initial_client: Option<SteamClient<LoggedIn>>,
-    preferred_user: Option<String>,
+    daemon_auth: DaemonAuth,
 ) {
     let mut client = initial_client;
     while let Some(job) = wait_for_next_job(&state).await {
@@ -502,7 +537,7 @@ pub async fn worker_loop(
         // once per disconnect/restart.
         let active_client = match &client {
             Some(c) => c.clone(),
-            None => match lazy_login(preferred_user.as_deref()).await {
+            None => match daemon_login(&daemon_auth).await {
                 Ok(c) => {
                     client = Some(c.clone());
                     c
@@ -923,6 +958,7 @@ fn job_kind_of(r: &Request) -> JobKind {
     }
 }
 
+
 fn summarize(r: &Request) -> String {
     match r {
         Request::Download { args, .. } => {
@@ -950,6 +986,18 @@ mod tests {
     use super::*;
     use crate::daemon::proto::InfoParams;
     use crate::daemon::proto::OutputFormat;
+
+    #[test]
+    fn daemon_auth_round_trip_preserves_account() {
+        let auth = DaemonAuth::SteamToken {
+            account_name: "account".to_string(),
+        };
+
+        let encoded = serde_json::to_string(&auth).unwrap();
+        let decoded: DaemonAuth = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, auth);
+    }
 
     fn ev_stdout(job_id: JobId, line: &str) -> Event {
         Event::Stdout {

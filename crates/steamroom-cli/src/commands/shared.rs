@@ -17,6 +17,8 @@ use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::*;
 use steamroom::types::key_value::KeyValue;
 use steamroom::types::key_value::KvValue;
+use steamroom_client::credentials::StartupAuth;
+use steamroom_client::credentials::TokenStore;
 use steamroom_client::login::AuthTokens;
 use steamroom_client::login::ConfirmationChallenge;
 use steamroom_client::login::CredentialsLoginFlow;
@@ -285,31 +287,9 @@ pub async fn connect_and_login(
     };
     let builder = make_builder();
 
-    // --use-steam-token: prefer local Steam install's cached token.
     if auth.use_steam_token {
-        let username = auth.username.clone().or_else(|| {
-            let dir = steamroom_client::steam_creds::steam_dir()?;
-            steamroom_client::steam_creds::detect_username(&dir)
-        });
-        let cached = username.as_deref().and_then(|u| {
-            info!("extracting cached Steam token for {u}...");
-            steamroom_client::steam_creds::extract_token(u)
-        });
-        if let Some(cred) = cached {
-            info!("using cached Steam token for {}", cred.account_name);
-            return Ok(builder
-                .with_refresh_token(cred.account_name, cred.refresh_token)
-                .login()
-                .await?);
-        }
-        warn!("failed to extract Steam token, falling back to normal auth");
-        if let Some(u) = username
-            && let Some(token) = load_saved_token(&u)
-        {
-            info!("using saved refresh token for {u}");
-            return Ok(builder.with_refresh_token(u, token).login().await?);
-        }
-        return Ok(builder.anonymous().login().await?);
+        let (client, _) = login_with_steam_token(builder, auth.username.as_deref()).await?;
+        return Ok(client);
     }
 
     // -u/--username given. --qr forces a fresh QR session; otherwise try a
@@ -319,7 +299,7 @@ pub async fn connect_and_login(
         // Try the saved refresh token first regardless of `--qr` /
         // password. The flags describe how to RECOVER if the token is
         // missing or stale; a valid token is always the cheap path.
-        if let Some(token) = load_saved_token(username) {
+        if let Some(token) = load_saved_token(username)? {
             info!("using saved refresh token for {username}");
             let attempt = make_builder()
                 .with_refresh_token(username, token)
@@ -334,7 +314,7 @@ pub async fn connect_and_login(
                 ))
                 | Err(LoginError::InvalidPassword) => {
                     warn!("saved refresh token rejected; re-authenticating");
-                    forget_saved_token(username);
+                    forget_saved_token(username)?;
                 }
                 Err(e) => return Err(e.into()),
             }
@@ -345,7 +325,7 @@ pub async fn connect_and_login(
             if !is_interactive() {
                 return Err(CliError::InteractiveAuthRequired);
             }
-            return drive_qr_flow(builder, username).await;
+            return drive_qr_flow(builder, username, auth.remember_password).await;
         }
         if !is_interactive() && auth.password.is_none() {
             return Err(CliError::InteractiveAuthRequired);
@@ -354,7 +334,7 @@ pub async fn connect_and_login(
     }
 
     // Auto-detect Steam user with a saved token.
-    if let Some((username, token)) = detect_steam_user() {
+    if let Some((username, token)) = detect_steam_user()? {
         info!("auto-detected Steam user: {username}");
         return Ok(builder.with_refresh_token(username, token).login().await?);
     }
@@ -363,60 +343,102 @@ pub async fn connect_and_login(
     Ok(builder.anonymous().login().await?)
 }
 
-pub fn tokens_path() -> Option<std::path::PathBuf> {
-    Some(
-        dirs_next::home_dir()?
-            .join(".depotdownloader")
-            .join("tokens.json"),
-    )
+pub fn tokens_path() -> std::path::PathBuf {
+    TokenStore::default_path()
+}
+
+pub fn startup_auth() -> Result<Option<StartupAuth>, CliError> {
+    let store = TokenStore::load_or_default(&tokens_path())?;
+    Ok(store.startup_auth)
+}
+
+pub fn set_startup_auth(startup_auth: Option<StartupAuth>) -> Result<(), CliError> {
+    let path = tokens_path();
+    let mut store = TokenStore::load_or_default(&path)?;
+    store.startup_auth = startup_auth;
+    store.save(&path)?;
+    Ok(())
+}
+
+pub fn apply_startup_auth(auth: &mut AuthOptions) -> Result<(), CliError> {
+    if auth.has_explicit_method() {
+        return Ok(());
+    }
+
+    let Some(StartupAuth::SteamToken { account_name }) = startup_auth()? else {
+        return Ok(());
+    };
+
+    auth.use_steam_token = true;
+    auth.username = account_name;
+    Ok(())
 }
 
 /// Try to detect the active Steam user and find a saved refresh token.
-pub fn detect_steam_user() -> Option<(String, String)> {
-    let dir = steamroom_client::steam_creds::steam_dir()?;
-    let username = steamroom_client::steam_creds::detect_username(&dir)?;
-    let token = load_saved_token(&username)?;
-    Some((username, token))
-}
-
-pub fn load_saved_token(username: &str) -> Option<String> {
-    let data = std::fs::read_to_string(tokens_path()?).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&data).ok()?;
-    parsed["tokens"][username].as_str().map(|s| s.to_string())
-}
-
-pub fn save_token(username: &str, refresh_token: &str) {
-    let Some(path) = tokens_path() else { return };
-    let mut root = match std::fs::read_to_string(&path) {
-        Ok(data) => serde_json::from_str::<serde_json::Value>(&data).unwrap_or_default(),
-        Err(_) => serde_json::json!({}),
+pub fn detect_steam_user() -> Result<Option<(String, String)>, CliError> {
+    let Some(dir) = steamroom_client::steam_creds::steam_dir() else {
+        return Ok(None);
     };
-    root["tokens"][username] = serde_json::Value::String(refresh_token.to_string());
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&root).unwrap_or_default(),
-    );
+    let Some(username) = steamroom_client::steam_creds::detect_username(&dir) else {
+        return Ok(None);
+    };
+    let Some(token) = load_saved_token(&username)? else {
+        return Ok(None);
+    };
+
+    Ok(Some((username, token)))
+}
+
+pub fn load_saved_token(username: &str) -> Result<Option<String>, CliError> {
+    let store = TokenStore::load_or_default(&tokens_path())?;
+    Ok(store.get(username).map(ToOwned::to_owned))
+}
+
+pub fn save_token(username: &str, refresh_token: &str) -> Result<(), CliError> {
+    let path = tokens_path();
+    let mut store = TokenStore::load_or_default(&path)?;
+    store.set(username.to_string(), refresh_token.to_string());
+    store.save(&path)?;
     info!("saved refresh token for {username}");
+    Ok(())
 }
 
-pub fn forget_saved_token(username: &str) {
-    let Some(path) = tokens_path() else { return };
-    let Ok(data) = std::fs::read_to_string(&path) else {
-        return;
+pub fn forget_saved_token(username: &str) -> Result<(), CliError> {
+    let path = tokens_path();
+    let mut store = match TokenStore::load(&path) {
+        Ok(store) => store,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
     };
-    let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&data) else {
-        return;
+    store.remove(username);
+    store.save(&path)?;
+    Ok(())
+}
+
+pub async fn login_with_steam_token(
+    builder: LoginBuilder,
+    username: Option<&str>,
+) -> Result<(SteamClient<LoggedIn>, String), CliError> {
+    let username = match username {
+        Some(username) => username.to_string(),
+        None => {
+            let directory =
+                steamroom_client::steam_creds::steam_dir().ok_or(CliError::SteamTokenUnavailable)?;
+            steamroom_client::steam_creds::detect_username(&directory)
+                .ok_or(CliError::SteamTokenUnavailable)?
+        }
     };
-    if let Some(tokens) = root.get_mut("tokens").and_then(|v| v.as_object_mut()) {
-        tokens.remove(username);
-    }
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&root).unwrap_or_default(),
-    );
+    info!("extracting cached Steam token for {username}...");
+    let credential = steamroom_client::steam_creds::extract_token(&username)
+        .ok_or(CliError::SteamTokenUnavailable)?;
+    let account_name = credential.account_name;
+    info!("using cached Steam token for {account_name}");
+    let client = builder
+        .with_refresh_token(account_name.clone(), credential.refresh_token)
+        .login()
+        .await?;
+
+    Ok((client, account_name))
 }
 
 pub async fn drive_credentials_flow(
@@ -428,16 +450,15 @@ pub async fn drive_credentials_flow(
     for attempt in 0..3u32 {
         let password = if attempt == 0 {
             match (auth.password.clone(), is_interactive()) {
-                (Some(p), _) => p,
-                (None, true) => rpassword::prompt_password(format!("Password for {username}: "))
-                    .unwrap_or_default(),
+                (Some(password), _) => password,
+                (None, true) => rpassword::prompt_password(format!("Password for {username}: "))?,
                 (None, false) => return Err(CliError::InteractiveAuthRequired),
             }
         } else if !is_interactive() {
             return Err(CliError::InteractiveAuthRequired);
         } else {
             eprintln!("Invalid password, try again ({}/3)", attempt + 1);
-            rpassword::prompt_password(format!("Password for {username}: ")).unwrap_or_default()
+            rpassword::prompt_password(format!("Password for {username}: "))?
         };
 
         let credentials = LoginBuilder::new()
@@ -464,11 +485,13 @@ pub async fn drive_credentials_flow(
         };
 
         let tokens = approved.tokens();
-        save_token(
-            tokens.account_name.as_deref().unwrap_or(username),
-            &tokens.refresh_token,
-        );
-        return Ok(approved.finish().await?);
+        let account_name = tokens.account_name.as_deref().unwrap_or(username).to_string();
+        let refresh_token = tokens.refresh_token.clone();
+        let client = approved.finish().await?;
+        if auth.remember_password {
+            save_token(&account_name, &refresh_token)?;
+        }
+        return Ok(client);
     }
     // Three attempts exhausted.
     Err(CliError::Login(LoginError::InvalidPassword))
@@ -594,6 +617,7 @@ pub fn preferred_kind(kinds: &[GuardType]) -> GuardType {
 pub async fn drive_qr_flow(
     builder: LoginBuilder,
     username: &str,
+    remember_password: bool,
 ) -> Result<SteamClient<LoggedIn>, CliError> {
     info!("generating QR code...");
     let flow = builder.with_qr().begin().await?;
@@ -608,9 +632,11 @@ pub async fn drive_qr_flow(
 
     let approved = flow.wait_for_scan().await?;
     let tokens = approved.tokens();
-    save_token(
-        tokens.account_name.as_deref().unwrap_or(username),
-        &tokens.refresh_token,
-    );
-    Ok(approved.finish().await?)
+    let account_name = tokens.account_name.as_deref().unwrap_or(username).to_string();
+    let refresh_token = tokens.refresh_token.clone();
+    let client = approved.finish().await?;
+    if remember_password {
+        save_token(&account_name, &refresh_token)?;
+    }
+    Ok(client)
 }

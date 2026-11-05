@@ -64,6 +64,18 @@ pub enum CliError {
     )]
     InteractiveAuthRequired,
 
+    #[error("Steam username is required")]
+    UsernameRequired,
+
+    #[error("no usable login token was found in the local Steam installation")]
+    SteamTokenUnavailable,
+
+    #[error(
+        "authenticated daemon startup requires a saved refresh token; \
+         pass --remember-password or run `steamroom login` first"
+    )]
+    DaemonPersistenceRequired,
+
     #[error("Steam returned no CDN servers")]
     NoCdnServers,
 

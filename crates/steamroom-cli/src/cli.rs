@@ -194,6 +194,15 @@ pub struct AuthOptions {
     pub device_name: Option<String>,
 }
 
+impl AuthOptions {
+    pub fn has_explicit_method(&self) -> bool {
+        self.username.is_some()
+            || self.password.is_some()
+            || self.qr
+            || self.use_steam_token
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Daemon control: start a background daemon, then stop, observe,
@@ -207,6 +216,8 @@ pub enum Command {
     Files(FilesArgs),
     /// Show app metadata: name, type, depots, branches
     Info(InfoArgs),
+    /// Authenticate now and configure future login behavior
+    Login(LoginArgs),
     /// Show locally cached depot keys and beta branches from Steam's config.vdf
     LocalInfo(LocalInfoArgs),
     /// List depot manifest IDs for a branch
@@ -218,6 +229,9 @@ pub enum Command {
     /// Download a Steam Workshop item
     Workshop(WorkshopArgs),
 }
+
+#[derive(Parser, Debug)]
+pub struct LoginArgs {}
 
 #[derive(Parser, Debug)]
 pub struct DaemonArgs {
@@ -551,6 +565,7 @@ impl Cli {
                 args: crate::daemon::proto::LocalInfoParams::from(a),
                 priority,
             }),
+            Command::Login(_) => Err(CliError::DaemonRejectedFlag("login command")),
             Command::Daemon(_) => Err(CliError::DaemonRejectedFlag("daemon subcommand")),
         }
     }
@@ -576,5 +591,28 @@ impl Cli {
             return Err(CliError::DaemonModeConflict);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_interactive_login_without_auth_flags() {
+        let cli = Cli::try_parse_from(["steamroom", "login"]).unwrap();
+
+        assert!(matches!(cli.command, Command::Login(_)));
+        assert!(!cli.auth.has_explicit_method());
+        assert!(!cli.auth.remember_password);
+    }
+
+    #[test]
+    fn parses_login_with_steam_token() {
+        let cli =
+            Cli::try_parse_from(["steamroom", "login", "--use-steam-token"]).unwrap();
+
+        assert!(matches!(cli.command, Command::Login(_)));
+        assert!(cli.auth.use_steam_token);
     }
 }

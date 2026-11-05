@@ -14,6 +14,7 @@ pub mod download;
 pub mod files;
 pub mod info;
 pub mod local_info;
+pub mod login;
 pub mod manifests;
 pub mod packages;
 pub mod save_manifest;

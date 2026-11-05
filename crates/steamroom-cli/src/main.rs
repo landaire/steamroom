@@ -12,7 +12,7 @@ use sink::StdoutSink;
 use tokio_util::sync::CancellationToken;
 
 fn main() {
-    let cli = if std::env::var("DD_COMPAT").as_deref() == Ok("1") {
+    let mut cli = if std::env::var("DD_COMPAT").as_deref() == Ok("1") {
         // DepotDownloader uses single-dash flags (-app, -depot, etc.).
         // Clap expects double-dash, so convert before parsing.
         let args: Vec<String> = std::env::args()
@@ -84,25 +84,25 @@ fn main() {
             command: DaemonSub::Start
         })
     ) {
+        if let Err(err) = commands::shared::apply_startup_auth(&mut cli.auth) {
+            eprintln!("Error: {err}");
+            std::process::exit(1);
+        }
         commands::shared::init_interactive(interactive);
         let rt = build_runtime();
-        let auth_result =
-            rt.block_on(async { daemon::lifecycle::launch_daemon_authenticate(&cli).await });
+        let daemon_auth =
+            match rt.block_on(async { daemon::lifecycle::launch_daemon_authenticate(&cli).await }) {
+                Ok(daemon_auth) => daemon_auth,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            };
         drop(rt);
-        let username = match auth_result {
-            // Eager auth: username from the prompt path is passed to the
-            // grandchild for refresh-token relogin.
-            Ok(Some(u)) => u,
-            // Lazy mode: no auth flags. Empty username signals to the
-            // grandchild that no eager re-login is needed; the worker
-            // will authenticate on the first job.
-            Ok(None) => String::new(),
-            Err(e) => {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            }
-        };
-        match daemon::lifecycle::detach_and_exec_resume(&username, &daemon::lifecycle::log_path()) {
+        match daemon::lifecycle::detach_and_exec_resume(
+            &daemon_auth,
+            &daemon::lifecycle::log_path(),
+        ) {
             Ok(()) => std::process::exit(0),
             Err(e) => {
                 eprintln!("Error: {e}");
@@ -151,8 +151,17 @@ fn report_and_exit(result: Result<(), CliError>, raw_errors: bool) -> ! {
     std::process::exit(0);
 }
 
-async fn async_main(cli: Cli) -> Result<(), CliError> {
+async fn async_main(mut cli: Cli) -> Result<(), CliError> {
     use std::sync::Arc;
+    let needs_startup_auth = match &cli.command {
+        Command::LocalInfo(_) | Command::Login(_) | Command::Daemon(_) => false,
+        Command::Files(args) => args.manifest_file.is_none(),
+        _ => true,
+    };
+    if needs_startup_auth {
+        commands::shared::apply_startup_auth(&mut cli.auth)?;
+    }
+
     let show_progress = !cli.no_progress;
     let sink: Arc<dyn sink::JobSink> = Arc::new(StdoutSink::new());
     let cancel = CancellationToken::new();
@@ -183,6 +192,7 @@ async fn async_main(cli: Cli) -> Result<(), CliError> {
             let client = commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?;
             commands::info::run_info(args, client, sink, cancel).await
         }
+        Command::Login(args) => commands::login::run_login(args, cli.auth).await,
         Command::Manifests(args) => {
             let client = commands::shared::connect_and_login(&cli.auth, recorder.as_ref()).await?;
             commands::manifests::run_manifests(args, client, sink, cancel).await
