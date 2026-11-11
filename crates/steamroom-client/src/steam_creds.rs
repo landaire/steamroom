@@ -6,6 +6,9 @@
 //! The public entry points are `steam_dir`, `detect_username`, and
 //! `extract_token`.
 
+use crate::watermark::MachineWatermarkSeed;
+use crate::watermark::WatermarkScope;
+
 use std::path::PathBuf;
 
 /// A cached Steam credential extracted from the local Steam installation.
@@ -175,20 +178,18 @@ pub struct LocalConfig {
     pub beta_hashes: Vec<LocalBetaHash>,
 }
 
-#[derive(Clone, Copy)]
-struct WatermarkSeed(u32);
-
-fn decode_hex<const N: usize>(value: &[u8]) -> Option<[u8; N]> {
-    if value.len() != N * 2 {
-        return None;
-    }
-
-    let mut decoded = [0; N];
-    for (output, pair) in decoded.iter_mut().zip(value.chunks_exact(2)) {
+fn decode_beta_hash(
+    value: &str,
+    seed: MachineWatermarkSeed,
+) -> Option<steamroom::apps::BranchPasswordHash> {
+    let decoded = crate::watermark::decode_hex(value, WatermarkScope::Machine(seed)).ok()?;
+    let hash_text: &[u8; 64] = decoded.payload.strip_suffix(&[0])?.try_into().ok()?;
+    let mut hash = [0; 32];
+    for (output, pair) in hash.iter_mut().zip(hash_text.chunks_exact(2)) {
         *output = hex_nibble(pair[0])? << 4 | hex_nibble(pair[1])?;
     }
 
-    Some(decoded)
+    Some(steamroom::apps::BranchPasswordHash(hash))
 }
 
 fn hex_nibble(value: u8) -> Option<u8> {
@@ -198,75 +199,6 @@ fn hex_nibble(value: u8) -> Option<u8> {
         b'A'..=b'F' => Some(value - b'A' + 10),
         _ => None,
     }
-}
-
-fn decode_watermarked_beta_hash(
-    value: &str,
-    seed: WatermarkSeed,
-) -> Option<steamroom::apps::BranchPasswordHash> {
-    const BLOB_LENGTH: usize = 73;
-    const HASH_TEXT_LENGTH: usize = 64;
-    const MACHINE_SCOPE: u32 = 2;
-    const WATERMARK_STEP: u32 = 0x25fe_6761;
-    const WATERMARK_TABLE: [u32; 17] = [
-        0x1739_a3b0,
-        0xb890_7fe1,
-        0x8290_d3b7,
-        0x7283_9cd0,
-        0x242d_f096,
-        0x3829_750b,
-        0x38de_7a77,
-        0x72f0_924c,
-        0x4478_3927,
-        0x0192_5372,
-        0x2090_2714,
-        0x2758_5920,
-        0x2789_0632,
-        0x8291_0476,
-        0x7290_6721,
-        0x2879_8904,
-        0x7859_2700,
-    ];
-
-    let encoded = decode_hex::<BLOB_LENGTH>(value.as_bytes())?;
-    if u32::from_le_bytes(encoded[..4].try_into().ok()?) != MACHINE_SCOPE {
-        return None;
-    }
-
-    let mut plaintext = [0; HASH_TEXT_LENGTH + 1];
-    let mut state = 0u32;
-    let mut sequence = seed.0;
-    let mut checksum = 0u32;
-
-    for index in 0..(HASH_TEXT_LENGTH / 4) {
-        state = state.wrapping_add(WATERMARK_STEP);
-        sequence = sequence.wrapping_add(1);
-        let encoded_offset = 4 + index * 4;
-        let word = u32::from_le_bytes(
-            encoded[encoded_offset..encoded_offset + 4]
-                .try_into()
-                .ok()?,
-        ) ^ state
-            ^ WATERMARK_TABLE[(sequence % WATERMARK_TABLE.len() as u32) as usize];
-        checksum = checksum.wrapping_add(word);
-        plaintext[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
-    }
-
-    plaintext[HASH_TEXT_LENGTH] = encoded[4 + HASH_TEXT_LENGTH];
-
-    state = state.wrapping_add(WATERMARK_STEP);
-    sequence = sequence.wrapping_add(1);
-    let expected_checksum =
-        checksum ^ state ^ WATERMARK_TABLE[(sequence % WATERMARK_TABLE.len() as u32) as usize];
-    let checksum_offset = 4 + plaintext.len();
-    let stored_checksum = u32::from_le_bytes(encoded[checksum_offset..].try_into().ok()?);
-    if stored_checksum != expected_checksum || plaintext[HASH_TEXT_LENGTH] != 0 {
-        return None;
-    }
-
-    Some(steamroom::apps::BranchPasswordHash(decode_hex::<32>(
-        &plaintext[..HASH_TEXT_LENGTH],
-    )?))
 }
 
 /// Parse Steam's `config.vdf` and extract cached depot keys and beta hashes.
@@ -281,7 +213,7 @@ pub fn read_config(steam_dir: &std::path::Path) -> Option<LocalConfig> {
         .get("MTBF")
         .and_then(|value| value.as_str())
         .and_then(|value| value.parse().ok())
-        .map(WatermarkSeed);
+        .map(MachineWatermarkSeed::from_mtbf);
 
     let mut config = LocalConfig::default();
 
@@ -318,7 +250,7 @@ pub fn read_config(steam_dir: &std::path::Path) -> Option<LocalConfig> {
                     if let Some(branch) = key.strip_prefix("betahash_")
                         && let Some(value) = val.as_str()
                         && let Some(seed) = watermark_seed
-                        && let Some(hash) = decode_watermarked_beta_hash(value, seed)
+                        && let Some(hash) = decode_beta_hash(value, seed)
                     {
                         config.beta_hashes.push(LocalBetaHash {
                             app_id,
@@ -738,29 +670,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_watermarked_beta_hash() {
-        let seed = WatermarkSeed(911029302);
+    fn rejects_malformed_beta_hash_plaintext() {
+        let seed = MachineWatermarkSeed::from_mtbf(911029302);
+        let scope = WatermarkScope::Machine(seed);
+        let valid = crate::watermark::decode_hex(BETA_HASH_BLOB, scope)
+            .unwrap()
+            .payload;
 
-        let mut wrong_scope = BETA_HASH_BLOB.as_bytes().to_vec();
-        wrong_scope[1] = b'1';
-        assert!(
-            decode_watermarked_beta_hash(std::str::from_utf8(&wrong_scope).unwrap(), seed)
-                .is_none()
-        );
+        let mut missing_nul = valid.clone();
+        missing_nul[64] = 1;
+        let encoded = crate::watermark::encode_hex(&missing_nul, scope).unwrap();
+        assert!(decode_beta_hash(&encoded, seed).is_none());
 
-        let mut missing_nul = BETA_HASH_BLOB.as_bytes().to_vec();
-        missing_nul[137] = b'1';
-        assert!(
-            decode_watermarked_beta_hash(std::str::from_utf8(&missing_nul).unwrap(), seed)
-                .is_none()
-        );
+        let mut short = valid[..63].to_vec();
+        short.push(0);
+        let encoded = crate::watermark::encode_hex(&short, scope).unwrap();
+        assert!(decode_beta_hash(&encoded, seed).is_none());
 
-        let mut bad_checksum = BETA_HASH_BLOB.as_bytes().to_vec();
-        *bad_checksum.last_mut().unwrap() = b'8';
-        assert!(
-            decode_watermarked_beta_hash(std::str::from_utf8(&bad_checksum).unwrap(), seed)
-                .is_none()
-        );
+        let mut non_ascii = valid.clone();
+        non_ascii[1] = 0xc3;
+        non_ascii[2] = 0xa9;
+        let encoded = crate::watermark::encode_hex(&non_ascii, scope).unwrap();
+        assert!(decode_beta_hash(&encoded, seed).is_none());
+
+        let mut signed = valid;
+        signed[0] = b'+';
+        let encoded = crate::watermark::encode_hex(&signed, scope).unwrap();
+        assert!(decode_beta_hash(&encoded, seed).is_none());
     }
 
     #[test]

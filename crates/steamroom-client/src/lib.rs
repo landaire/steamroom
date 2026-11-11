@@ -64,6 +64,8 @@ pub mod login;
 pub mod manifest;
 /// Extract cached credentials from a local Steam installation.
 pub mod steam_creds;
+/// Steam config-store watermark encoding and decoding.
+pub mod watermark;
 
 #[cfg(test)]
 mod depot_config_tests;
