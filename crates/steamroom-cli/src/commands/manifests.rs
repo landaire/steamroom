@@ -4,6 +4,7 @@
 use crate::cli::ManifestsArgs;
 use crate::cli::OutputFormat;
 use crate::commands::shared::fetch_app_details;
+use crate::commands::shared::unlock_branches;
 use crate::errors::CliError;
 use crate::sink::JobSink;
 use std::sync::Arc;
@@ -21,8 +22,11 @@ pub async fn run_manifests(
     _cancel: CancellationToken,
 ) -> Result<(), CliError> {
     let app_id = AppId(args.app);
-    let details = fetch_app_details(&client, app_id).await?;
     let branch = args.branch.as_deref().unwrap_or("public");
+    let unlocks = unlock_branches(&client, app_id, args.branch_password.as_deref(), false)
+        .await?
+        .only(branch)?;
+    let details = fetch_app_details(&client, app_id, &unlocks).await?;
 
     // Error only when the app has no depots section at all; a section that
     // carries branches but no numeric depots still yields empty output.

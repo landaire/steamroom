@@ -431,6 +431,12 @@ pub struct InfoArgs {
     /// Show redistributable depots
     #[arg(long)]
     pub show_all: bool,
+    /// Password for a password-protected branch; its branches are listed too
+    #[arg(long)]
+    pub branch_password: Option<String>,
+    /// Also list branches whose passwords the local Steam client has cached
+    #[arg(long)]
+    pub local_keys: bool,
 }
 
 #[derive(Parser, Debug)]

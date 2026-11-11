@@ -74,6 +74,8 @@ mod tests {
                 format: Some(OutputFormat::Json),
                 os: None,
                 show_all: false,
+                branch_password: None,
+                local_keys: false,
             },
             priority: true,
         };

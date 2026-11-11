@@ -5,6 +5,8 @@
 //! values so callers do not re-implement KV traversal. The full tree is
 //! retained as [`AppDetails::key_values`] for fields not modeled here.
 
+use std::collections::BTreeMap;
+
 use crate::depot::AppId;
 use crate::depot::BuildId;
 use crate::depot::DepotId;
@@ -107,6 +109,23 @@ impl AppDetails {
             branches,
             key_values: kv,
         }
+    }
+
+    /// Merge a private branch's depot section (the `privatedepots` tree from
+    /// `PICSPrivateBetaResponse`) into `depots`, then re-derive the typed
+    /// fields. The section has the same shape as `depots`: a `branches` entry
+    /// for the unlocked branch and per-depot `manifests/<branch>` entries.
+    pub fn with_private_depots(self, private_depots: KeyValue) -> Self {
+        let mut key_values = self.key_values;
+        key_values.merge(KvValue::Children(BTreeMap::from([(
+            "depots".to_owned(),
+            KeyValue {
+                key: "depots".to_owned(),
+                value: private_depots.value,
+            },
+        )])));
+
+        Self::from_key_values(self.app_id, key_values)
     }
 
     /// The depot with the given ID, if present.
@@ -340,5 +359,49 @@ mod tests {
         assert!(!public.pwd_required);
         assert_eq!(public.time_updated, Some(1600000000));
         assert_eq!(public.time_built, None);
+    }
+
+    // Shape of a live `PICSPrivateBetaResponse.depot_section`.
+    const PRIVATE_DEPOTS_KV: &str = r#"
+"privatedepots"
+{
+    "branches"
+    {
+        "legacy" { "buildid" "9999" "pwdrequired" "1" "description" "Legacy Build" }
+    }
+    "1007" { "manifests" { "legacy" { "gid" "333" "size" "4096" "download" "512" } } }
+    "1009" { "manifests" { "legacy" { "gid" "444" } } }
+}
+"#;
+
+    #[test]
+    fn private_depots_add_branch_without_dropping_public_data() {
+        let private = parse_text_kv(PRIVATE_DEPOTS_KV).unwrap();
+        let d = details().with_private_depots(private);
+
+        let legacy = d.branch("legacy").unwrap();
+        assert_eq!(legacy.build_id, Some(BuildId(9999)));
+        assert!(legacy.pwd_required);
+        assert!(d.branch("public").is_some());
+        assert!(d.branch("beta").is_some());
+
+        let content = d.depot(DepotId(1007)).unwrap();
+        assert_eq!(
+            content.manifest("legacy").unwrap().manifest_id,
+            ManifestId(333)
+        );
+        assert_eq!(
+            content.manifest("public").unwrap().manifest_id,
+            ManifestId(111)
+        );
+        assert_eq!(content.config.os_list, ["windows", "macos"]);
+
+        // A depot that only the private branch publishes.
+        let private_only = d.depot(DepotId(1009)).unwrap();
+        assert_eq!(
+            private_only.manifest("legacy").unwrap().manifest_id,
+            ManifestId(444)
+        );
+        assert_eq!(d.depots.len(), 3);
     }
 }

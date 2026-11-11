@@ -48,6 +48,15 @@ pub enum CliError {
     #[error("no manifest found for depot {depot} on branch \"{branch}\"")]
     ManifestNotFound { depot: u32, branch: String },
 
+    #[error(
+        "branch password does not unlock branch \"{branch}\"; it unlocks: {}",
+        unlocked.join(", ")
+    )]
+    BranchNotUnlocked {
+        branch: String,
+        unlocked: Vec<String>,
+    },
+
     #[error("no cached decryption key for depot {0} in config.vdf")]
     NoLocalKey(u32),
 
@@ -146,6 +155,7 @@ fn display_login_error(e: &steamroom_client::login::LoginError) -> String {
 }
 
 fn display_steam_error(e: &steamroom::error::Error) -> String {
+    use steamroom::enums::EResultError;
     use steamroom::error::ConnectionError;
     use steamroom::error::Error;
 
@@ -159,6 +169,25 @@ fn display_steam_error(e: &steamroom::error::Error) -> String {
         Error::Connection(ConnectionError::DepotAccessDenied(depot)) => {
             format!("access denied for depot {depot} (do you own this app? try logging in with -u)")
         }
+        // Steam answers a password that matches no branch with k_EResultFail.
+        Error::Connection(ConnectionError::BranchPasswordRejected {
+            app_id,
+            result: EResultError::Fail,
+        }) => format!("branch password does not match any branch of app {app_id}"),
+        Error::Connection(ConnectionError::BranchPasswordRejected { app_id, result }) => {
+            format!(
+                "branch password check for app {app_id} failed: {}",
+                eresult_message(result)
+            )
+        }
+        Error::Connection(ConnectionError::PrivateBranchDenied {
+            app_id,
+            branch,
+            result,
+        }) => format!(
+            "access to branch \"{branch}\" of app {app_id} denied: {}",
+            eresult_message(result)
+        ),
         Error::Connection(ConnectionError::Disconnected) => "disconnected from Steam".into(),
         Error::Connection(ConnectionError::DnsResolutionFailed) => {
             "DNS resolution failed (check your network connection)".into()

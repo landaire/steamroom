@@ -23,4 +23,4 @@ pub enum Frame {
 /// Wire-format version. Bump on any breaking change to a `*Params`,
 /// `Request`, `Response`, or `Event` variant layout. Receivers check this
 /// before deserializing and close the connection on mismatch.
-pub const PROTO_VERSION: u16 = 1;
+pub const PROTO_VERSION: u16 = 2;

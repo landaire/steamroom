@@ -8,6 +8,7 @@ use crate::commands::shared::fetch_app_details;
 use crate::commands::shared::fmt_size;
 use crate::commands::shared::fmt_timestamp;
 use crate::commands::shared::resolve_depot_key;
+use crate::commands::shared::unlock_branches;
 use crate::errors::CliError;
 use crate::sink::JobSink;
 use std::sync::Arc;
@@ -51,8 +52,11 @@ pub async fn run_files(
             ))
         })?;
         let app_id = AppId(args.app.ok_or(CliError::NoDepots)?);
-        let details = fetch_app_details(&client, app_id).await?;
         let branch = args.branch.as_deref().unwrap_or("public");
+        let unlocks = unlock_branches(&client, app_id, args.branch_password.as_deref(), false)
+            .await?
+            .only(branch)?;
+        let details = fetch_app_details(&client, app_id, &unlocks).await?;
 
         let depot_id = args
             .depot

@@ -1043,6 +1043,8 @@ mod tests {
                     format: Some(OutputFormat::Plain),
                     os: None,
                     show_all: false,
+                    branch_password: None,
+                    local_keys: false,
                 },
                 priority,
             },

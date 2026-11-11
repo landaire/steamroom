@@ -6,7 +6,9 @@ pub mod multi;
 use self::msg::ClientMsg;
 use crate::apps::AccessToken;
 use crate::apps::AppInfo;
+use crate::apps::BranchPasswordHash;
 use crate::apps::PackageInfo;
+use crate::apps::UnlockedBranch;
 use crate::auth::AuthClientId;
 use crate::auth::AuthSession;
 use crate::auth::AuthTokens;
@@ -27,6 +29,7 @@ use crate::generated;
 use crate::messages::header;
 use crate::messages::header::PacketHeader;
 use crate::types::SteamId;
+use crate::types::key_value::KeyValue;
 
 use crate::messages::EMsg;
 use crate::messages::RawEMsg;
@@ -689,25 +692,54 @@ impl SteamClient<LoggedIn> {
         &self,
         app_id: AppId,
     ) -> Result<crate::types::key_value::KeyValue, Error> {
-        let tokens = self.pics_get_access_tokens(&[app_id]).await?;
-        // A missing access token means the app is free / needs no token.
-        let token = tokens
-            .into_iter()
-            .next()
-            .unwrap_or(AccessToken { app_id, token: 0 });
-        let infos = self.pics_get_product_info(&[token]).await?;
-        let info = infos
-            .into_iter()
-            .next()
-            .ok_or(crate::apps::KvDecodeError::Missing)?;
-        Ok(info.key_values()?)
+        let token = self.app_access_token(app_id).await?;
+        self.product_key_values(token).await
     }
 
     /// Fetch an app's PICS product info and decode it into a typed
     /// [`AppDetails`](crate::apps::AppDetails) (name, type, depots, branches).
     pub async fn app_details(&self, app_id: AppId) -> Result<crate::apps::AppDetails, Error> {
-        let kv = self.app_key_values(app_id).await?;
-        Ok(crate::apps::AppDetails::from_key_values(app_id, kv))
+        self.app_details_with_branches(app_id, &[]).await
+    }
+
+    /// Like [`app_details`](Self::app_details), with the depot sections of
+    /// password-protected `branches` merged in.
+    pub async fn app_details_with_branches(
+        &self,
+        app_id: AppId,
+        branches: &[UnlockedBranch],
+    ) -> Result<crate::apps::AppDetails, Error> {
+        let token = self.app_access_token(app_id).await?;
+        let kv = self.product_key_values(token.clone()).await?;
+        let mut details = crate::apps::AppDetails::from_key_values(app_id, kv);
+
+        for branch in branches {
+            let section = self.private_depots(&token, branch).await?;
+            details = details.with_private_depots(section);
+        }
+
+        Ok(details)
+    }
+
+    /// The PICS access token for `app_id`, needed by [`private_depots`](Self::private_depots).
+    pub async fn app_access_token(&self, app_id: AppId) -> Result<AccessToken, Error> {
+        let tokens = self.pics_get_access_tokens(&[app_id]).await?;
+
+        // A missing access token means the app is free / needs no token.
+        Ok(tokens
+            .into_iter()
+            .next()
+            .unwrap_or(AccessToken { app_id, token: 0 }))
+    }
+
+    async fn product_key_values(&self, token: AccessToken) -> Result<KeyValue, Error> {
+        let infos = self.pics_get_product_info(&[token]).await?;
+        let info = infos
+            .into_iter()
+            .next()
+            .ok_or(crate::apps::KvDecodeError::Missing)?;
+
+        Ok(info.key_values()?)
     }
 
     pub async fn pics_get_package_access_tokens(
@@ -879,20 +911,84 @@ impl SteamClient<LoggedIn> {
         Ok(DepotKey(key))
     }
 
-    /// Request access to a private beta branch using a cached password hash.
-    /// Returns the depot section KV data on success.
-    pub async fn request_private_beta(
+    /// Exchange a branch password for the branches it unlocks. One password
+    /// can unlock several branches.
+    pub async fn check_app_beta_password(
         &self,
         app_id: AppId,
-        access_token: u64,
-        beta_name: &str,
-        password_hash: &[u8; 32],
-    ) -> Result<Option<Vec<u8>>, Error> {
+        password: &str,
+    ) -> Result<Vec<UnlockedBranch>, Error> {
+        let req = generated::CMsgClientCheckAppBetaPassword {
+            app_id: Some(app_id.0),
+            betapassword: Some(password.to_string()),
+            language: None,
+        };
+        let body = req.encode_to_vec();
+        let msg = self.make_msg(EMsg::CLIENT_CHECK_APP_BETA_PASSWORD, &body);
+        self.inner.send_raw(&msg).await?;
+
+        loop {
+            let incoming = self.inner.recv_raw().await?;
+            if incoming.emsg == EMsg::CLIENT_CHECK_APP_BETA_PASSWORD_RESPONSE {
+                return Self::parse_beta_password_response(app_id, &incoming.body);
+            }
+            if incoming.emsg == EMsg::MULTI {
+                let msgs = multi::unpack_multi(&incoming.body)?;
+                for sub in msgs {
+                    let sub_msg = parse_incoming(&sub)?;
+                    if sub_msg.emsg == EMsg::CLIENT_CHECK_APP_BETA_PASSWORD_RESPONSE {
+                        return Self::parse_beta_password_response(app_id, &sub_msg.body);
+                    }
+                }
+            }
+        }
+    }
+
+    fn parse_beta_password_response(
+        app_id: AppId,
+        body: &[u8],
+    ) -> Result<Vec<UnlockedBranch>, Error> {
+        let resp = generated::CMsgClientCheckAppBetaPasswordResponse::decode(body)?;
+        let code = resp
+            .eresult
+            .ok_or(ConnectionError::MissingField("eresult"))?;
+        crate::enums::eresult(code)
+            .map_err(|result| ConnectionError::BranchPasswordRejected { app_id, result })?;
+
+        resp.betapasswords
+            .into_iter()
+            .map(|entry| {
+                let name = entry
+                    .betaname
+                    .ok_or(ConnectionError::MissingField("betaname"))?;
+                let hash_hex = entry
+                    .betapassword
+                    .ok_or(ConnectionError::MissingField("betapassword"))?;
+                let hash = crate::util::hex::decode(&hash_hex)
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                    .ok_or(ConnectionError::MalformedField("betapassword"))?;
+
+                Ok(UnlockedBranch {
+                    name,
+                    password_hash: BranchPasswordHash(hash),
+                })
+            })
+            .collect()
+    }
+
+    /// Fetch the depot section of a password-protected branch. Steam omits
+    /// these branches from regular product info. Merge the result with
+    /// [`AppDetails::with_private_depots`](crate::apps::AppDetails::with_private_depots).
+    pub async fn private_depots(
+        &self,
+        token: &AccessToken,
+        branch: &UnlockedBranch,
+    ) -> Result<KeyValue, Error> {
         let req = generated::CMsgClientPicsPrivateBetaRequest {
-            appid: Some(app_id.0),
-            access_token: Some(access_token),
-            beta_name: Some(beta_name.to_string()),
-            password_hash: Some(password_hash.to_vec()),
+            appid: Some(token.app_id.0),
+            access_token: Some(token.token),
+            beta_name: Some(branch.name.clone()),
+            password_hash: Some(branch.password_hash.0.to_vec()),
         };
         let body = req.encode_to_vec();
         let msg = self.make_msg(EMsg::CLIENT_PICS_PRIVATE_BETA_REQUEST, &body);
@@ -901,23 +997,43 @@ impl SteamClient<LoggedIn> {
         loop {
             let incoming = self.inner.recv_raw().await?;
             if incoming.emsg == EMsg::CLIENT_PICS_PRIVATE_BETA_RESPONSE {
-                return Self::parse_private_beta_response(&incoming.body);
+                return Self::parse_private_beta_response(token.app_id, branch, &incoming.body);
             }
             if incoming.emsg == EMsg::MULTI {
                 let msgs = multi::unpack_multi(&incoming.body)?;
                 for sub in msgs {
                     let sub_msg = parse_incoming(&sub)?;
                     if sub_msg.emsg == EMsg::CLIENT_PICS_PRIVATE_BETA_RESPONSE {
-                        return Self::parse_private_beta_response(&sub_msg.body);
+                        return Self::parse_private_beta_response(
+                            token.app_id,
+                            branch,
+                            &sub_msg.body,
+                        );
                     }
                 }
             }
         }
     }
 
-    fn parse_private_beta_response(body: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        let resp = generated::CMsgClientPicsPrivateBetaResponse::decode_checked(body)?;
-        Ok(resp.depot_section)
+    fn parse_private_beta_response(
+        app_id: AppId,
+        branch: &UnlockedBranch,
+        body: &[u8],
+    ) -> Result<KeyValue, Error> {
+        let resp = generated::CMsgClientPicsPrivateBetaResponse::decode(body)?;
+        let code = resp
+            .eresult
+            .ok_or(ConnectionError::MissingField("eresult"))?;
+        crate::enums::eresult(code).map_err(|result| ConnectionError::PrivateBranchDenied {
+            app_id,
+            branch: branch.name.clone(),
+            result,
+        })?;
+        let section = resp
+            .depot_section
+            .ok_or(ConnectionError::MissingField("depot_section"))?;
+
+        Ok(crate::apps::decode_kv(&section)?)
     }
 
     pub async fn get_cdn_servers(
@@ -1099,20 +1215,60 @@ impl HasEResult for generated::CMsgClientGetDepotDecryptionKeyResponse {
     }
 }
 
-impl HasEResult for generated::CMsgClientCheckAppBetaPasswordResponse {
-    fn get_eresult(&self) -> Option<i32> {
-        self.eresult
-    }
-}
-
-impl HasEResult for generated::CMsgClientPicsPrivateBetaResponse {
-    fn get_eresult(&self) -> Option<i32> {
-        self.eresult
-    }
-}
-
 fn guard_type_from_proto(confirmation_type: Option<i32>) -> Option<GuardType> {
     // A confirmation entry with no type is meaningless and dropped; a present
     // but unrecognized type is retained as GuardType::Unknown.
     Some(GuardType::from_proto(confirmation_type?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::enums::EResultError;
+
+    #[test]
+    fn wrong_branch_password_is_a_typed_rejection() {
+        // Steam answers an unknown password with k_EResultFail and no entries.
+        let body = generated::CMsgClientCheckAppBetaPasswordResponse {
+            eresult: Some(2),
+            betapasswords: Vec::new(),
+        }
+        .encode_to_vec();
+
+        let err = SteamClient::<LoggedIn>::parse_beta_password_response(AppId(107410), &body)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Connection(ConnectionError::BranchPasswordRejected {
+                app_id: AppId(107410),
+                result: EResultError::Fail,
+            })
+        ));
+    }
+
+    #[test]
+    fn branch_password_response_decodes_hex_hash() {
+        let hash_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let body = generated::CMsgClientCheckAppBetaPasswordResponse {
+            eresult: Some(1),
+            betapasswords: vec![
+                generated::c_msg_client_check_app_beta_password_response::BetaPassword {
+                    betaname: Some("legacy".to_owned()),
+                    betapassword: Some(hash_hex.to_owned()),
+                    betadescription: None,
+                },
+            ],
+        }
+        .encode_to_vec();
+
+        let unlocked =
+            SteamClient::<LoggedIn>::parse_beta_password_response(AppId(107410), &body).unwrap();
+        assert_eq!(unlocked.len(), 1);
+        assert_eq!(unlocked[0].name, "legacy");
+        assert_eq!(
+            crate::util::hex::encode(&unlocked[0].password_hash.0),
+            hash_hex
+        );
+    }
 }

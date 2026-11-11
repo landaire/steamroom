@@ -1,3 +1,4 @@
+use crate::depot::AppId;
 use crate::enums::EResultError;
 use crate::messages::EMsg;
 
@@ -64,8 +65,21 @@ pub enum ConnectionError {
     #[error("depot access denied: depot {0}")]
     DepotAccessDenied(u32),
 
+    #[error("branch password rejected for app {app_id}: {result:?}")]
+    BranchPasswordRejected { app_id: AppId, result: EResultError },
+
+    #[error("private branch {branch:?} of app {app_id} denied: {result:?}")]
+    PrivateBranchDenied {
+        app_id: AppId,
+        branch: String,
+        result: EResultError,
+    },
+
     #[error("server response missing required field: {0}")]
     MissingField(&'static str),
+
+    #[error("server response field malformed: {0}")]
+    MalformedField(&'static str),
 
     #[error(transparent)]
     Parse(#[from] ParseError),

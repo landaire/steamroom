@@ -10,11 +10,13 @@ use crate::errors::CliError;
 use std::sync::OnceLock;
 use steamroom::apps::AppDetails;
 use steamroom::apps::KvDecodeError;
+use steamroom::apps::UnlockedBranch;
 use steamroom::cdn::CdnClient;
 use steamroom::client::LoggedIn;
 use steamroom::client::SteamClient;
 use steamroom::depot::manifest::DepotManifest;
 use steamroom::depot::*;
+use steamroom::error::ConnectionError;
 use steamroom::types::key_value::KeyValue;
 use steamroom::types::key_value::KvValue;
 use steamroom_client::credentials::StartupAuth;
@@ -236,12 +238,108 @@ fn map_app_lookup<T>(res: Result<T, steamroom::Error>, app_id: AppId) -> Result<
     })
 }
 
-/// Look up an app's structured [`AppDetails`] via PICS.
+/// Password-protected branches to merge into app details.
+#[derive(Debug, Default)]
+pub struct BranchUnlocks {
+    /// Unlocked by `--branch-password`. Failing to read one is an error.
+    pub from_password: Vec<UnlockedBranch>,
+    /// Cached by the local Steam client. Steam may have removed or re-keyed
+    /// these since, so a denied one is skipped with a warning.
+    pub cached: Vec<UnlockedBranch>,
+}
+
+impl BranchUnlocks {
+    /// Keep only `branch`. A password that unlocks other branches but not
+    /// this one is an error rather than a silent fall back to public data.
+    pub fn only(mut self, branch: &str) -> Result<Self, CliError> {
+        if !self.from_password.is_empty() && !self.from_password.iter().any(|b| b.name == branch) {
+            return Err(CliError::BranchNotUnlocked {
+                branch: branch.to_string(),
+                unlocked: self.from_password.into_iter().map(|b| b.name).collect(),
+            });
+        }
+
+        self.from_password.retain(|b| b.name == branch);
+        self.cached.retain(|b| b.name == branch);
+
+        Ok(self)
+    }
+}
+
+/// Collect the branches `password` unlocks and, when `local_keys` is set,
+/// the branches whose passwords the local Steam client has cached.
+pub async fn unlock_branches(
+    client: &SteamClient<LoggedIn>,
+    app_id: AppId,
+    password: Option<&str>,
+    local_keys: bool,
+) -> Result<BranchUnlocks, CliError> {
+    let from_password = match password {
+        Some(password) => client.check_app_beta_password(app_id, password).await?,
+        None => Vec::new(),
+    };
+
+    let cached = if local_keys {
+        let steam_dir =
+            steamroom_client::steam_creds::steam_dir().ok_or(CliError::SteamNotFound)?;
+        let config = steamroom_client::steam_creds::read_config(&steam_dir)
+            .ok_or(CliError::SteamNotFound)?;
+        steamroom_client::steam_creds::unlocked_branches(&config, app_id)
+            .into_iter()
+            .filter(|cached| !from_password.iter().any(|b| b.name == cached.name))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    Ok(BranchUnlocks {
+        from_password,
+        cached,
+    })
+}
+
+/// Look up an app's structured [`AppDetails`] via PICS, with the depot
+/// sections of unlocked password-protected branches merged in.
 pub async fn fetch_app_details(
     client: &SteamClient<LoggedIn>,
     app_id: AppId,
+    unlocks: &BranchUnlocks,
 ) -> Result<AppDetails, CliError> {
-    map_app_lookup(client.app_details(app_id).await, app_id)
+    let mut details = map_app_lookup(
+        client
+            .app_details_with_branches(app_id, &unlocks.from_password)
+            .await,
+        app_id,
+    )?;
+
+    // A cached password is only needed while Steam still hides the branch.
+    let pending: Vec<&UnlockedBranch> = unlocks
+        .cached
+        .iter()
+        .filter(|cached| details.branch(&cached.name).is_none_or(|b| b.pwd_required))
+        .collect();
+    if pending.is_empty() {
+        return Ok(details);
+    }
+
+    let token = client.app_access_token(app_id).await?;
+    for branch in pending {
+        match client.private_depots(&token, branch).await {
+            Ok(section) => details = details.with_private_depots(section),
+            Err(steamroom::Error::Connection(ConnectionError::PrivateBranchDenied {
+                result,
+                ..
+            })) => {
+                warn!(
+                    "skipping cached password for branch \"{}\": Steam denied it ({result:?})",
+                    branch.name
+                );
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Ok(details)
 }
 
 pub async fn fetch_manifest(

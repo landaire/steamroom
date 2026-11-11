@@ -34,11 +34,17 @@ pub struct PackageInfo {
     pub kv_data: Option<Vec<u8>>,
 }
 
+/// Server-issued key that unlocks a password-protected branch. Returned by
+/// `CheckAppBetaPassword` and sent back in `PICSPrivateBetaRequest`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct BranchPasswordHash(pub [u8; 32]);
+
+/// A password-protected branch the account can read, with the key that
+/// unlocks it.
 #[derive(Clone, Debug)]
-pub struct BetaBranch {
-    pub name: Option<String>,
-    pub password: Option<String>,
-    pub description: Option<String>,
+pub struct UnlockedBranch {
+    pub name: String,
+    pub password_hash: BranchPasswordHash,
 }
 
 /// Failure decoding a PICS KV payload into a [`KeyValue`] tree.
@@ -61,7 +67,7 @@ pub enum KvDecodeError {
 ///
 /// Binary KV blobs begin with a `0x00` subsection tag; anything else is
 /// treated as UTF-8 text KV.
-fn decode_kv(data: &[u8]) -> Result<KeyValue, KvDecodeError> {
+pub(crate) fn decode_kv(data: &[u8]) -> Result<KeyValue, KvDecodeError> {
     if data.first() == Some(&0x00) {
         Ok(parse_binary_kv(data)?)
     } else {

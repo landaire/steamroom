@@ -106,6 +106,43 @@ impl KeyValue {
             _ => None,
         }
     }
+
+    /// Overlay `other` onto this node's value. Subsections present on both
+    /// sides are merged; any other value from `other` replaces the existing
+    /// one.
+    pub fn merge(&mut self, other: KvValue) {
+        let mut work = vec![(self, other)];
+        while let Some((target, source)) = work.pop() {
+            match (&mut target.value, source) {
+                (KvValue::Children(target_children), KvValue::Children(source_children)) => {
+                    let mut nested = BTreeMap::new();
+                    for (key, child) in source_children {
+                        let both_subsections = matches!(child.value, KvValue::Children(_))
+                            && matches!(
+                                target_children.get(&key).map(|existing| &existing.value),
+                                Some(KvValue::Children(_))
+                            );
+                        if both_subsections {
+                            nested.insert(key, child.value);
+                        } else {
+                            target_children.insert(key, child);
+                        }
+                    }
+
+                    if nested.is_empty() {
+                        continue;
+                    }
+
+                    for (key, existing) in target_children.iter_mut() {
+                        if let Some(child) = nested.remove(key) {
+                            work.push((existing, child));
+                        }
+                    }
+                }
+                (slot, value) => *slot = value,
+            }
+        }
+    }
 }
 
 pub fn parse_binary_kv(data: &[u8]) -> Result<KeyValue, std::io::Error> {
@@ -325,5 +362,43 @@ mod tests {
         assert_eq!(kv.key, "root");
         let child = kv.get("key").unwrap();
         assert_eq!(child.as_str(), Some("value"));
+    }
+
+    #[test]
+    fn merge_recurses_into_shared_subsections_and_overlay_wins_conflicts() {
+        let mut base = parse_text_kv(
+            r#""root"
+{
+    "keep" "1"
+    "nested" { "a" "base" "b" "base" }
+    "becomes_scalar" { "x" "1" }
+    "becomes_section" "scalar"
+}"#,
+        )
+        .unwrap();
+        let overlay = parse_text_kv(
+            r#""ignored"
+{
+    "nested" { "b" "overlay" "c" "overlay" }
+    "becomes_scalar" "scalar"
+    "becomes_section" { "y" "2" }
+}"#,
+        )
+        .unwrap();
+
+        base.merge(overlay.value);
+
+        assert_eq!(base.key, "root");
+        assert_eq!(base.get("keep").and_then(KeyValue::as_str), Some("1"));
+        let nested = base.get("nested").unwrap();
+        assert_eq!(nested.get("a").and_then(KeyValue::as_str), Some("base"));
+        assert_eq!(nested.get("b").and_then(KeyValue::as_str), Some("overlay"));
+        assert_eq!(nested.get("c").and_then(KeyValue::as_str), Some("overlay"));
+        assert_eq!(
+            base.get("becomes_scalar").and_then(KeyValue::as_str),
+            Some("scalar")
+        );
+        let section = base.get("becomes_section").unwrap();
+        assert_eq!(section.get("y").and_then(KeyValue::as_str), Some("2"));
     }
 }

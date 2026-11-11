@@ -36,7 +36,7 @@ Comparison between DepotDownloader (C#) and steamroom (Rust).
 | Depot config persistence | ✅ | ✅ | Tracks installed manifests for delta downloads |
 | Workshop download | ✅ | ✅ | Full manifest + chunk pipeline |
 | Branch selection | ✅ | ✅ | `--branch` flag |
-| Beta/branch passwords | ✅ | ⚠️ | Cached hash from config.vdf via `--local-keys`; plaintext `--branch-password` not yet wired up |
+| Beta/branch passwords | ✅ | ✅ | `--branch-password` on download/files/manifests/info; cached hashes from config.vdf via `--local-keys` |
 | Encrypted manifest detection | ✅ | ✅ | Shown in `info` output |
 | JSON output | ✅ | ✅ | `--format json` on info/manifests/files/diff/packages |
 | Lancache detection + proxy | ✅ | ✅ | DNS-based detection |

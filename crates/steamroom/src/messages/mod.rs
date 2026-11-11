@@ -34,6 +34,8 @@ impl EMsg {
     pub const CLIENT_LOGON: Self = Self(5514);
     pub const CLIENT_GET_DEPOT_DECRYPTION_KEY: Self = Self(5438);
     pub const CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE: Self = Self(5439);
+    pub const CLIENT_CHECK_APP_BETA_PASSWORD: Self = Self(5450);
+    pub const CLIENT_CHECK_APP_BETA_PASSWORD_RESPONSE: Self = Self(5451);
     pub const CLIENT_PICS_ACCESS_TOKEN_REQUEST: Self = Self(8905);
     pub const CLIENT_PICS_ACCESS_TOKEN_RESPONSE: Self = Self(8906);
     pub const CLIENT_PICS_PRIVATE_BETA_REQUEST: Self = Self(8907);

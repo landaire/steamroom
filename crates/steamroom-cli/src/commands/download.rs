@@ -12,6 +12,7 @@ use crate::cli::DownloadArgs;
 use crate::commands::shared::decompress_manifest;
 use crate::commands::shared::fetch_app_details;
 use crate::commands::shared::fmt_size;
+use crate::commands::shared::unlock_branches;
 use crate::download as direct_progress;
 use crate::errors::CliError;
 use crate::sink::JobSink;
@@ -38,9 +39,18 @@ pub async fn run_download(
 ) -> Result<(), CliError> {
     let app_id = AppId(args.app);
 
-    // Get access tokens
+    let branch = args.branch.as_deref().unwrap_or("public");
+    let unlocks = unlock_branches(
+        &client,
+        app_id,
+        args.branch_password.as_deref(),
+        args.local_keys,
+    )
+    .await?
+    .only(branch)?;
+
     info!("getting PICS access tokens for app {}", app_id);
-    let details = fetch_app_details(&client, app_id).await?;
+    let details = fetch_app_details(&client, app_id, &unlocks).await?;
 
     // Find depots
     let depot_id = if let Some(d) = args.depot {
@@ -51,44 +61,6 @@ pub async fn run_download(
             .map(|d| d.id)
             .ok_or(CliError::NoDepots)?
     };
-
-    let branch = args.branch.as_deref().unwrap_or("public");
-
-    // For non-public branches with --local-keys, try using cached beta hash
-    if args.local_keys && branch != "public" {
-        let steam_dir =
-            steamroom_client::steam_creds::steam_dir().ok_or(CliError::SteamNotFound)?;
-        let config = steamroom_client::steam_creds::read_config(&steam_dir)
-            .ok_or(CliError::SteamNotFound)?;
-        if let Some(hash) = steamroom_client::steam_creds::find_beta_hash(&config, app_id.0, branch)
-        {
-            info!("using cached beta hash for branch \"{branch}\"");
-            let has_manifest = details
-                .depot(depot_id)
-                .and_then(|d| d.manifest(branch))
-                .is_some();
-            // If we can't find the manifest in PICS, try requesting private beta access
-            if !has_manifest {
-                let access_tokens = client.pics_get_access_tokens(&[app_id]).await?;
-                let access_token = access_tokens.first().map(|t| t.token).unwrap_or(0);
-                match client
-                    .request_private_beta(app_id, access_token, branch, &hash)
-                    .await
-                {
-                    Ok(Some(depot_section)) => {
-                        info!("private beta access granted for branch \"{branch}\"");
-                        debug!("depot_section: {} bytes", depot_section.len());
-                    }
-                    Ok(None) => {
-                        warn!("private beta access denied for branch \"{branch}\"");
-                    }
-                    Err(e) => {
-                        warn!("private beta request failed: {e}");
-                    }
-                }
-            }
-        }
-    }
 
     // Find manifest ID
     let manifest_id = if let Some(m) = args.manifest {

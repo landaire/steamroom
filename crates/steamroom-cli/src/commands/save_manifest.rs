@@ -2,6 +2,7 @@
 //! CDN and persist it to disk (raw + decompressed + depot.json).
 
 use crate::cli::SaveManifestArgs;
+use crate::commands::shared::BranchUnlocks;
 use crate::commands::shared::decompress_manifest;
 use crate::commands::shared::fetch_app_details;
 use crate::errors::CliError;
@@ -28,7 +29,7 @@ pub async fn run_save_manifest(
     let manifest_id = if let Some(m) = args.manifest {
         ManifestId(m)
     } else {
-        let details = fetch_app_details(&client, app_id).await?;
+        let details = fetch_app_details(&client, app_id, &BranchUnlocks::default()).await?;
         details
             .depot(depot_id)
             .and_then(|d| d.manifest(branch))

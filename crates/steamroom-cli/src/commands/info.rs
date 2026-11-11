@@ -7,6 +7,7 @@ use crate::commands::shared::fetch_app_details;
 use crate::commands::shared::fmt_relative;
 use crate::commands::shared::fmt_size;
 use crate::commands::shared::kv_to_json;
+use crate::commands::shared::unlock_branches;
 use crate::errors::CliError;
 use crate::sink::JobSink;
 use std::sync::Arc;
@@ -25,7 +26,14 @@ pub async fn run_info(
     _cancel: CancellationToken,
 ) -> Result<(), CliError> {
     let app_id = AppId(args.app);
-    let details = fetch_app_details(&client, app_id).await?;
+    let unlocks = unlock_branches(
+        &client,
+        app_id,
+        args.branch_password.as_deref(),
+        args.local_keys,
+    )
+    .await?;
+    let details = fetch_app_details(&client, app_id, &unlocks).await?;
 
     if args.format == Some(OutputFormat::Json) {
         sink.stdout_line(&serde_json::to_string_pretty(&kv_to_json(

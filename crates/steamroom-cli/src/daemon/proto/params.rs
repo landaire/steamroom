@@ -41,6 +41,8 @@ pub struct InfoParams {
     pub format: Option<OutputFormat>,
     pub os: Option<String>,
     pub show_all: bool,
+    pub branch_password: Option<String>,
+    pub local_keys: bool,
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone)]
@@ -155,6 +157,8 @@ impl From<crate::cli::InfoArgs> for InfoParams {
             format: a.format.map(Into::into),
             os: a.os,
             show_all: a.show_all,
+            branch_password: a.branch_password,
+            local_keys: a.local_keys,
         }
     }
 }
@@ -278,6 +282,8 @@ impl From<InfoParams> for crate::cli::InfoArgs {
             format: p.format.map(Into::into),
             os: p.os,
             show_all: p.show_all,
+            branch_password: p.branch_password,
+            local_keys: p.local_keys,
         }
     }
 }

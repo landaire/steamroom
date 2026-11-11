@@ -78,6 +78,9 @@ steamroom download --app 480 --depot 481 --manifest 3183503801510301321 -o outpu
 # Download a specific branch
 steamroom download --app 480 --depot 481 --branch previous -o output/
 
+# Password-protected branch
+steamroom download --app 892970 --depot 892971 --branch public-test --branch-password yesimadebackups -o output/
+
 # Filter files by regex
 steamroom download --app 480 --depot 481 --file-regex '\.dll$' -o output/
 
@@ -103,6 +106,12 @@ steamroom info --app 730 --os linux
 
 # Include redistributable depots
 steamroom info --app 730 --show-all
+
+# Include password-protected branches. Steam hides these from regular app info.
+steamroom info --app 892970 --branch-password yesimadebackups
+
+# Include branches whose passwords you entered in the Steam client
+steamroom info --app 892970 --local-keys
 
 # JSON output for scripting
 steamroom info --app 730 --format json
